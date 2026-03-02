@@ -76,7 +76,7 @@ describe("SystemPromptSelector", () => {
     );
 
     await waitFor(() => {
-      const createButton = screen.getByText("Create New Chat");
+      const createButton = screen.getByText("Create New Session");
       expect(createButton).not.toBeDisabled();
     });
   });
@@ -109,7 +109,7 @@ describe("SystemPromptSelector", () => {
     );
 
     await waitFor(() => {
-      const createButton = screen.getByText("Create New Chat");
+      const createButton = screen.getByText("Create New Session");
       expect(createButton).not.toBeDisabled();
     });
   });
@@ -142,7 +142,7 @@ describe("SystemPromptSelector", () => {
     );
 
     await waitFor(() => {
-      const createButton = screen.getByText("Create New Chat");
+      const createButton = screen.getByText("Create New Session");
       // Button should not be disabled because valid_prompt is available
       expect(createButton).not.toBeDisabled();
     });
@@ -179,7 +179,7 @@ describe("SystemPromptSelector", () => {
 
     // Use role to find the button more precisely
     const createButton = await screen.findByRole("button", {
-      name: "Create New Chat",
+      name: "Create New Session",
     });
 
     // Check both the disabled property and attribute
@@ -200,7 +200,7 @@ describe("SystemPromptSelector", () => {
     });
 
     const createButton = await screen.findByRole("button", {
-      name: "Create New Chat",
+      name: "Create New Session",
     });
     expect(createButton).toBeDisabled();
     expect(createButton).toHaveAttribute("disabled");
@@ -235,7 +235,7 @@ describe("SystemPromptSelector", () => {
     );
 
     await waitFor(() => {
-      const createButton = screen.getByText("Create New Chat");
+      const createButton = screen.getByText("Create New Session");
       expect(createButton).not.toBeDisabled();
     });
   });
@@ -261,13 +261,13 @@ describe("SystemPromptSelector", () => {
     );
 
     await waitFor(() => {
-      const createButton = screen.getByText("Create New Chat");
+      const createButton = screen.getByText("Create New Session");
       // Button should be enabled because the prompt has a valid ID
       expect(createButton).not.toBeDisabled();
     });
   });
 
-  it("should call onSelect with selected prompt when Create New Chat is clicked", async () => {
+  it("should call onSelect with selected prompt when Create New Session is clicked", async () => {
     render(
       <SystemPromptSelector
         open={true}
@@ -278,12 +278,12 @@ describe("SystemPromptSelector", () => {
     );
 
     await waitFor(() => {
-      const createButton = screen.getByText("Create New Chat");
+      const createButton = screen.getByText("Create New Session");
       expect(createButton).not.toBeDisabled();
     });
 
-    // Click the Create New Chat button
-    const createButton = screen.getByText("Create New Chat");
+    // Click the Create New Session button
+    const createButton = screen.getByText("Create New Session");
     createButton.click();
 
     await waitFor(() => {

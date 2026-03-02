@@ -24,6 +24,8 @@ import SystemSettingsMcpTab from "./SystemSettingsMcpTab";
 import SystemSettingsMetricsTab from "./SystemSettingsMetricsTab";
 import SystemSettingsHooksTab from "./SystemSettingsHooksTab";
 import MermaidSettingsTab from "./MermaidSettingsTab";
+import SystemSettingsSchedulesTab from "./SystemSettingsSchedulesTab";
+import SystemSettingsSessionsTab from "./SystemSettingsSessionsTab";
 import { ProviderSettings } from "../ProviderSettings";
 import { SkillManager } from "../../../../components/Skill";
 
@@ -60,13 +62,13 @@ const SystemSettingsPage = ({
   );
 
   const handleDeleteAll = () => {
-    deleteAllUnpinnedChats();
-    msgApi.success("All chats deleted (except pinned)");
+    void deleteAllUnpinnedChats();
+    msgApi.success("All sessions deleted (except pinned)");
   };
 
   const handleDeleteEmpty = () => {
-    deleteEmptyChats();
-    msgApi.success("Empty chats deleted (except pinned)");
+    void deleteEmptyChats();
+    msgApi.success("Empty sessions deleted (except pinned)");
   };
 
   const handleClearLocalStorage = () => {
@@ -218,6 +220,16 @@ const SystemSettingsPage = ({
               key: "metrics",
               label: "Metrics",
               children: <SystemSettingsMetricsTab />,
+            },
+            {
+              key: "schedules",
+              label: "Schedules",
+              children: <SystemSettingsSchedulesTab />,
+            },
+            {
+              key: "sessions",
+              label: "Sessions",
+              children: <SystemSettingsSessionsTab />,
             },
             {
               key: "app",

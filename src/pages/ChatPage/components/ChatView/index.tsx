@@ -16,6 +16,7 @@ import { ChatMessagesList } from "./ChatMessagesList";
 import { TodoList } from "@components/TodoList";
 import { QuestionDialog } from "@components/QuestionDialog";
 import { TokenUsageDisplay } from "../TokenUsageDisplay";
+import { SubSessionsPanel } from "./SubSessionsPanel";
 import "./styles.css";
 import { useChatViewScroll } from "./useChatViewScroll";
 import type { WorkflowDraft } from "../InputContainer";
@@ -46,6 +47,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const chatId = useAppStore((state) => chatIdProp ?? state.currentChatId);
   const currentChat = useAppStore(selectChatById(chatId));
   const deleteMessage = useAppStore((state) => state.deleteMessage);
+  const loadChatHistory = useAppStore((state) => state.loadChatHistory);
   const processingChats = useAppStore((state) => state.processingChats);
   const tokenUsages = useAppStore((state) => state.tokenUsages);
   const truncationOccurred = useAppStore((state) => state.truncationOccurred);
@@ -54,6 +56,27 @@ export const ChatView: React.FC<ChatViewProps> = ({
     () => currentChat?.messages || [],
     [currentChat],
   );
+  const hasTodoList = useAppStore((state) =>
+    chatId ? Boolean(state.todoLists[chatId]) : false,
+  );
+  const hasSubSessions = useAppStore((state) => {
+    if (!chatId) return false;
+    const progressMap = state.subSessionsByParent[chatId];
+    if (progressMap && Object.keys(progressMap).length > 0) return true;
+    return state.chats.some(
+      (c) => c.kind === "child" && c.parentSessionId === chatId,
+    );
+  });
+
+  // Lazy-load history when switching sessions (backend is source of truth).
+  useEffect(() => {
+    if (!chatId) return;
+    const chat = useAppStore.getState().chats.find((c) => c.id === chatId);
+    if (chat && Array.isArray(chat.messages) && chat.messages.length > 0) {
+      return;
+    }
+    void loadChatHistory(chatId);
+  }, [chatId, loadChatHistory]);
 
   const isProcessing = chatId
     ? processingChats.has(chatId)
@@ -120,6 +143,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const showMessagesView =
     chatId && (hasMessages || hasSystemPrompt || hasWorkflowDraft);
 
+  // In split-pane mode, the PaneShell shows floating split/close buttons at the top-right.
+  // Reserve some horizontal space so token usage (also top-right) isn't covered on hover.
+  const paneActionOverlayRightPadding = embedded ? 110 : 0;
+
   const renderableMessagesWithDraft = useMemo<RenderableEntry[]>(() => {
     if (!workflowDraft?.content) {
       return renderableMessages;
@@ -138,8 +165,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return [...renderableMessages, draftEntry];
   }, [renderableMessages, workflowDraft]);
 
-  // Get agent session ID from chat config (created by Agent Server)
-  const agentSessionId = currentChat?.config?.agentSessionId;
+  // In v2, frontend chat id === backend session id.
+  const agentSessionId = currentChat?.id;
 
   // Get token usage - prefer store (real-time), fallback to chat config (persisted)
   const storeTokenUsage = chatId ? tokenUsages[chatId] : null;
@@ -234,7 +261,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         }}
       >
         {/* TodoList - show when there is an active agent session */}
-        {agentSessionId && (
+        {agentSessionId && hasTodoList && (
           <div
             style={{
               paddingTop: getContainerPadding(),
@@ -257,7 +284,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
               paddingTop: agentSessionId
                 ? token.paddingXS
                 : getContainerPadding(),
-              paddingRight: getContainerPadding(),
+              paddingRight:
+                getContainerPadding() + paneActionOverlayRightPadding,
               paddingBottom: 0,
               paddingLeft: getContainerPadding(),
               maxWidth: getContainerMaxWidth(),
@@ -289,6 +317,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </span>
               )}
             </div>
+          </div>
+        )}
+
+        {chatId && hasSubSessions && (
+          <div
+            style={{
+              paddingTop: token.paddingXS,
+              paddingRight: getContainerPadding(),
+              paddingBottom: 0,
+              paddingLeft: getContainerPadding(),
+              maxWidth: getContainerMaxWidth(),
+              margin: "0 auto",
+              width: "100%",
+            }}
+          >
+            <SubSessionsPanel parentSessionId={chatId} />
           </div>
         )}
 

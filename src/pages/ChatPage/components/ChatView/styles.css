@@ -44,12 +44,14 @@
   transition: all 0.3s ease-in-out;
   width: 100%;
   padding: 0;
-  min-height: 80px;
+  /* Avoid reserving excessive vertical space; the content defines its own height. */
+  min-height: 0;
 }
 
 .chat-view-input-container-wrapper.centered-view {
   position: absolute;
-  top: 70%;
+  /* Center the input area more in "empty" chat view to avoid a large unused region. */
+  top: 55%;
   left: 0;
   transform: translateY(-50%);
   opacity: 1;

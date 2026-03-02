@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useAppStore } from "../../store";
 import type { ChatItem, UserSystemPrompt } from "../../types/chat";
 import type { UseChatState } from "./types";
+import { AgentClient } from "../../services/AgentService";
 
 /**
  * Hook for chat CRUD operations
@@ -15,9 +16,9 @@ export interface UseChatOperations {
   createChatWithSystemPrompt: (prompt: UserSystemPrompt) => Promise<void>;
   toggleChatPin: (chatId: string) => void;
   updateChatTitle: (chatId: string, newTitle: string) => void;
-  deleteEmptyChats: () => void;
-  deleteAllUnpinnedChats: () => void;
-  deleteAllChats: () => void;
+  deleteEmptyChats: () => Promise<void>;
+  deleteAllUnpinnedChats: () => Promise<void>;
+  deleteAllChats: () => Promise<void>;
 }
 
 export function useChatOperations(state: UseChatState): UseChatOperations {
@@ -26,6 +27,7 @@ export function useChatOperations(state: UseChatState): UseChatOperations {
     (state) => state.lastSelectedPromptId,
   );
   const systemPrompts = useAppStore((state) => state.systemPrompts);
+  const agentClient = AgentClient.getInstance();
 
   const createNewChat = useCallback(
     async (title?: string, options?: Partial<Omit<ChatItem, "id">>) => {
@@ -42,7 +44,7 @@ export function useChatOperations(state: UseChatState): UseChatOperations {
           : "");
 
       const newChatData: Omit<ChatItem, "id"> = {
-        title: title || "New Chat",
+        title: title || "New Session",
         createdAt: Date.now(),
         messages: [],
         config: {
@@ -70,7 +72,7 @@ export function useChatOperations(state: UseChatState): UseChatOperations {
         prompt,
       );
       const newChatData: Omit<ChatItem, "id"> = {
-        title: `New Chat - ${prompt.name}`,
+        title: `New Session - ${prompt.name}`,
         createdAt: Date.now(),
         messages: [],
         config: {
@@ -106,28 +108,21 @@ export function useChatOperations(state: UseChatState): UseChatOperations {
     [state],
   );
 
-  const deleteEmptyChats = useCallback(() => {
-    const emptyChatIds = state.chats
-      .filter((chat) => !chat.pinned && chat.messages.length === 0)
-      .map((chat) => chat.id);
-    if (emptyChatIds.length > 0) {
-      state.deleteChats(emptyChatIds);
-    }
-  }, [state]);
+  const deleteEmptyChats = useCallback(async () => {
+    // Prefer backend cleanup so root/child protection rules are applied consistently.
+    await agentClient.cleanupSessions("empty", true);
+    await useAppStore.getState().loadChats();
+  }, [agentClient]);
 
-  const deleteAllUnpinnedChats = useCallback(() => {
-    const unpinnedChatsIds = state.unpinnedChats.map((chat) => chat.id);
-    if (unpinnedChatsIds.length > 0) {
-      state.deleteChats(unpinnedChatsIds);
-    }
-  }, [state]);
+  const deleteAllUnpinnedChats = useCallback(async () => {
+    await agentClient.cleanupSessions("all", true);
+    await useAppStore.getState().loadChats();
+  }, [agentClient]);
 
-  const deleteAllChats = useCallback(() => {
-    const allChatIds = state.chats.map((chat) => chat.id);
-    if (allChatIds.length > 0) {
-      state.deleteChats(allChatIds);
-    }
-  }, [state]);
+  const deleteAllChats = useCallback(async () => {
+    await agentClient.cleanupSessions("all", false);
+    await useAppStore.getState().loadChats();
+  }, [agentClient]);
 
   return {
     createNewChat,

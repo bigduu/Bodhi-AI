@@ -45,6 +45,7 @@ interface MessageInputProps {
   allowImages?: boolean;
   isWorkflowSelectorVisible?: boolean; // Prevent Enter key handling when workflow selector is open
   textAreaRef?: React.RefObject<TextAreaRef>; // Add textAreaRef prop
+  statusIndicator?: React.ReactNode;
   validateMessage?: (message: string) => {
     isValid: boolean;
     errorMessage?: string;
@@ -68,6 +69,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   allowImages = true,
   isWorkflowSelectorVisible = false,
   textAreaRef: externalTextAreaRef, // External ref from parent
+  statusIndicator,
   validateMessage,
   onAttachmentsAdded,
   onWorkflowCommandChange,
@@ -246,6 +248,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             images={images}
             isOverCharLimit={isOverCharLimit}
             token={token}
+            statusIndicator={statusIndicator}
           />
         </Flex>
       </div>

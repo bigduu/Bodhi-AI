@@ -128,7 +128,7 @@ const SystemPromptSelector: React.FC<SystemPromptSelectorProps> = ({
                   }
                 },
                 {
-                  text: "Create New Chat",
+                  text: "Create New Session",
                   disabled: !selectedId,
                 },
               ),

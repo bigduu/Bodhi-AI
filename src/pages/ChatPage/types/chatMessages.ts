@@ -44,7 +44,10 @@ export interface QuestionOption {
 
 export interface MessageImage {
   id: string;
-  base64: string;
+  // For newly added images (before backend persistence), we keep base64.
+  // For persisted sessions, the backend stores attachments by reference; we render via URL.
+  base64?: string;
+  url?: string;
   name: string;
   size: number;
   type: string;
@@ -158,6 +161,17 @@ export type Message =
 
 export interface ChatItem {
   id: string;
+  // Backend session metadata (V2).
+  kind?: "root" | "child";
+  parentSessionId?: string | null;
+  rootSessionId?: string;
+  spawnDepth?: number;
+  createdByScheduleId?: string | null;
+  isRunning?: boolean;
+  updatedAt?: string;
+  lastActivityAt?: string;
+  messageCount?: number;
+  hasAttachments?: boolean;
   title: string;
   createdAt: number;
   pinned?: boolean;
@@ -168,7 +182,6 @@ export interface ChatItem {
     lastUsedEnhancedPrompt: string | null;
     agentRole?: AgentRole;
     workspacePath?: string;
-    agentSessionId?: string;
     tokenUsage?: TokenUsage;
     truncationOccurred?: boolean;
     segmentsRemoved?: number;

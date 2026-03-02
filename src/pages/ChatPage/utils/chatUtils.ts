@@ -76,9 +76,18 @@ export const groupChatsByDate = (
   if (pinnedChats.length > 0) {
     grouped["Pinned"] = pinnedChats.sort((a, b) => b.createdAt - a.createdAt);
   }
+
+  // Group scheduled sessions separately so they appear under a special section.
+  const scheduledChats = chats.filter(
+    (chat) => !chat.pinned && Boolean(chat.createdByScheduleId),
+  );
+  if (scheduledChats.length > 0) {
+    grouped["Scheduled"] = scheduledChats.sort((a, b) => b.createdAt - a.createdAt);
+  }
+
   // Group the rest by date
   chats
-    .filter((chat) => !chat.pinned)
+    .filter((chat) => !chat.pinned && !chat.createdByScheduleId)
     .forEach((chat) => {
       const date = new Date(chat.createdAt);
       const dateString = date.toLocaleDateString(undefined, {
@@ -167,6 +176,8 @@ export const getSortedDateKeys = (
   return Object.keys(grouped).sort((a, b) => {
     if (a === "Pinned") return -1;
     if (b === "Pinned") return 1;
+    if (a === "Scheduled") return -1;
+    if (b === "Scheduled") return 1;
 
     const aGroup = grouped[a];
     const bGroup = grouped[b];
@@ -214,6 +225,9 @@ export const getChatCountByDate = (
 export const getDateGroupKeyForChat = (chat: ChatItem): string => {
   if (chat.pinned) {
     return "Pinned";
+  }
+  if (chat.createdByScheduleId) {
+    return "Scheduled";
   }
   const date = new Date(chat.createdAt);
   return date.toLocaleDateString(undefined, {

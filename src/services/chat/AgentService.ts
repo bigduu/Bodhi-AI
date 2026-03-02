@@ -20,6 +20,10 @@ export type AgentEventType =
   | "todo_evaluation_completed"
   | "token_budget_updated"
   | "context_summarized"
+  | "sub_session_started"
+  | "sub_session_event"
+  | "sub_session_heartbeat"
+  | "sub_session_completed"
   | "complete"
   | "error";
 
@@ -97,7 +101,7 @@ export interface AgentEvent {
   // TodoList delta
   session_id?: string;
   item_id?: string;
-  status?: TodoItemStatus;
+  status?: TodoItemStatus | string;
   tool_calls_count?: number;
   version?: number;
   completed_at?: string;
@@ -107,6 +111,12 @@ export interface AgentEvent {
   items_count?: number;
   updates_count?: number;
   reasoning?: string;
+  // Sub-session events
+  parent_session_id?: string;
+  child_session_id?: string;
+  title?: string;
+  event?: AgentEvent;
+  timestamp?: string;
 }
 
 export interface ChatRequest {
@@ -141,6 +151,10 @@ export interface HistoryResponse {
     id: string;
     role: "user" | "assistant" | "tool" | "system";
     content: string;
+    content_parts?: Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string; detail?: string } }
+    >;
     tool_calls?: Array<{
       id: string;
       type: string;
@@ -152,6 +166,89 @@ export interface HistoryResponse {
     tool_call_id?: string;
     created_at: string;
   }>;
+}
+
+export type SessionKind = "root" | "child";
+
+export interface SessionSummary {
+  id: string;
+  kind: SessionKind;
+  title: string;
+  pinned: boolean;
+  parent_session_id?: string | null;
+  root_session_id: string;
+  spawn_depth: number;
+  created_by_schedule_id?: string | null;
+  token_usage?: TokenBudgetUsage;
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+  message_count: number;
+  has_attachments: boolean;
+  is_running: boolean;
+}
+
+export interface ListSessionsResponse {
+  sessions: SessionSummary[];
+}
+
+export interface CreateSessionRequest {
+  title?: string;
+  system_prompt?: string;
+  model?: string;
+}
+
+export interface CreateSessionResponse {
+  session: SessionSummary;
+}
+
+export interface PatchSessionRequest {
+  title?: string;
+  pinned?: boolean;
+}
+
+export interface ScheduleRunConfig {
+  system_prompt?: string;
+  task_message?: string;
+  model?: string;
+  workspace_path?: string;
+  enhance_prompt?: string;
+  auto_execute?: boolean;
+}
+
+export interface ScheduleEntry {
+  id: string;
+  name: string;
+  enabled: boolean;
+  interval_seconds: number;
+  created_at: string;
+  updated_at: string;
+  last_run_at?: string | null;
+  next_run_at: string;
+  run_config: ScheduleRunConfig;
+}
+
+export interface ListSchedulesResponse {
+  schedules: ScheduleEntry[];
+}
+
+export interface CreateScheduleRequest {
+  name: string;
+  interval_seconds: number;
+  enabled?: boolean;
+  run_config?: ScheduleRunConfig;
+}
+
+export interface PatchScheduleRequest {
+  name?: string;
+  enabled?: boolean;
+  interval_seconds?: number;
+  run_config?: ScheduleRunConfig;
+}
+
+export interface ListScheduleSessionsResponse {
+  schedule_id: string;
+  sessions: SessionSummary[];
 }
 
 // Event handlers type
@@ -182,6 +279,27 @@ export interface AgentEventHandlers {
   onContextSummarized?: (summaryInfo: ContextSummaryInfo) => void;
   onComplete?: (usage: AgentEvent["usage"]) => void;
   onError?: (message: string) => void;
+  onSubSessionStarted?: (
+    parentSessionId: string,
+    childSessionId: string,
+    title?: string,
+  ) => void;
+  onSubSessionEvent?: (
+    parentSessionId: string,
+    childSessionId: string,
+    event: AgentEvent,
+  ) => void;
+  onSubSessionHeartbeat?: (
+    parentSessionId: string,
+    childSessionId: string,
+    timestamp: string,
+  ) => void;
+  onSubSessionCompleted?: (
+    parentSessionId: string,
+    childSessionId: string,
+    status: string,
+    error?: string,
+  ) => void;
 }
 
 /**
@@ -210,6 +328,91 @@ export class AgentClient {
    */
   async execute(sessionId: string, model: string): Promise<ExecuteResponse> {
     return agentApiClient.post<ExecuteResponse>(`execute/${sessionId}`, { model });
+  }
+
+  /**
+   * List backend sessions (V2 index-backed).
+   */
+  async listSessions(): Promise<ListSessionsResponse> {
+    return agentApiClient.get<ListSessionsResponse>("sessions");
+  }
+
+  /**
+   * Create a new backend session (root).
+   */
+  async createSession(req: CreateSessionRequest): Promise<CreateSessionResponse> {
+    return agentApiClient.post<CreateSessionResponse>("sessions", req);
+  }
+
+  /**
+   * Patch a session (title/pinned).
+   */
+  async patchSession(sessionId: string, req: PatchSessionRequest): Promise<void> {
+    const encodedSessionId = encodeURIComponent(sessionId);
+    await agentApiClient.patch(`sessions/${encodedSessionId}`, req);
+  }
+
+  /**
+   * Clear a session's messages/events (keeps the session).
+   */
+  async clearSession(sessionId: string): Promise<void> {
+    const encodedSessionId = encodeURIComponent(sessionId);
+    await agentApiClient.post(`sessions/${encodedSessionId}/clear`);
+  }
+
+  /**
+   * Cleanup sessions by mode.
+   */
+  async cleanupSessions(
+    mode: "all" | "empty" | "children",
+    keepPinned: boolean,
+  ): Promise<void> {
+    await agentApiClient.post("sessions/cleanup", {
+      mode,
+      keep_pinned: keepPinned,
+    });
+  }
+
+  /**
+   * Development-only: reset V2 session storage (deletes sessions/ and resets sessions.json index).
+   */
+  async devResetSessions(): Promise<void> {
+    await agentApiClient.post("dev/reset");
+  }
+
+  async listSchedules(): Promise<ListSchedulesResponse> {
+    return agentApiClient.get<ListSchedulesResponse>("schedules");
+  }
+
+  async createSchedule(req: CreateScheduleRequest): Promise<ScheduleEntry> {
+    return agentApiClient.post<ScheduleEntry>("schedules", req);
+  }
+
+  async patchSchedule(
+    scheduleId: string,
+    req: PatchScheduleRequest,
+  ): Promise<ScheduleEntry> {
+    const encoded = encodeURIComponent(scheduleId);
+    return agentApiClient.patch<ScheduleEntry>(`schedules/${encoded}`, req);
+  }
+
+  async deleteSchedule(scheduleId: string): Promise<void> {
+    const encoded = encodeURIComponent(scheduleId);
+    await agentApiClient.delete(`schedules/${encoded}`);
+  }
+
+  async runScheduleNow(scheduleId: string): Promise<void> {
+    const encoded = encodeURIComponent(scheduleId);
+    await agentApiClient.post(`schedules/${encoded}/run`);
+  }
+
+  async listScheduleSessions(
+    scheduleId: string,
+  ): Promise<ListScheduleSessionsResponse> {
+    const encoded = encodeURIComponent(scheduleId);
+    return agentApiClient.get<ListScheduleSessionsResponse>(
+      `schedules/${encoded}/sessions`,
+    );
   }
 
   /**
@@ -349,10 +552,19 @@ export class AgentClient {
           event.tool_calls_count !== undefined &&
           event.version !== undefined
         ) {
+          const status = event.status;
+          const isTodoStatus =
+            status === "pending" ||
+            status === "in_progress" ||
+            status === "completed" ||
+            status === "blocked";
+          if (!isTodoStatus) {
+            break;
+          }
           handlers.onTodoListItemProgress?.({
             session_id: event.session_id,
             item_id: event.item_id,
-            status: event.status,
+            status,
             tool_calls_count: event.tool_calls_count,
             version: event.version,
           });
@@ -400,6 +612,43 @@ export class AgentClient {
       case "context_summarized":
         if (event.summary_info) {
           handlers.onContextSummarized?.(event.summary_info);
+        }
+        break;
+      case "sub_session_started":
+        if (event.parent_session_id && event.child_session_id) {
+          handlers.onSubSessionStarted?.(
+            event.parent_session_id,
+            event.child_session_id,
+            event.title,
+          );
+        }
+        break;
+      case "sub_session_event":
+        if (event.parent_session_id && event.child_session_id && event.event) {
+          handlers.onSubSessionEvent?.(
+            event.parent_session_id,
+            event.child_session_id,
+            event.event,
+          );
+        }
+        break;
+      case "sub_session_heartbeat":
+        if (event.parent_session_id && event.child_session_id && event.timestamp) {
+          handlers.onSubSessionHeartbeat?.(
+            event.parent_session_id,
+            event.child_session_id,
+            event.timestamp,
+          );
+        }
+        break;
+      case "sub_session_completed":
+        if (event.parent_session_id && event.child_session_id) {
+          handlers.onSubSessionCompleted?.(
+            event.parent_session_id,
+            event.child_session_id,
+            typeof event.status === "string" ? event.status : "completed",
+            event.error,
+          );
         }
         break;
       case "complete":

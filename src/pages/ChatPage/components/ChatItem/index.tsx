@@ -1,5 +1,5 @@
 import React, { memo, useState } from "react";
-import { List, Button, Input, Tooltip, theme } from "antd";
+import { List, Button, Input, Tag, Tooltip, theme } from "antd";
 import {
   DeleteOutlined,
   PushpinFilled,
@@ -228,7 +228,34 @@ const ChatItemComponent: React.FC<ChatItemProps> = ({
               size="small"
             />
           ) : (
-            <div style={titleStyle}>{chat.title}</div>
+            <div
+              style={{
+                ...titleStyle,
+                display: "flex",
+                alignItems: "center",
+                gap: token.marginXS,
+                minWidth: 0,
+              }}
+            >
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {chat.title}
+              </span>
+              {chat.kind === "child" ? (
+                <Tag
+                  color="geekblue"
+                  style={{ marginInlineEnd: 0, flex: "0 0 auto" }}
+                >
+                  Child
+                </Tag>
+              ) : null}
+            </div>
           )
         }
       />

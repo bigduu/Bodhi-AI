@@ -12,16 +12,12 @@ import { useSettingsViewStore } from "../../../../shared/store/settingsViewStore
 import { useChatTitleGeneration } from "../../hooks/useChatManager/useChatTitleGeneration";
 import { selectChatById, useAppStore } from "../../store";
 import type { ChatItem, UserSystemPrompt } from "../../types/chat";
-import {
-  findLeafIdByChatId,
-  useUILayoutStore,
-} from "@shared/store/uiLayoutStore";
-import { uiLayoutDebug } from "@shared/utils/debugFlags";
+import { useUILayoutStore } from "@shared/store/uiLayoutStore";
+import { openSession } from "../../utils/openSession";
 
 export const useChatSidebarState = () => {
   const chats = useAppStore((state) => state.chats);
   const currentChatId = useAppStore((state) => state.currentChatId);
-  const selectChatGlobal = useAppStore((state) => state.selectChat);
   const deleteChat = useAppStore((state) => state.deleteChat);
   const deleteChats = useAppStore((state) => state.deleteChats);
   const pinChat = useAppStore((state) => state.pinChat);
@@ -35,9 +31,6 @@ export const useChatSidebarState = () => {
 
   const sidebarCollapsed = useUILayoutStore((s) => s.sidebar.collapsed);
   const setSidebarCollapsed = useUILayoutStore((s) => s.setSidebarCollapsed);
-  const activeLeafId = useUILayoutStore((s) => s.activeLeafId);
-  const setActiveLeafId = useUILayoutStore((s) => s.setActiveLeafId);
-  const setLeafChatId = useUILayoutStore((s) => s.setLeafChatId);
   const clearChatFromAllLeaves = useUILayoutStore(
     (s) => s.clearChatFromAllLeaves,
   );
@@ -61,7 +54,7 @@ export const useChatSidebarState = () => {
           : "");
 
       const newChatData: Omit<ChatItem, "id"> = {
-        title: title || "New Chat",
+        title: title || "New Session",
         createdAt: Date.now(),
         messages: [],
         config: {
@@ -84,18 +77,10 @@ export const useChatSidebarState = () => {
       const { activeLeafId: targetLeafId } = useUILayoutStore.getState();
       useUILayoutStore.getState().setLeafChatId(targetLeafId, newChatId);
       useUILayoutStore.getState().setActiveLeafId(targetLeafId);
-
-      uiLayoutDebug("createNewChat -> assign", {
-        targetLeafId,
-        newChatId,
-      });
     },
     [
-      activeLeafId,
       addChat,
       lastSelectedPromptId,
-      setActiveLeafId,
-      setLeafChatId,
       systemPrompts,
     ],
   );
@@ -132,7 +117,35 @@ export const useChatSidebarState = () => {
     });
   };
 
-  const groupedChatsByDate = groupChatsByDate(chats);
+  // Folder model: sidebar groups only root sessions by date.
+  // Child sessions are rendered nested under their root.
+  const rootSessions = useMemo(
+    () => chats.filter((c) => c.kind !== "child"),
+    [chats],
+  );
+
+  const childrenByRoot = useMemo(() => {
+    const map: Record<string, ChatItem[]> = {};
+    for (const c of chats) {
+      if (c.kind !== "child") continue;
+      const rootId = c.parentSessionId || c.rootSessionId;
+      if (!rootId) continue;
+      if (!map[rootId]) map[rootId] = [];
+      map[rootId].push(c);
+    }
+    Object.keys(map).forEach((rootId) => {
+      map[rootId].sort((a, b) => {
+        // pinned first, then most recently updated
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        const aTime = Date.parse(a.updatedAt || "") || a.createdAt || 0;
+        const bTime = Date.parse(b.updatedAt || "") || b.createdAt || 0;
+        return bTime - aTime;
+      });
+    });
+    return map;
+  }, [chats]);
+
+  const groupedChatsByDate = groupChatsByDate(rootSessions);
   const sortedDateKeys = getSortedDateKeys(groupedChatsByDate);
 
   const handlePinChat = useCallback(
@@ -173,9 +186,9 @@ export const useChatSidebarState = () => {
 
   const handleDelete = (chatId: string) => {
     Modal.confirm({
-      title: "Delete Chat",
+      title: "Delete Session",
       content:
-        "Are you sure you want to delete this chat? This action cannot be undone.",
+        "Are you sure you want to delete this session? This action cannot be undone.",
       okText: "Delete",
       okType: "danger",
       cancelText: "Cancel",
@@ -209,8 +222,8 @@ export const useChatSidebarState = () => {
     const chatCount = getChatCountByDate(groupedChatsByDate, dateKey);
 
     Modal.confirm({
-      title: `Delete all chats from ${dateKey}`,
-      content: `Are you sure you want to delete all ${chatCount} chats from ${dateKey}? This action cannot be undone.`,
+      title: `Delete all sessions from ${dateKey}`,
+      content: `Are you sure you want to delete all ${chatCount} sessions from ${dateKey}? This action cannot be undone.`,
       okText: "Delete",
       okType: "danger",
       cancelText: "Cancel",
@@ -231,7 +244,7 @@ export const useChatSidebarState = () => {
 
   const handleSystemPromptSelect = async (preset: UserSystemPrompt) => {
     try {
-      await createNewChat(`New Chat - ${preset.name}`, {
+      await createNewChat(`New Session - ${preset.name}`, {
         config: {
           systemPromptId: preset.id,
           baseSystemPrompt: preset.content,
@@ -251,72 +264,49 @@ export const useChatSidebarState = () => {
     }
   };
 
-  const selectChat = useCallback(
-    (chatId: string) => {
-      // Read latest layout state to avoid stale closure when split/focus changes
-      // and the user immediately clicks a chat in the sidebar.
-      const {
-        activeLeafId: targetLeafId,
-        leafChatIds: leafChatIdsNow,
-      } = useUILayoutStore.getState();
+  const selectChat = useCallback((chatId: string) => openSession(chatId), []);
 
-      // If the chat is already open in a pane, focus it.
-      const existingLeafId = findLeafIdByChatId(leafChatIdsNow, chatId);
-      const activeLeafChatId = leafChatIdsNow[targetLeafId] ?? null;
+  // Root -> expanded children state (UI-only)
+  const [expandedRoots, setExpandedRoots] = useState<Set<string>>(new Set());
 
-      uiLayoutDebug("sidebar selectChat (input)", {
-        activeLeafId: targetLeafId,
-        activeLeafChatId,
-        selectedChatId: chatId,
-        existingLeafId,
-      });
+  const expandedRootIds = useMemo(() => {
+    const next = new Set(expandedRoots);
 
-      if (existingLeafId) {
-        if (existingLeafId === targetLeafId) {
-          // no-op
-          uiLayoutDebug("sidebar selectChat (decision)", {
-            action: "noop_already_active",
-            leafId: targetLeafId,
-            chatId,
-          });
-        } else if (!activeLeafChatId) {
-          // If the currently focused pane is empty, prefer filling it even if the
-          // chat is already open elsewhere. This matches user expectations when
-          // creating a new split and selecting a chat from the sidebar.
-          useUILayoutStore.getState().setLeafChatId(targetLeafId, chatId);
-          useUILayoutStore.getState().setActiveLeafId(targetLeafId);
-          uiLayoutDebug("sidebar selectChat (decision)", {
-            action: "assign_to_empty_active_leaf",
-            fromLeafId: existingLeafId,
-            toLeafId: targetLeafId,
-            chatId,
-          });
-        } else {
-          useUILayoutStore.getState().setActiveLeafId(existingLeafId);
-          uiLayoutDebug("sidebar selectChat (decision)", {
-            action: "focus_existing_leaf",
-            leafId: existingLeafId,
-            chatId,
-          });
-        }
-      } else {
-        useUILayoutStore.getState().setLeafChatId(targetLeafId, chatId);
-        uiLayoutDebug("sidebar selectChat (decision)", {
-          action: "assign_to_active_leaf",
-          leafId: targetLeafId,
-          chatId,
-        });
+    // Ensure current selection is visible.
+    const current = chats.find((c) => c.id === currentChatId);
+    if (current) {
+      const rootId =
+        current.kind === "child"
+          ? current.parentSessionId || current.rootSessionId
+          : current.id;
+      if (rootId) next.add(rootId);
+    }
+
+    // Pinned child implies its root should stay expanded (pin == "keep visible").
+    for (const c of chats) {
+      if (c.kind === "child" && c.pinned) {
+        const rootId = c.parentSessionId || c.rootSessionId;
+        if (rootId) next.add(rootId);
       }
+    }
 
-      selectChatGlobal(chatId);
-    },
-    [
-      selectChatGlobal,
-    ],
-  );
+    return next;
+  }, [chats, currentChatId, expandedRoots]);
+
+  const toggleRootExpanded = useCallback((rootId: string) => {
+    setExpandedRoots((prev) => {
+      const next = new Set(prev);
+      if (next.has(rootId)) next.delete(rootId);
+      else next.add(rootId);
+      return next;
+    });
+  }, []);
 
   return {
-    chats,
+    chats: rootSessions,
+    childrenByRoot,
+    expandedRootIds,
+    toggleRootExpanded,
     collapsed: sidebarCollapsed,
     currentChatId,
     expandedKeys,

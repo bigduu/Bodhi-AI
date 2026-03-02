@@ -19,6 +19,9 @@ export const ChatSidebar: React.FC = () => {
 
   const {
     chats,
+    childrenByRoot,
+    expandedRootIds,
+    toggleRootExpanded,
     collapsed,
     currentChatId,
     expandedKeys,
@@ -96,6 +99,9 @@ export const ChatSidebar: React.FC = () => {
         {!collapsed ? (
           <ChatSidebarDateGroups
             groupedChatsByDate={groupedChatsByDate}
+            childrenByRoot={childrenByRoot}
+            expandedRootIds={expandedRootIds}
+            onToggleRootExpanded={toggleRootExpanded}
             sortedDateKeys={sortedDateKeys}
             expandedKeys={expandedKeys}
             onCollapseChange={handleCollapseChange}
@@ -134,7 +140,7 @@ export const ChatSidebar: React.FC = () => {
         onClose={handleNewChatSelectorClose}
         onSelect={handleSystemPromptSelect}
         prompts={systemPrompts}
-        title="Create New Chat - Select System Prompt"
+        title="Create New Session - Select System Prompt"
         showCancelButton={true}
       />
     </div>

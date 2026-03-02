@@ -244,7 +244,7 @@ export const MultiPaneChatView: React.FC = () => {
   // NOTE: We intentionally avoid "two-way binding" between global `currentChatId`
   // and pane assignments. The sidebar and pane click handlers already coordinate
   // `setLeafChatId(...)` and `selectChat(...)`. Extra sync effects here can create
-  // selection ping-pong (especially during Create New Chat) and trigger
+  // selection ping-pong (especially during Create New Session) and trigger
   // "Maximum update depth exceeded".
 
   // Clear assignments for chats when they are deleted via store actions elsewhere.

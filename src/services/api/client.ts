@@ -267,6 +267,40 @@ export class ApiClient {
   }
 
   /**
+   * Make a PATCH request with timeout and retry
+   */
+  async patch<T>(
+    path: string,
+    data?: unknown,
+    options?: RequestInit,
+  ): Promise<T> {
+    const url = this.buildUrl(path);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+
+    try {
+      const response = await this.fetchWithRetry(
+        url,
+        {
+          ...options,
+          method: "PATCH",
+          headers: {
+            ...this.defaultHeaders,
+            ...options?.headers,
+          },
+          body: data ? JSON.stringify(data) : undefined,
+          signal: controller.signal,
+        },
+        3,
+      );
+      return this.handleResponse<T>(response);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  /**
    * Make a DELETE request with timeout and retry
    */
   async delete<T>(path: string, options?: RequestInit): Promise<T> {

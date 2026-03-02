@@ -296,8 +296,8 @@ export const InputContainer: React.FC<InputContainerProps> = ({
   return (
     <div
       style={{
-        padding: `${token.paddingLG}px ${token.paddingMD}px`,
-        minHeight: "80px",
+        // Keep the input area compact; the inner MessageInput already enforces a sensible min-height.
+        padding: `${token.paddingXXS}px ${token.paddingSM}px`,
         background: token.colorBgContainer,
         borderTop: isCenteredLayout
           ? "none"
@@ -324,27 +324,6 @@ export const InputContainer: React.FC<InputContainerProps> = ({
           style={{ marginBottom: token.marginSM }}
         />
       )}
-
-      {/* Agent Status Indicator */}
-      <div
-        style={{
-          marginBottom: token.marginXS,
-          display: "flex",
-          justifyContent: "flex-end",
-        }}
-      >
-        <Tag
-          color={agentStatusConfig.color}
-          icon={agentStatusConfig.icon}
-          style={{
-            fontSize: "11px",
-            cursor: agentStatusConfig.actionable ? "pointer" : "default",
-          }}
-          onClick={handleModelStatusClick}
-        >
-          {agentStatusConfig.text}
-        </Tag>
-      </div>
 
       {isToolSpecificMode && (
         <Alert
@@ -402,6 +381,24 @@ export const InputContainer: React.FC<InputContainerProps> = ({
         placeholder={placeholder}
         allowImages={true}
         disabled={!activeModel}
+        statusIndicator={
+          <Tag
+            color={agentStatusConfig.color}
+            icon={agentStatusConfig.icon}
+            style={{
+              fontSize: "11px",
+              cursor: agentStatusConfig.actionable ? "pointer" : "default",
+              maxWidth: 160,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={agentStatusConfig.text}
+            onClick={handleModelStatusClick}
+          >
+            {agentStatusConfig.text}
+          </Tag>
+        }
         isWorkflowSelectorVisible={commandState.showCommandSelector}
         textAreaRef={textAreaRef}
         validateMessage={(message) => {

@@ -63,7 +63,7 @@ export function useMessageStreaming(
     abortRef.current?.abort();
 
     // Also tell backend to stop agent execution
-    const sessionId = currentChat?.config?.agentSessionId;
+    const sessionId = currentChat?.id;
     if (sessionId) {
       agentClientRef.current.stopGeneration(sessionId).catch((error) => {
         console.error(
@@ -72,7 +72,7 @@ export function useMessageStreaming(
         );
       });
     }
-  }, [currentChat?.config?.agentSessionId]);
+  }, [currentChat?.id]);
 
   /**
    * Send message using Agent Server
@@ -89,9 +89,6 @@ export function useMessageStreaming(
       abortRef.current = controller;
 
       try {
-        const baseSystemPrompt = (
-          currentChat?.config?.baseSystemPrompt || ""
-        ).trim();
         const enhancePrompt = getSystemPromptEnhancementText().trim();
         // Normalize workspace path: remove trailing slashes, handle cross-platform
         const rawWorkspacePath = currentChat?.config?.workspacePath || "";
@@ -103,35 +100,29 @@ export function useMessageStreaming(
         // Step 1: Send message to Agent
         const response = await agentClientRef.current.sendMessage({
           message: content,
-          session_id: currentChat?.config?.agentSessionId,
-          system_prompt: baseSystemPrompt || undefined,
+          session_id: chatId,
           enhance_prompt: enhancePrompt || undefined,
           workspace_path: workspacePath || undefined,
-          images: userMessage.images?.map((img) => ({
-            base64: img.base64,
-            name: img.name,
-            size: img.size,
-            type: img.type,
-          })),
+          images: userMessage.images
+            ?.filter((img) => Boolean(img.base64))
+            .map((img) => ({
+              base64: img.base64 as string,
+              name: img.name,
+              size: img.size,
+              type: img.type,
+            })),
           model: activeModel,
         });
 
         const { session_id } = response;
-        const currentConfig = currentChat?.config;
-        if (currentConfig && currentConfig.agentSessionId !== session_id) {
-          deps.updateChat(chatId, {
-            config: {
-              ...currentConfig,
-              agentSessionId: session_id,
-            },
-          });
+        if (session_id !== chatId) {
+          console.warn(
+            `[useMessageStreaming] Backend returned unexpected session_id=${session_id} for chatId=${chatId}`,
+          );
         }
 
         // Step 2: Trigger execution (idempotent)
-        const executeResult = await agentClientRef.current.execute(
-          session_id,
-          activeModel,
-        );
+        const executeResult = await agentClientRef.current.execute(chatId, activeModel);
         console.log("[Agent] Execute status:", executeResult.status);
 
         // Step 3: Set processing flag to activate event subscription (handled by useAgentEventSubscription)

@@ -56,7 +56,7 @@ const SystemSettingsAppTab: React.FC<SystemSettingsAppTabProps> = ({
         style={{ width: "100%" }}
       >
         <Flex align="center" gap={token.marginSM}>
-          <Text strong>Auto-generate Chat Titles</Text>
+          <Text strong>Auto-generate Session Titles</Text>
           <Switch
             checked={autoGenerateTitles}
             loading={isUpdatingAutoTitlePreference}
@@ -84,27 +84,27 @@ const SystemSettingsAppTab: React.FC<SystemSettingsAppTabProps> = ({
           />
         </Flex>
         <Popconfirm
-          title="Delete all chats"
-          description="Are you sure? This will delete all chats except pinned."
+          title="Delete all sessions"
+          description="Are you sure? This will delete all sessions except pinned."
           onConfirm={onDeleteAll}
           okText="Yes, delete all"
           cancelText="Cancel"
           placement="top"
         >
           <Button danger block icon={<DeleteOutlined />}>
-            Delete All Chats
+            Delete All Sessions
           </Button>
         </Popconfirm>
         <Popconfirm
-          title="Delete empty chats"
-          description="Are you sure? This will delete all chats with no messages (except pinned)."
+          title="Delete empty sessions"
+          description="Are you sure? This will delete all sessions with no messages (except pinned)."
           onConfirm={onDeleteEmpty}
           okText="Yes, delete empty"
           cancelText="Cancel"
           placement="top"
         >
           <Button danger block icon={<DeleteOutlined />}>
-            Delete Empty Chats
+            Delete Empty Sessions
           </Button>
         </Popconfirm>
         <Popconfirm
@@ -138,7 +138,7 @@ const SystemSettingsAppTab: React.FC<SystemSettingsAppTabProps> = ({
             <div>
               <p>Are you sure? This will:</p>
               <ul style={{ margin: 0, paddingLeft: 16 }}>
-                <li>Delete ALL chats (including pinned)</li>
+                <li>Delete ALL sessions (including pinned)</li>
                 <li>Clear all local storage data</li>
                 <li>Reset config.json to default</li>
                 <li>Trigger the initial setup flow on next launch</li>

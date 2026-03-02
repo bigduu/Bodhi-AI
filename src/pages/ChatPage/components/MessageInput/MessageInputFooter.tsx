@@ -20,6 +20,11 @@ const MessageInputFooter: React.FC<MessageInputFooterProps> = ({
   isProcessingAttachments,
   token,
 }) => {
+  // Avoid always reserving vertical space for the footer. Show only when it's useful.
+  if (!isProcessingAttachments && !isNearCharLimit && !isOverCharLimit) {
+    return null;
+  }
+
   return (
     <>
       <Flex justify="flex-end" style={{ marginTop: token.marginXXS }}>

@@ -13,6 +13,9 @@ import { getChatCountByDate } from "../../utils/chatUtils";
 
 type ChatSidebarDateGroupsProps = {
   groupedChatsByDate: Record<string, ChatItem[]>;
+  childrenByRoot: Record<string, ChatItem[]>;
+  expandedRootIds: Set<string>;
+  onToggleRootExpanded: (rootId: string) => void;
   sortedDateKeys: string[];
   expandedKeys: string[];
   onCollapseChange: (keys: string | string[]) => void;
@@ -33,6 +36,9 @@ type ChatSidebarDateGroupsProps = {
 
 export const ChatSidebarDateGroups: React.FC<ChatSidebarDateGroupsProps> = ({
   groupedChatsByDate,
+  childrenByRoot,
+  expandedRootIds,
+  onToggleRootExpanded,
   sortedDateKeys,
   expandedKeys,
   onCollapseChange,
@@ -81,10 +87,10 @@ export const ChatSidebarDateGroups: React.FC<ChatSidebarDateGroupsProps> = ({
         description={
           <Space direction="vertical" size={4}>
             <span style={{ color: token.colorTextSecondary }}>
-              No chats yet
+              No sessions yet
             </span>
             <span style={{ color: token.colorTextSecondary, fontSize: 12 }}>
-              Click "New Chat" to get started
+              Click "New Session" to get started
             </span>
           </Space>
         }
@@ -162,25 +168,91 @@ export const ChatSidebarDateGroups: React.FC<ChatSidebarDateGroupsProps> = ({
                   dataSource={dateGroup}
                   split={false}
                   renderItem={(chat: ChatItem) => (
-                    <ChatItemComponent
-                      key={chat.id}
-                      chat={chat}
-                      isSelected={chat.id === currentChatId}
-                      onSelect={onSelectChat}
-                      onDelete={onDeleteChat}
-                      onPin={onPinChat}
-                      onUnpin={onUnpinChat}
-                      onEdit={onEditTitle}
-                      onGenerateTitle={onGenerateTitle}
-                      isGeneratingTitle={
-                        titleGenerationState[chat.id]?.status === "loading"
-                      }
-                      titleGenerationError={
-                        titleGenerationState[chat.id]?.status === "error"
-                          ? titleGenerationState[chat.id]?.error
-                          : undefined
-                      }
-                    />
+                    <div key={chat.id}>
+                      <Flex align="center" gap={6}>
+                        {childrenByRoot[chat.id]?.length ? (
+                          <Button
+                            size="small"
+                            type="text"
+                            style={{ padding: 0, width: 22 }}
+                            aria-label={
+                              expandedRootIds.has(chat.id)
+                                ? "Collapse child sessions"
+                                : "Expand child sessions"
+                            }
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onToggleRootExpanded(chat.id);
+                            }}
+                          >
+                            {expandedRootIds.has(chat.id) ? (
+                              <DownOutlined />
+                            ) : (
+                              <RightOutlined />
+                            )}
+                          </Button>
+                        ) : (
+                          <div style={{ width: 22 }} />
+                        )}
+
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <ChatItemComponent
+                            chat={chat}
+                            isSelected={chat.id === currentChatId}
+                            onSelect={onSelectChat}
+                            onDelete={onDeleteChat}
+                            onPin={onPinChat}
+                            onUnpin={onUnpinChat}
+                            onEdit={onEditTitle}
+                            onGenerateTitle={onGenerateTitle}
+                            isGeneratingTitle={
+                              titleGenerationState[chat.id]?.status === "loading"
+                            }
+                            titleGenerationError={
+                              titleGenerationState[chat.id]?.status === "error"
+                                ? titleGenerationState[chat.id]?.error
+                                : undefined
+                            }
+                          />
+                        </div>
+                      </Flex>
+
+                      {expandedRootIds.has(chat.id) &&
+                      (childrenByRoot[chat.id]?.length ?? 0) > 0 ? (
+                        <div style={{ marginLeft: 22, marginTop: 2 }}>
+                          <List
+                            itemLayout="horizontal"
+                            dataSource={childrenByRoot[chat.id]}
+                            split={false}
+                            renderItem={(child: ChatItem) => (
+                              <div key={child.id} style={{ paddingLeft: 12 }}>
+                                <ChatItemComponent
+                                  chat={child}
+                                  isSelected={child.id === currentChatId}
+                                  onSelect={onSelectChat}
+                                  onDelete={onDeleteChat}
+                                  onPin={onPinChat}
+                                  onUnpin={onUnpinChat}
+                                  onEdit={onEditTitle}
+                                  onGenerateTitle={onGenerateTitle}
+                                  isGeneratingTitle={
+                                    titleGenerationState[child.id]?.status ===
+                                    "loading"
+                                  }
+                                  titleGenerationError={
+                                    titleGenerationState[child.id]?.status ===
+                                    "error"
+                                      ? titleGenerationState[child.id]?.error
+                                      : undefined
+                                  }
+                                />
+                              </div>
+                            )}
+                          />
+                        </div>
+                      ) : null}
+                    </div>
                   )}
                 />
               </div>

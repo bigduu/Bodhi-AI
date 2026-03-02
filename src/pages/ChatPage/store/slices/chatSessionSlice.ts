@@ -1,27 +1,261 @@
 import { StateCreator } from "zustand";
-import { ChatItem, Message } from "../../types/chat";
-import { AgentClient } from "../../services/AgentService";
+import {
+  ChatItem,
+  Message,
+  SystemMessage,
+  UserMessage,
+  AssistantTextMessage,
+  AssistantToolCallMessage,
+  AssistantToolResultMessage,
+  MessageImage,
+} from "../../types/chat";
+import { AgentClient, SessionSummary } from "../../services/AgentService";
 import { getDefaultSystemPrompts } from "../../utils/defaultSystemPrompts";
+import { getBackendBaseUrlSync } from "@shared/utils/backendBaseUrl";
 import type { AppState } from "../";
 
-const CHAT_STORAGE_KEY = "copilot_chats_v3";
-const ACTIVE_CHAT_ID_KEY = "copilot_active_chat_id";
 const AUTO_TITLE_KEY = "copilot_auto_generate_titles";
 const agentClient = AgentClient.getInstance();
 const DEFAULT_BASE_SYSTEM_PROMPT =
   getDefaultSystemPrompts()[0]?.content?.trim() || "";
 
+const safeRandomId = (): string => {
+  try {
+    const c: any = (globalThis as any).crypto;
+    if (c?.randomUUID) return c.randomUUID();
+  } catch {
+    // ignore
+  }
+  return `id_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+};
+
+const getAgentApiBaseUrlSync = (): string => {
+  let normalized = getBackendBaseUrlSync().trim().replace(/\/+$/, "");
+  // Remove /v1 suffix if present, then add /api/v1
+  if (normalized.endsWith("/v1")) {
+    normalized = normalized.slice(0, -3);
+  }
+  return `${normalized}/api/v1`;
+};
+
+const parseBambooAttachmentUrl = (
+  url: string,
+): { sessionId: string; attachmentId: string } | null => {
+  const trimmed = url.trim();
+  if (!trimmed.startsWith("bamboo-attachment://")) return null;
+  const rest = trimmed.slice("bamboo-attachment://".length);
+  const [sessionId, attachmentId] = rest.split("/", 2);
+  if (!sessionId || !attachmentId) return null;
+  return { sessionId, attachmentId };
+};
+
+const resolveImageUrlForRender = (rawUrl: string): string => {
+  const ref = parseBambooAttachmentUrl(rawUrl);
+  if (!ref) return rawUrl;
+  const base = getAgentApiBaseUrlSync();
+  return `${base}/sessions/${encodeURIComponent(ref.sessionId)}/attachments/${encodeURIComponent(ref.attachmentId)}`;
+};
+
+const sessionSummaryToChatItem = (s: SessionSummary): ChatItem => {
+  const createdAtMs = Number.isFinite(Date.parse(s.created_at))
+    ? Date.parse(s.created_at)
+    : Date.now();
+
+  const tokenUsage = s.token_usage
+    ? {
+        systemTokens: s.token_usage.system_tokens,
+        summaryTokens: s.token_usage.summary_tokens,
+        windowTokens: s.token_usage.window_tokens,
+        totalTokens: s.token_usage.total_tokens,
+        budgetLimit: s.token_usage.budget_limit,
+      }
+    : undefined;
+  return {
+    id: s.id,
+    kind: s.kind,
+    parentSessionId: s.parent_session_id ?? null,
+    rootSessionId: s.root_session_id,
+    spawnDepth: s.spawn_depth,
+    createdByScheduleId: s.created_by_schedule_id ?? null,
+    isRunning: s.is_running,
+    updatedAt: s.updated_at,
+    lastActivityAt: s.last_activity_at,
+    messageCount: s.message_count,
+    hasAttachments: s.has_attachments,
+    title: s.title || "Session",
+    createdAt: createdAtMs,
+    pinned: s.pinned,
+    messages: [],
+    config: {
+      systemPromptId: "general_assistant",
+      baseSystemPrompt: DEFAULT_BASE_SYSTEM_PROMPT,
+      lastUsedEnhancedPrompt: null,
+      tokenUsage,
+      truncationOccurred: s.token_usage?.truncation_occurred,
+      segmentsRemoved: s.token_usage?.segments_removed,
+    },
+    currentInteraction: null,
+  };
+};
+
+const mapHistoryMessagesToUi = (
+  sessionId: string,
+  history: Array<{
+    id: string;
+    role: "user" | "assistant" | "tool" | "system";
+    content: string;
+    content_parts?: Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string; detail?: string } }
+    >;
+    tool_calls?: Array<{
+      id: string;
+      type: string;
+      function: { name: string; arguments: string };
+    }>;
+    tool_call_id?: string;
+    created_at: string;
+  }>,
+): Message[] => {
+  const toolNameByCallId = new Map<string, string>();
+  const out: Message[] = [];
+
+  for (const msg of history) {
+    const createdAt = msg.created_at || new Date().toISOString();
+
+    if (msg.role === "system") {
+      const sys: SystemMessage = {
+        role: "system",
+        id: msg.id,
+        createdAt,
+        content: msg.content || "",
+      };
+      out.push(sys);
+      continue;
+    }
+
+    if (msg.role === "user") {
+      const images: MessageImage[] = [];
+      for (const part of msg.content_parts || []) {
+        if (part.type !== "image_url") continue;
+        const rawUrl = part.image_url?.url || "";
+        if (!rawUrl) continue;
+        const resolved = resolveImageUrlForRender(rawUrl);
+        const ref = parseBambooAttachmentUrl(rawUrl);
+        images.push({
+          id: safeRandomId(),
+          url: resolved,
+          name: ref ? `attachment-${ref.attachmentId}` : "image",
+          size: 0,
+          type: "image/*",
+        });
+      }
+
+      const user: UserMessage = {
+        role: "user",
+        id: msg.id,
+        createdAt,
+        content: msg.content || "",
+        images: images.length ? images : undefined,
+      };
+      out.push(user);
+      continue;
+    }
+
+    if (msg.role === "assistant") {
+      const toolCalls = msg.tool_calls || [];
+      if (toolCalls.length > 0) {
+        for (const call of toolCalls) {
+          toolNameByCallId.set(call.id, call.function?.name || "unknown");
+        }
+        const toolCallMsg: AssistantToolCallMessage = {
+          role: "assistant",
+          type: "tool_call",
+          id: msg.id,
+          createdAt,
+          toolCalls: toolCalls.map((c) => ({
+            toolCallId: c.id,
+            toolName: c.function?.name || "unknown",
+            parameters: (() => {
+              try {
+                return JSON.parse(c.function?.arguments || "{}") as any;
+              } catch {
+                return { raw: c.function?.arguments || "" };
+              }
+            })(),
+            streamingOutput: "",
+          })),
+        };
+        out.push(toolCallMsg);
+        continue;
+      }
+
+      const asst: AssistantTextMessage = {
+        role: "assistant",
+        type: "text",
+        id: msg.id,
+        createdAt,
+        content: msg.content || "",
+      };
+      out.push(asst);
+      continue;
+    }
+
+    if (msg.role === "tool") {
+      const toolCallId = msg.tool_call_id || "unknown";
+      const toolName = toolNameByCallId.get(toolCallId) || "unknown";
+      const toolResult: AssistantToolResultMessage = {
+        role: "assistant",
+        type: "tool_result",
+        id: msg.id,
+        createdAt,
+        toolName,
+        toolCallId,
+        result: {
+          tool_name: toolName,
+          result: msg.content || "",
+          display_preference: "Default",
+        },
+        isError: false,
+      };
+      out.push(toolResult);
+      continue;
+    }
+  }
+
+  // Ensure we always have at least one message-less session - UI can still render.
+  // The "sessionId" param is currently unused but kept for future mapping needs.
+  void sessionId;
+  return out;
+};
+
 export interface ChatSlice {
-  // State
+  // State (backend session list)
   chats: ChatItem[];
   currentChatId: string | null;
-  latestActiveChatId: string | null; // Store the last active chat ID
-  processingChats: Set<string>; // Track which chats are currently processing
+  latestActiveChatId: string | null;
+  processingChats: Set<string>;
   autoGenerateTitles: boolean;
   isUpdatingAutoTitlePreference: boolean;
+  // parentSessionId -> childSessionId -> progress
+  subSessionsByParent: Record<
+    string,
+    Record<
+      string,
+      {
+        title?: string;
+        status?: string;
+        error?: string;
+        lastHeartbeatAt?: string;
+        lastEventAt?: string;
+        // Small rolling preview of child output (token stream).
+        outputPreview?: string;
+      }
+    >
+  >;
 
   // Actions
-  addChat: (chat: Omit<ChatItem, "id">) => Promise<string>; // Returns new chat ID
+  addChat: (chat: Omit<ChatItem, "id">) => Promise<string>;
   selectChat: (chatId: string | null) => void;
   deleteChat: (chatId: string) => Promise<void>;
   deleteChats: (chatIds: string[]) => Promise<void>;
@@ -39,6 +273,31 @@ export interface ChatSlice {
   deleteMessage: (chatId: string, messageId: string) => void;
 
   loadChats: () => Promise<void>;
+  refreshChats: () => Promise<void>;
+  loadChatHistory: (
+    chatId: string,
+    options?: {
+      mode?: "replace" | "monotonic";
+      retries?: number;
+      retryDelayMs?: number;
+      // When true, retry while backend history ends with a user message.
+      // This helps avoid a race where SSE emits "complete" before the session is persisted.
+      waitForAssistant?: boolean;
+    },
+  ) => Promise<void>;
+  upsertSubSessionProgress: (
+    parentSessionId: string,
+    childSessionId: string,
+    patch: Partial<{
+      title?: string;
+      status?: string;
+      error?: string;
+      lastHeartbeatAt?: string;
+      lastEventAt?: string;
+      outputPreview?: string;
+    }>,
+  ) => void;
+  clearSubSessionProgress: (parentSessionId: string, childSessionId: string) => void;
 
   setChatProcessing: (chatId: string, isProcessing: boolean) => void;
   isChatProcessing: (chatId: string) => boolean;
@@ -49,25 +308,38 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
   set,
   get,
 ) => ({
-  // Initial state
   chats: [],
   currentChatId: null,
   latestActiveChatId: null,
   processingChats: new Set<string>(),
   autoGenerateTitles: true,
   isUpdatingAutoTitlePreference: false,
+  subSessionsByParent: {},
 
-  // Chat management actions
   addChat: async (chatData) => {
+    const title = (chatData.title || "New Session").trim();
+    const basePrompt = chatData.config?.baseSystemPrompt?.trim() || "";
+
+    const created = await agentClient.createSession({
+      title,
+      system_prompt: basePrompt || undefined,
+      model: undefined,
+    });
+
     const newChat: ChatItem = {
-      id: crypto.randomUUID(),
-      ...chatData,
+      ...sessionSummaryToChatItem(created.session),
+      title,
+      config: {
+        ...chatData.config,
+        // If the caller provided a base prompt, keep it; otherwise fall back.
+        baseSystemPrompt: basePrompt || DEFAULT_BASE_SYSTEM_PROMPT,
+      },
+      messages: [],
+      currentInteraction: null,
     };
 
     set((state) => {
-      const chats = [...state.chats, newChat];
-      persistChats(chats);
-      localStorage.setItem(ACTIVE_CHAT_ID_KEY, newChat.id);
+      const chats = [newChat, ...state.chats.filter((c) => c.id !== newChat.id)];
       return {
         ...state,
         chats,
@@ -81,92 +353,49 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
 
   selectChat: (chatId) => {
     const prev = get();
-    // Avoid notifying subscribers when nothing effectively changes.
-    // This is especially important in multi-pane mode where we may attempt to
-    // re-select the currently active chat as panes gain focus.
     if (prev.currentChatId === chatId && prev.latestActiveChatId === chatId) {
       return;
     }
-
     set({ currentChatId: chatId, latestActiveChatId: chatId });
-    if (chatId) {
-      localStorage.setItem(ACTIVE_CHAT_ID_KEY, chatId);
-    } else {
-      localStorage.removeItem(ACTIVE_CHAT_ID_KEY);
-    }
   },
 
   deleteChat: async (chatId) => {
-    const chatToDelete = get().chats.find((chat) => chat.id === chatId);
-    const sessionId = getAgentSessionId(chatToDelete);
-    await deleteBackendSession(sessionId);
+    try {
+      await agentClient.deleteSession(chatId);
+    } catch (error) {
+      console.error(`[ChatSlice] Failed to delete backend session ${chatId}:`, error);
+    }
 
-    // Update local state
     set((state) => {
-      const newChats = state.chats.filter((chat) => chat.id !== chatId);
-      let newCurrentChatId = state.currentChatId;
-      let newLatestActiveChatId = state.latestActiveChatId;
-
-      if (state.currentChatId === chatId) {
-        newCurrentChatId = null;
+      const toDelete = new Set<string>();
+      for (const chat of state.chats) {
+        if (chat.id === chatId) toDelete.add(chat.id);
+        if (chat.rootSessionId === chatId) toDelete.add(chat.id);
       }
 
-      if (state.latestActiveChatId === chatId) {
-        newLatestActiveChatId = newChats.length > 0 ? newChats[0].id : null;
-      }
+      const newChats = state.chats.filter((c) => !toDelete.has(c.id));
+      const nextCurrent =
+        state.currentChatId && toDelete.has(state.currentChatId)
+          ? null
+          : state.currentChatId;
+      const nextLatest =
+        state.latestActiveChatId && toDelete.has(state.latestActiveChatId)
+          ? (newChats[0]?.id ?? null)
+          : state.latestActiveChatId;
 
-      persistChats(newChats);
-      if (newCurrentChatId) {
-        localStorage.setItem(ACTIVE_CHAT_ID_KEY, newCurrentChatId);
-      } else {
-        localStorage.removeItem(ACTIVE_CHAT_ID_KEY);
-      }
       return {
         ...state,
         chats: newChats,
-        currentChatId: newCurrentChatId,
-        latestActiveChatId: newLatestActiveChatId,
+        currentChatId: nextCurrent,
+        latestActiveChatId: nextLatest,
       };
     });
   },
 
   deleteChats: async (chatIds) => {
-    const chatsToDelete = get().chats.filter((chat) =>
-      chatIds.includes(chat.id),
-    );
-    const sessionIds = getAgentSessionIds(chatsToDelete);
-
-    for (const sessionId of sessionIds) {
-      await deleteBackendSession(sessionId);
+    for (const id of chatIds) {
+      await get().deleteChat(id);
     }
-
-    // Update local state
-    set((state) => {
-      const newChats = state.chats.filter((chat) => !chatIds.includes(chat.id));
-      let newCurrentChatId = state.currentChatId;
-      let newLatestActiveChatId = state.latestActiveChatId;
-
-      if (chatIds.includes(state.currentChatId || "")) {
-        newCurrentChatId = null;
-      }
-
-      if (chatIds.includes(state.latestActiveChatId || "")) {
-        newLatestActiveChatId = newChats.length > 0 ? newChats[0].id : null;
-      }
-
-      persistChats(newChats);
-      if (newCurrentChatId) {
-        localStorage.setItem(ACTIVE_CHAT_ID_KEY, newCurrentChatId);
-      } else {
-        localStorage.removeItem(ACTIVE_CHAT_ID_KEY);
-      }
-      return {
-        ...state,
-        chats: newChats,
-        currentChatId: newCurrentChatId,
-        latestActiveChatId: newLatestActiveChatId,
-      };
-    });
   },
 
   updateChat: (chatId, updates) => {
@@ -174,12 +403,22 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
       const chats = state.chats.map((chat) =>
         chat.id === chatId ? { ...chat, ...updates } : chat,
       );
-      persistChats(chats);
-      return {
-        ...state,
-        chats,
-      };
+      return { ...state, chats };
     });
+
+    // Best-effort backend patch for title/pin updates.
+    const patch: any = {};
+    if (typeof (updates as any).title === "string") {
+      patch.title = (updates as any).title;
+    }
+    if (typeof (updates as any).pinned === "boolean") {
+      patch.pinned = (updates as any).pinned;
+    }
+    if (Object.keys(patch).length > 0) {
+      agentClient.patchSession(chatId, patch).catch((e) => {
+        console.warn(`[ChatSlice] Failed to patch session ${chatId}:`, e);
+      });
+    }
   },
 
   pinChat: (chatId) => {
@@ -190,7 +429,6 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
     get().updateChat(chatId, { pinned: false });
   },
 
-  // Message management (now operates on the messages array within each ChatItem)
   setMessages: (chatId, messages) => {
     const chat = get().chats.find((c) => c.id === chatId);
     if (chat) {
@@ -200,127 +438,190 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
 
   addMessage: async (chatId, message) => {
     const chat = get().chats.find((c) => c.id === chatId);
-    if (chat) {
-      const updatedMessages = [...chat.messages, message];
-      get().updateChat(chatId, { messages: updatedMessages });
-    }
+    if (!chat) return;
+    const updatedMessages = [...chat.messages, message];
+    get().updateChat(chatId, { messages: updatedMessages });
   },
 
   updateMessage: (chatId, messageId, updates) => {
     const chat = get().chats.find((c) => c.id === chatId);
-    if (chat) {
-      const updatedMessages = chat.messages.map((msg) => {
-        if (msg.id === messageId) {
-          // Perform a type-safe update by only applying properties that exist on the original message.
-          const updatedMsg = { ...msg };
-          Object.keys(updates).forEach((key) => {
-            if (Object.prototype.hasOwnProperty.call(updatedMsg, key)) {
-              (updatedMsg as Record<string, unknown>)[key] = (
-                updates as Record<string, unknown>
-              )[key];
-            }
-          });
-          return updatedMsg;
+    if (!chat) return;
+
+    const updatedMessages = chat.messages.map((msg) => {
+      if (msg.id !== messageId) return msg;
+      const updatedMsg = { ...(msg as any) };
+      Object.keys(updates).forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(updatedMsg, key)) {
+          (updatedMsg as Record<string, unknown>)[key] = (
+            updates as Record<string, unknown>
+          )[key];
         }
-        return msg;
       });
-      get().updateChat(chatId, { messages: updatedMessages });
-    }
+      return updatedMsg as Message;
+    });
+
+    get().updateChat(chatId, { messages: updatedMessages });
   },
 
   deleteMessage: (chatId, messageId) => {
     const chat = get().chats.find((c) => c.id === chatId);
-    if (chat) {
-      const updatedMessages = chat.messages.filter(
-        (msg) => msg.id !== messageId,
-      );
-      get().updateChat(chatId, { messages: updatedMessages });
-    }
+    if (!chat) return;
+    const updatedMessages = chat.messages.filter((msg) => msg.id !== messageId);
+    get().updateChat(chatId, { messages: updatedMessages });
+  },
+
+  refreshChats: async () => {
+    const list = await agentClient.listSessions();
+    const next = list.sessions.map(sessionSummaryToChatItem);
+    set((state) => {
+      // Preserve in-memory messages when possible.
+      const prevById = new Map(state.chats.map((c) => [c.id, c]));
+      const merged = next.map((c) => {
+        const prev = prevById.get(c.id);
+        return prev ? { ...c, messages: prev.messages, config: prev.config } : c;
+      });
+      return { ...state, chats: merged };
+    });
   },
 
   loadChats: async () => {
-    const storedChatsRaw = loadChatsFromStorage();
-    const { chats: storedChats, changed: chatsNormalized } =
-      normalizeChats(storedChatsRaw);
-    if (chatsNormalized) {
-      // Persist normalization once so runtime components don't need to "fix up" chat state
-      // via effects (which can cause update-depth loops).
-      persistChats(storedChats);
-    }
-    const activeChatId = localStorage.getItem(ACTIVE_CHAT_ID_KEY);
     const storedAutoTitles = localStorage.getItem(AUTO_TITLE_KEY);
     const autoGenerateTitles =
       storedAutoTitles === null
         ? get().autoGenerateTitles
         : storedAutoTitles === "true";
 
-    const hasValidActiveChatId =
-      Boolean(activeChatId) &&
-      storedChats.some((chat) => chat.id === activeChatId);
-
-    let currentChatId = hasValidActiveChatId ? activeChatId : null;
-    let latestActiveChatId = hasValidActiveChatId ? activeChatId : null;
-    if (!currentChatId && storedChats.length > 0) {
-      currentChatId = storedChats[0].id;
-      latestActiveChatId = storedChats[0].id;
+    let list = await agentClient.listSessions();
+    if (!list.sessions || list.sessions.length === 0) {
+      const created = await agentClient.createSession({
+        title: "New Session",
+        system_prompt: DEFAULT_BASE_SYSTEM_PROMPT || undefined,
+      });
+      list = { sessions: [created.session] };
     }
 
-    // Ensure there's always at least one chat available so the message input
-    // can be used immediately (important for fresh sessions and E2E).
-    let chats = storedChats;
-    if (chats.length === 0) {
-      const newChat: ChatItem = {
-        id: crypto.randomUUID(),
-        title: "New Chat",
-        createdAt: Date.now(),
-        messages: [],
-        config: {
-          systemPromptId: "general_assistant",
-          // Ensure first-run releases have a stable, build-time default prompt.
-          baseSystemPrompt: DEFAULT_BASE_SYSTEM_PROMPT,
-          lastUsedEnhancedPrompt: null,
-        },
-        currentInteraction: null,
-      };
-
-      chats = [newChat];
-      currentChatId = newChat.id;
-      latestActiveChatId = newChat.id;
-      persistChats(chats);
-      localStorage.setItem(ACTIVE_CHAT_ID_KEY, newChat.id);
-    } else if (activeChatId && !hasValidActiveChatId) {
-      // Clear stale active chat id to avoid pointing to a non-existent chat.
-      if (currentChatId) {
-        localStorage.setItem(ACTIVE_CHAT_ID_KEY, currentChatId);
-      } else {
-        localStorage.removeItem(ACTIVE_CHAT_ID_KEY);
-      }
-    }
+    const chats = list.sessions.map(sessionSummaryToChatItem);
+    const currentChatId = chats[0]?.id ?? null;
 
     set({
       chats,
-      latestActiveChatId,
+      latestActiveChatId: currentChatId,
       currentChatId,
       processingChats: new Set<string>(),
       autoGenerateTitles,
+    });
+
+    if (currentChatId) {
+      // Lazy load history for the initial session.
+      await get().loadChatHistory(currentChatId);
+    }
+  },
+
+  loadChatHistory: async (chatId, options) => {
+    const mode = options?.mode ?? "replace";
+    const retries = Math.max(0, options?.retries ?? 0);
+    const retryDelayMs = Math.max(0, options?.retryDelayMs ?? 0);
+
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const history = await agentClient.getHistory(chatId);
+
+        const lastRole = history.messages[history.messages.length - 1]?.role;
+        if (
+          options?.waitForAssistant &&
+          lastRole === "user" &&
+          attempt < retries
+        ) {
+          // Backoff to give the backend time to persist the assistant reply.
+          const delay = retryDelayMs > 0 ? retryDelayMs * (attempt + 1) : 200 * (attempt + 1);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+
+        const nextMessages = mapHistoryMessagesToUi(chatId, history.messages);
+        const chat = get().chats.find((c) => c.id === chatId);
+        if (!chat) return;
+
+        if (mode === "monotonic") {
+          const prevMessages = chat.messages || [];
+          const prevLen = prevMessages.length;
+          const nextLen = nextMessages.length;
+          const nextLastRole = nextMessages[nextMessages.length - 1]?.role;
+          const prevLastRole = prevMessages[prevMessages.length - 1]?.role;
+
+          // Avoid wiping newer UI state with a stale backend snapshot.
+          const shouldReplace =
+            nextLen >= prevLen ||
+            // If backend has a terminal-ish last role (assistant/tool/system), it's safe to replace.
+            (typeof nextLastRole === "string" && nextLastRole !== "user") ||
+            // If backend progressed past a "user-only tail", prefer backend.
+            (prevLastRole === "user" && nextLastRole !== "user");
+
+          if (!shouldReplace) {
+            get().updateChat(chatId, {
+              messageCount: Math.max(chat.messageCount ?? 0, history.messages.length),
+            });
+            return;
+          }
+        }
+
+        get().updateChat(chatId, {
+          messages: nextMessages,
+          messageCount: history.messages.length,
+        });
+        return;
+      } catch (error) {
+        if (attempt >= retries) {
+          console.warn(`[ChatSlice] Failed to load history for ${chatId}:`, error);
+          return;
+        }
+        const delay = retryDelayMs > 0 ? retryDelayMs * (attempt + 1) : 200 * (attempt + 1);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  },
+
+  upsertSubSessionProgress: (parentSessionId, childSessionId, patch) => {
+    set((state) => {
+      const existingParent = state.subSessionsByParent[parentSessionId] || {};
+      const existingChild = existingParent[childSessionId] || {};
+      const nextParent = {
+        ...existingParent,
+        [childSessionId]: { ...existingChild, ...patch },
+      };
+      return {
+        subSessionsByParent: {
+          ...state.subSessionsByParent,
+          [parentSessionId]: nextParent,
+        },
+      };
+    });
+  },
+
+  clearSubSessionProgress: (parentSessionId, childSessionId) => {
+    set((state) => {
+      const existingParent = state.subSessionsByParent[parentSessionId];
+      if (!existingParent || !existingParent[childSessionId]) return {};
+      const { [childSessionId]: _removed, ...rest } = existingParent;
+      return {
+        subSessionsByParent: {
+          ...state.subSessionsByParent,
+          [parentSessionId]: rest,
+        },
+      };
     });
   },
 
   setChatProcessing: (chatId, isProcessing) => {
     set((state) => {
       const processingChats = new Set(state.processingChats);
-      if (isProcessing) {
-        processingChats.add(chatId);
-      } else {
-        processingChats.delete(chatId);
-      }
+      if (isProcessing) processingChats.add(chatId);
+      else processingChats.delete(chatId);
       return { processingChats };
     });
   },
 
-  isChatProcessing: (chatId) => {
-    return get().processingChats.has(chatId);
-  },
+  isChatProcessing: (chatId) => get().processingChats.has(chatId),
 
   setAutoGenerateTitlesPreference: async (enabled) => {
     const previousValue = get().autoGenerateTitles;
@@ -328,10 +629,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
     try {
       localStorage.setItem(AUTO_TITLE_KEY, String(enabled));
     } catch (error) {
-      console.warn(
-        "[ChatSlice] Failed to update auto-generate titles preference:",
-        error,
-      );
+      console.warn("[ChatSlice] Failed to update auto-title preference:", error);
       set({ autoGenerateTitles: previousValue });
       throw error;
     } finally {
@@ -339,148 +637,3 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
     }
   },
 });
-
-const loadChatsFromStorage = (): ChatItem[] => {
-  try {
-    const stored = localStorage.getItem(CHAT_STORAGE_KEY);
-    if (!stored) return [];
-    const parsed = JSON.parse(stored);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    console.error("Failed to load chats from localStorage:", error);
-    return [];
-  }
-};
-
-const safeRandomId = (): string => {
-  try {
-    const c: any = (globalThis as any).crypto;
-    if (c?.randomUUID) return c.randomUUID();
-  } catch {
-    // ignore
-  }
-  return `id_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-};
-
-const normalizeChats = (
-  chats: ChatItem[],
-): { chats: ChatItem[]; changed: boolean } => {
-  let changed = false;
-
-  const next = chats.map((chat) => {
-    let chatChanged = false;
-
-    const chatId =
-      typeof (chat as any)?.id === "string" && (chat as any).id.trim()
-        ? (chat as any).id
-        : (() => {
-            chatChanged = true;
-            changed = true;
-            return safeRandomId();
-          })();
-
-    const rawMessages = Array.isArray((chat as any)?.messages)
-      ? ((chat as any).messages as any[])
-      : (() => {
-          chatChanged = true;
-          changed = true;
-          return [];
-        })();
-
-    let messagesChanged = false;
-    const messages = rawMessages.map((msg) => {
-      const id =
-        typeof (msg as any)?.id === "string" && (msg as any).id.trim()
-          ? (msg as any).id
-          : null;
-      if (id) return msg;
-      messagesChanged = true;
-      changed = true;
-      return { ...(msg as any), id: safeRandomId() };
-    });
-
-    if (!chatChanged && !messagesChanged) return chat;
-    return { ...(chat as any), id: chatId, messages } as ChatItem;
-  });
-
-  return { chats: changed ? next : chats, changed };
-};
-
-const stripImagesFromMessagesForStorage = (messages: Message[]): Message[] => {
-  return messages.map((msg) => {
-    // Base64 image payloads can easily exceed localStorage quota. Persist text-only
-    // history and keep images in-memory for the current session.
-    if (msg.role === "user" && "images" in (msg as any)) {
-      const { images: _images, ...rest } = msg as any;
-      return rest as Message;
-    }
-    return msg;
-  });
-};
-
-const stripImagesFromChatsForStorage = (chats: ChatItem[]): ChatItem[] => {
-  return chats.map((chat) => ({
-    ...chat,
-    messages: stripImagesFromMessagesForStorage(chat.messages),
-  }));
-};
-
-const persistChats = (chats: ChatItem[]): void => {
-  try {
-    const sanitized = stripImagesFromChatsForStorage(chats);
-    localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(sanitized));
-  } catch (error) {
-    // If we exceed quota, try removing the key first and retry once with sanitized data.
-    // This typically happens when images were previously persisted and bloated the store.
-    try {
-      const name = (error as any)?.name;
-      if (name === "QuotaExceededError") {
-        localStorage.removeItem(CHAT_STORAGE_KEY);
-        const sanitized = stripImagesFromChatsForStorage(chats);
-        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(sanitized));
-        return;
-      }
-    } catch {
-      // ignore retry failures
-    }
-    console.error("Failed to save chats to localStorage:", error);
-  }
-};
-
-const getAgentSessionId = (chat?: ChatItem): string | null => {
-  const sessionId = chat?.config?.agentSessionId?.trim();
-  return sessionId ? sessionId : null;
-};
-
-const getAgentSessionIds = (chats: ChatItem[]): string[] => {
-  const sessionIds = new Set<string>();
-
-  chats.forEach((chat) => {
-    const sessionId = getAgentSessionId(chat);
-    if (sessionId) {
-      sessionIds.add(sessionId);
-    }
-  });
-
-  return [...sessionIds];
-};
-
-const deleteBackendSession = async (
-  sessionId: string | null,
-): Promise<void> => {
-  if (!sessionId) {
-    return;
-  }
-
-  try {
-    await agentClient.deleteSession(sessionId);
-    console.log(
-      `[ChatSlice] Successfully deleted backend session ${sessionId}`,
-    );
-  } catch (error) {
-    console.error(
-      `[ChatSlice] Failed to delete backend session ${sessionId}:`,
-      error,
-    );
-  }
-};

@@ -1,17 +1,16 @@
 import { render } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockStoreState = {
-  currentChatId: "chat-1",
-  chats: [
-    {
-      id: "chat-1",
-      messages: [],
-      config: {},
-    },
-  ],
+const mockStoreState: any = {
+  currentChatId: null,
+  chats: [],
   deleteMessage: vi.fn(),
   updateChat: vi.fn(),
+  loadChatHistory: vi.fn(),
+  subSessionsByParent: {},
+  selectChat: vi.fn(),
+  setChatProcessing: vi.fn(),
+  isChatProcessing: vi.fn(() => false),
   processingChats: new Set<string>(),
   tokenUsages: {},
   truncationOccurred: {},
@@ -41,7 +40,7 @@ vi.mock("../../store", () => ({
   ),
   selectChatById:
     (chatId: string | null) => (state: typeof mockStoreState) =>
-      chatId ? state.chats.find((c) => c.id === chatId) || null : null,
+      chatId ? state.chats.find((c: any) => c.id === chatId) || null : null,
 }));
 
 vi.mock("../ChatView/useChatViewMessages", () => ({
@@ -69,6 +68,18 @@ vi.mock("../ChatView/ChatMessagesList", () => ({
 
 vi.mock("../ChatView/ChatInputArea", () => ({
   ChatInputArea: () => <div data-testid="chat-input-area" />,
+}));
+
+vi.mock("../ChatView/SubSessionsPanel", () => ({
+  SubSessionsPanel: () => null,
+}));
+
+vi.mock("@components/QuestionDialog", () => ({
+  QuestionDialog: () => null,
+}));
+
+vi.mock("@components/TodoList", () => ({
+  TodoList: () => null,
 }));
 
 vi.mock("@tanstack/react-virtual", () => ({

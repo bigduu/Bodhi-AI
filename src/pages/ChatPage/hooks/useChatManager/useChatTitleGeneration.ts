@@ -51,8 +51,10 @@ export function useChatTitleGeneration(
     if (!title) return true;
     const normalized = title.trim().toLowerCase();
     if (normalized.length === 0) return true;
-    if (normalized === "new chat" || normalized === "main") return true;
-    return normalized.startsWith("new chat -");
+    // Keep this list aligned with backend defaults + UI create flows.
+    if (normalized === "new session" || normalized === "new chat") return true;
+    if (normalized === "main") return true;
+    return normalized.startsWith("new session -") || normalized.startsWith("new chat -");
   }, []);
 
   const generateChatTitle = useCallback(

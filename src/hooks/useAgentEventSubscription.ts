@@ -36,6 +36,13 @@ export function useAgentEventSubscription() {
   const clearEvaluationState = useAppStore(
     (state) => state.clearEvaluationState,
   );
+  const upsertSubSessionProgress = useAppStore(
+    (state) => state.upsertSubSessionProgress,
+  );
+  const clearSubSessionProgress = useAppStore(
+    (state) => state.clearSubSessionProgress,
+  );
+  const refreshChats = useAppStore((state) => state.refreshChats);
 
   const agentClientRef = useRef(new AgentClient());
 
@@ -47,6 +54,11 @@ export function useAgentEventSubscription() {
   // sessionId -> streaming state
   const streamingStateBySessionRef = useRef<
     Map<string, { chatId: string; messageId: string; content: string }>
+  >(new Map());
+
+  // parentSessionId -> { children, parentDone }
+  const backgroundChildrenByParentRef = useRef<
+    Map<string, { children: Set<string>; parentDone: boolean }>
   >(new Map());
 
   // toolCallId -> toolName mapping for tracking tool names across start/complete
@@ -302,21 +314,66 @@ export function useAgentEventSubscription() {
               }
             },
 
-            onComplete: async () => {
-              const state = streamingStateBySessionRef.current.get(sessionId);
-              if (state?.content) {
-                await addMessage(chatId, {
-                  id: `assistant-${Date.now()}`,
-                  role: "assistant",
-                  type: "text",
-                  content: state.content,
-                  createdAt: new Date().toISOString(),
-                  metadata: { sessionId, model: "agent" },
-                });
-              }
+            onComplete: () => {
+              void (async () => {
+                const state = streamingStateBySessionRef.current.get(sessionId);
+                const streamedRaw = state?.content || "";
+                const hasStreamedContent = streamedRaw.trim().length > 0;
 
-              cleanupChat(chatId, { clearDraft: true });
-              setChatProcessing(chatId, false);
+                // Convert the streaming draft into a normal assistant message immediately so it
+                // doesn't "disappear" when we turn off processing UI.
+                if (hasStreamedContent) {
+                  const chat = useAppStore.getState().chats.find((c) => c.id === chatId);
+                  const last = chat?.messages?.[chat.messages.length - 1] as any;
+                  const lastIsSame =
+                    last?.role === "assistant" &&
+                    last?.type === "text" &&
+                    typeof last?.content === "string" &&
+                    last.content === streamedRaw;
+
+                  if (!lastIsSame) {
+                    await addMessage(chatId, {
+                      id: `assistant-${Date.now()}`,
+                      role: "assistant",
+                      type: "text",
+                      content: streamedRaw,
+                      createdAt: new Date().toISOString(),
+                      metadata: { sessionId, model: "agent" },
+                    });
+                  }
+                }
+
+                // Sync with persisted history. Use retries because the backend can emit "complete"
+                // before it finishes persisting the final assistant message.
+                await useAppStore.getState().loadChatHistory(chatId, {
+                  mode: hasStreamedContent ? "monotonic" : "replace",
+                  retries: 4,
+                  retryDelayMs: 200,
+                  waitForAssistant: true,
+                });
+
+              // Mark parent completed. If there are background children, keep the SSE
+              // subscription alive to forward sub-session progress.
+              const bg =
+                backgroundChildrenByParentRef.current.get(sessionId) ??
+                ({ children: new Set<string>(), parentDone: false } as const);
+              backgroundChildrenByParentRef.current.set(sessionId, {
+                children: new Set(bg.children),
+                parentDone: true,
+              });
+
+              if (bg.children.size === 0) {
+                cleanupChat(chatId, { clearDraft: true });
+                setChatProcessing(chatId, false);
+              } else {
+                // Clear the draft but keep subscription.
+                const entry = subscriptionsByChatRef.current.get(chatId);
+                if (entry) {
+                  streamingMessageBus.clear(chatId, `streaming-${chatId}`);
+                  streamingStateBySessionRef.current.delete(entry.sessionId);
+                }
+              }
+              })();
             },
 
             onError: async (errorMessage: string) => {
@@ -329,8 +386,94 @@ export function useAgentEventSubscription() {
                 finishReason: "error",
               });
 
-              cleanupChat(chatId, { clearDraft: true });
-              setChatProcessing(chatId, false);
+              const bg =
+                backgroundChildrenByParentRef.current.get(sessionId) ??
+                ({ children: new Set<string>(), parentDone: false } as const);
+              backgroundChildrenByParentRef.current.set(sessionId, {
+                children: new Set(bg.children),
+                parentDone: true,
+              });
+
+              if (bg.children.size === 0) {
+                cleanupChat(chatId, { clearDraft: true });
+                setChatProcessing(chatId, false);
+              }
+            },
+
+            onSubSessionStarted: (parentSessionId, childSessionId, title) => {
+              const bg =
+                backgroundChildrenByParentRef.current.get(parentSessionId) ??
+                ({ children: new Set<string>(), parentDone: false } as const);
+              const children = new Set(bg.children);
+              children.add(childSessionId);
+              backgroundChildrenByParentRef.current.set(parentSessionId, {
+                children,
+                parentDone: bg.parentDone,
+              });
+
+              // Keep the parent subscribed while children are running.
+              setChatProcessing(chatId, true);
+
+              upsertSubSessionProgress(parentSessionId, childSessionId, {
+                title,
+                status: "running",
+                lastEventAt: new Date().toISOString(),
+              });
+
+              // Ensure the child session appears in the session list.
+              void refreshChats();
+            },
+
+            onSubSessionEvent: (parentSessionId, childSessionId, evt: AgentEvent) => {
+              // Maintain a small rolling preview for fast UI feedback.
+              if (evt.type === "token" && typeof evt.content === "string") {
+                const prev =
+                  useAppStore.getState().subSessionsByParent?.[parentSessionId]?.[
+                    childSessionId
+                  ]?.outputPreview || "";
+                const next = (prev + evt.content).slice(-2000);
+                upsertSubSessionProgress(parentSessionId, childSessionId, {
+                  outputPreview: next,
+                  lastEventAt: new Date().toISOString(),
+                });
+              } else {
+                upsertSubSessionProgress(parentSessionId, childSessionId, {
+                  lastEventAt: new Date().toISOString(),
+                });
+              }
+            },
+
+            onSubSessionHeartbeat: (parentSessionId, childSessionId, ts) => {
+              upsertSubSessionProgress(parentSessionId, childSessionId, {
+                lastHeartbeatAt: ts,
+              });
+            },
+
+            onSubSessionCompleted: (parentSessionId, childSessionId, status, error) => {
+              const bg =
+                backgroundChildrenByParentRef.current.get(parentSessionId) ??
+                ({ children: new Set<string>(), parentDone: false } as const);
+              const children = new Set(bg.children);
+              children.delete(childSessionId);
+              backgroundChildrenByParentRef.current.set(parentSessionId, {
+                children,
+                parentDone: bg.parentDone,
+              });
+
+              upsertSubSessionProgress(parentSessionId, childSessionId, {
+                status,
+                error,
+                lastEventAt: new Date().toISOString(),
+              });
+
+              // If parent already completed and no more background children, stop subscription.
+              if (bg.parentDone && children.size === 0) {
+                clearSubSessionProgress(parentSessionId, childSessionId);
+                cleanupChat(chatId, { clearDraft: true });
+                setChatProcessing(chatId, false);
+              }
+
+              void refreshChats();
             },
           },
           controller,
@@ -372,7 +515,7 @@ export function useAgentEventSubscription() {
   const ensureSubscription = useCallback(
     (chatId: string) => {
       const chat = useAppStore.getState().chats.find((c) => c.id === chatId);
-      const sessionId = chat?.config?.agentSessionId?.trim();
+      const sessionId = chat?.id?.trim();
 
       if (!sessionId) {
         pendingChatIdsRef.current.add(chatId);

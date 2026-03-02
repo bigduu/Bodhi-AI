@@ -51,7 +51,7 @@ export const ImageGrid: React.FC<ImageGridProps> = ({
             styles={{ body: { padding: 0 } }}
           >
             <Image
-              src={image.base64}
+              src={image.url || image.base64}
               alt={image.name}
               style={{
                 width: "100%",

@@ -12,12 +12,13 @@ export const buildUserContent = (message: UserMessage) => {
   }
   return [
     { type: "text" as const, text: message.content },
-    ...message.images.map((img) => ({
-      type: "image_url" as const,
-      image_url: {
-        url: img.base64,
-      },
-    })),
+    ...message.images
+      .map((img) => img.base64 || img.url)
+      .filter((url): url is string => typeof url === "string" && url.length > 0)
+      .map((url) => ({
+        type: "image_url" as const,
+        image_url: { url },
+      })),
   ];
 };
 

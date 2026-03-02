@@ -30,10 +30,7 @@ vi.mock("../../services/chat/AgentService", () => {
 const createMockState = (overrides: Partial<any> = {}) => ({
   chats: [
     {
-      id: "chat-1",
-      config: {
-        agentSessionId: "session-1",
-      },
+      id: "session-1",
       messages: [],
     },
   ],
@@ -48,6 +45,11 @@ const createMockState = (overrides: Partial<any> = {}) => ({
   updateTodoListDelta: vi.fn(),
   setEvaluationState: vi.fn(),
   clearEvaluationState: vi.fn(),
+  upsertSubSessionProgress: vi.fn(),
+  clearSubSessionProgress: vi.fn(),
+  refreshChats: vi.fn(),
+  loadChatHistory: vi.fn(),
+  subSessionsByParent: {},
   ...overrides,
 });
 
@@ -90,7 +92,7 @@ describe("useAgentEventSubscription", () => {
   });
 
   it("should subscribe when chat is processing and session exists", async () => {
-    mockState.processingChats = new Set(["chat-1"]); // Chat is processing
+    mockState.processingChats = new Set(["session-1"]); // Session is processing
     mockStore.getState.mockReturnValue(mockState);
     mockSubscribeToEvents.mockResolvedValue(undefined);
 
@@ -110,7 +112,7 @@ describe("useAgentEventSubscription", () => {
   });
 
   it("should unsubscribe when isProcessing becomes false", async () => {
-    mockState.processingChats = new Set(["chat-1"]); // Chat is processing
+    mockState.processingChats = new Set(["session-1"]); // Session is processing
     mockStore.getState.mockReturnValue(mockState);
     mockSubscribeToEvents.mockResolvedValue(undefined);
 
@@ -130,7 +132,7 @@ describe("useAgentEventSubscription", () => {
   });
 
   it("should handle subscription errors and reset state", async () => {
-    mockState.processingChats = new Set(["chat-1"]);
+    mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
 
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -146,7 +148,7 @@ describe("useAgentEventSubscription", () => {
       );
 
       // Should reset processing state on error
-      expect(mockSetChatProcessing).toHaveBeenCalledWith("chat-1", false);
+      expect(mockSetChatProcessing).toHaveBeenCalledWith("session-1", false);
     });
 
     consoleSpy.mockRestore();
@@ -160,7 +162,7 @@ describe("useAgentEventSubscription", () => {
       },
     );
 
-    mockState.processingChats = new Set(["chat-1"]);
+    mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
 
     renderHook(() => useAgentEventSubscription());
@@ -177,7 +179,7 @@ describe("useAgentEventSubscription", () => {
     });
 
     await waitFor(() => {
-      expect(mockSetChatProcessing).toHaveBeenCalledWith("chat-1", false);
+      expect(mockSetChatProcessing).toHaveBeenCalledWith("session-1", false);
     });
   });
 
@@ -189,7 +191,7 @@ describe("useAgentEventSubscription", () => {
       },
     );
 
-    mockState.processingChats = new Set(["chat-1"]);
+    mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
 
     renderHook(() => useAgentEventSubscription());
@@ -208,18 +210,18 @@ describe("useAgentEventSubscription", () => {
     await waitFor(() => {
       // Verify that addMessage was called with error content
       expect(mockAddMessage).toHaveBeenCalledWith(
-        "chat-1",
+        "session-1",
         expect.objectContaining({
           content: expect.stringContaining("Something went wrong"),
           finishReason: "error",
         }),
       );
-      expect(mockSetChatProcessing).toHaveBeenCalledWith("chat-1", false);
+      expect(mockSetChatProcessing).toHaveBeenCalledWith("session-1", false);
     });
   });
 
   it("should not create duplicate subscriptions", async () => {
-    mockState.processingChats = new Set(["chat-1"]);
+    mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
     mockSubscribeToEvents.mockResolvedValue(undefined);
 
@@ -245,7 +247,7 @@ describe("useAgentEventSubscription", () => {
       },
     );
 
-    mockState.processingChats = new Set(["chat-1"]);
+    mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
 
     renderHook(() => useAgentEventSubscription());
@@ -296,7 +298,7 @@ describe("useAgentEventSubscription", () => {
       setChatProcessing: mockSetChatProcessing,
     });
 
-    mockState.processingChats = new Set(["chat-1"]);
+    mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
     mockStore.mockImplementation((selector: MockSelector) => selector(mockState));
 
@@ -328,7 +330,7 @@ describe("useAgentEventSubscription", () => {
   });
 
   it("should cleanup subscription on unmount", async () => {
-    mockState.processingChats = new Set(["chat-1"]);
+    mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
     mockSubscribeToEvents.mockResolvedValue(undefined);
 

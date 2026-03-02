@@ -48,13 +48,11 @@ export const QuestionDialog: React.FC<QuestionDialogProps> = ({
   const emptyCountRef = useRef(0);
 
   const setChatProcessing = useAppStore((state) => state.setChatProcessing);
-  const chats = useAppStore((state) => state.chats);
   const selectedModel = useAppStore((state) => state.selectedModel);
   const activeModel = useActiveModel();
 
-  // Find the chatId for this sessionId
-  const chatId = chats.find((chat) => chat.config.agentSessionId === sessionId)
-    ?.id;
+  // v2: chatId === sessionId
+  const chatId = sessionId;
   const isChatProcessing = useAppStore((state) =>
     chatId ? state.isChatProcessing(chatId) : false,
   );

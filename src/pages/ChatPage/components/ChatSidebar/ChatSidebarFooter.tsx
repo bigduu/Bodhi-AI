@@ -17,7 +17,7 @@ export const ChatSidebarFooter: React.FC<ChatSidebarFooterProps> = ({
   screens,
   token,
 }) => {
-  const newChatLabel = "New Chat";
+  const newChatLabel = "New Session";
   const settingsLabel = "System Settings";
 
   return (

@@ -15,6 +15,7 @@ interface MessageInputControlsRightProps {
   images: ImageFile[];
   isOverCharLimit: boolean;
   token: any;
+  statusIndicator?: React.ReactNode;
 }
 
 const MessageInputControlsRight: React.FC<MessageInputControlsRightProps> = ({
@@ -29,6 +30,7 @@ const MessageInputControlsRight: React.FC<MessageInputControlsRightProps> = ({
   images,
   isOverCharLimit,
   token,
+  statusIndicator,
 }) => {
   const canSend = !value.trim() && images.length === 0;
 
@@ -40,6 +42,10 @@ const MessageInputControlsRight: React.FC<MessageInputControlsRightProps> = ({
         gap: token.marginXS,
       }}
     >
+      {statusIndicator ? (
+        <span style={{ flex: "0 0 auto" }}>{statusIndicator}</span>
+      ) : null}
+
       {allowRetry && hasMessages && (
         <Button
           data-testid="regenerate-button"

@@ -23,6 +23,7 @@ import type { ChatItem, Message } from "../types/chat";
 const DEFAULT_PROXY_AUTH_MODE = "auto";
 const REQUIRED_PROXY_AUTH_MODE = "required";
 const AGENT_HEALTH_CHECK_INTERVAL_MS = 10000;
+const SESSION_INDEX_SYNC_INTERVAL_MS = 2000;
 
 type AgentAvailabilitySlice = {
   agentAvailability: boolean | null;
@@ -31,9 +32,16 @@ type AgentAvailabilitySlice = {
   startAgentHealthCheck: () => void;
 };
 
+type SessionIndexSyncSlice = {
+  refreshSessionsIndex: () => Promise<void>;
+  startSessionsIndexSync: () => void;
+};
+
 const agentClient = AgentClient.getInstance();
 let agentHealthCheckTimer: ReturnType<typeof setInterval> | null = null;
 let agentHealthCheckInFlight: Promise<boolean> | null = null;
+let sessionsIndexSyncTimer: ReturnType<typeof setInterval> | null = null;
+let sessionsIndexRefreshInFlight: Promise<void> | null = null;
 const chatLookupCache = new WeakMap<
   ReadonlyArray<ChatItem>,
   Map<string, ChatItem>
@@ -47,7 +55,8 @@ export type AppState = ChatSlice &
   TokenBudgetSlice &
   TodoListSlice &
   InputStateSlice &
-  AgentAvailabilitySlice;
+  AgentAvailabilitySlice &
+  SessionIndexSyncSlice;
 
 export const useAppStore = create<AppState>()(
   devtools(
@@ -95,6 +104,39 @@ export const useAppStore = create<AppState>()(
         agentHealthCheckTimer = setInterval(() => {
           void get().checkAgentAvailability();
         }, AGENT_HEALTH_CHECK_INTERVAL_MS);
+      },
+
+      refreshSessionsIndex: async () => {
+        if (sessionsIndexRefreshInFlight) {
+          return sessionsIndexRefreshInFlight;
+        }
+
+        sessionsIndexRefreshInFlight = (async () => {
+          try {
+            await get().refreshChats();
+          } catch (e) {
+            // Best-effort: backend may be down during startup/restart.
+            console.warn("[AppStore] refreshChats failed:", e);
+          }
+        })();
+
+        try {
+          return await sessionsIndexRefreshInFlight;
+        } finally {
+          sessionsIndexRefreshInFlight = null;
+        }
+      },
+
+      startSessionsIndexSync: () => {
+        if (sessionsIndexSyncTimer) {
+          return;
+        }
+
+        void get().refreshSessionsIndex();
+
+        sessionsIndexSyncTimer = setInterval(() => {
+          void get().refreshSessionsIndex();
+        }, SESSION_INDEX_SYNC_INTERVAL_MS);
       },
     })),
     { name: "AppStore" },
@@ -202,6 +244,7 @@ const initializeStore = async (force: boolean = false) => {
 
   if (import.meta.env.MODE !== "test") {
     useAppStore.getState().startAgentHealthCheck();
+    useAppStore.getState().startSessionsIndexSync();
   }
 
   // Load chats as early as possible so the UI always has an active chat.
