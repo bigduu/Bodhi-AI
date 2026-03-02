@@ -524,6 +524,11 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
 
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       try {
+        // Avoid spurious backend calls when the UI layout references a stale session id.
+        // (e.g. after backend reset or manual data cleanup)
+        const chat = get().chats.find((c) => c.id === chatId);
+        if (!chat) return;
+
         const history = await agentClient.getHistory(chatId);
 
         const lastRole = history.messages[history.messages.length - 1]?.role;
@@ -539,8 +544,6 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (
         }
 
         const nextMessages = mapHistoryMessagesToUi(chatId, history.messages);
-        const chat = get().chats.find((c) => c.id === chatId);
-        if (!chat) return;
 
         if (mode === "monotonic") {
           const prevMessages = chat.messages || [];
