@@ -46,10 +46,10 @@ async function globalSetup(config: FullConfig) {
     console.error(`   Error: ${error instanceof Error ? error.message : error}`);
     console.error('');
     console.error('Please ensure the backend is running:');
-    console.error('   cargo run -p web_service_standalone -- serve --port 9562 --data-dir /tmp/test-data');
+    console.error('   cargo run -p web_service_standalone -- --port 9562 --data-dir /tmp/test-data');
     console.error('');
     console.error('Or start it automatically:');
-    console.error('   E2E_START_SERVER="cargo run -p web_service_standalone -- serve --port 9562 --data-dir /tmp/test-data" yarn test:e2e');
+    console.error('   E2E_START_SERVER="cargo run -p web_service_standalone -- --port 9562 --data-dir /tmp/test-data" yarn test:e2e');
     process.exit(1);
   }
 

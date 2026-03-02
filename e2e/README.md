@@ -13,12 +13,12 @@ End-to-end testing infrastructure for Bodhi using Playwright.
 
 2. Start the backend:
    ```bash
-   cargo run -p web_service_standalone -- --port 8080 --data-dir /tmp/test-data
+   cargo run -p web_service_standalone -- --port 9562 --data-dir /tmp/test-data
    ```
 
 3. Run tests:
    ```bash
-   # If backend is running on port 8080
+   # If backend is running on port 9562
    yarn test
 
    # Browser mode (frontend on port 1420)
@@ -35,9 +35,9 @@ End-to-end testing infrastructure for Bodhi using Playwright.
 
 | Script | Description |
 |--------|-------------|
-| `yarn test` | Run tests (requires backend running on :8080) |
+| `yarn test` | Run tests (requires backend running on :9562) |
 | `yarn test:browser` | Test against browser dev server (:1420) |
-| `yarn test:docker` | Test against Docker container (:8080) |
+| `yarn test:docker` | Test against Docker container (:9562) |
 | `yarn test:with-server` | Auto-start backend and run tests |
 | `yarn test:ui` | Run tests in interactive UI mode |
 | `yarn test:debug` | Run tests with debugger |
@@ -47,7 +47,7 @@ End-to-end testing infrastructure for Bodhi using Playwright.
 
 ### Environment Variables
 
-- `E2E_BASE_URL` - Base URL for tests (default: http://localhost:8080)
+- `E2E_BASE_URL` - Base URL for tests (default: http://localhost:9562)
 - `E2E_START_SERVER` - Command to start server (optional)
 - `CI` - Set to enable CI mode (retries, screenshots)
 
@@ -61,7 +61,7 @@ E2E_BASE_URL=http://localhost:1420 yarn test
 E2E_BASE_URL=http://localhost:9000 yarn test
 
 # Auto-start backend before tests
-E2E_START_SERVER="cargo run -p web_service_standalone -- --port 8080" yarn test
+E2E_START_SERVER="cargo run -p web_service_standalone -- --port 9562" yarn test
 ```
 
 ## Test Structure
@@ -153,14 +153,14 @@ yarn test:report
 ```
 Start the backend:
 ```bash
-cargo run -p web_service_standalone -- --port 8080 --data-dir /tmp/test-data
+cargo run -p web_service_standalone -- --port 9562 --data-dir /tmp/test-data
 ```
 
 ### Port already in use
 Change the port:
 ```bash
-cargo run -p web_service_standalone -- --port 8081 --data-dir /tmp/test-data
-E2E_BASE_URL=http://localhost:8081 yarn test
+cargo run -p web_service_standalone -- --port 9563 --data-dir /tmp/test-data
+E2E_BASE_URL=http://localhost:9563 yarn test
 ```
 
 ### Tests timeout
