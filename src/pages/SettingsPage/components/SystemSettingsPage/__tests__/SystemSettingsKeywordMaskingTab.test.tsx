@@ -23,10 +23,11 @@ describe("SystemSettingsKeywordMaskingTab", () => {
     await waitFor(() => expect(addButton).not.toBeDisabled());
     fireEvent.click(addButton);
 
-    const examplesSelect = await screen.findByRole("combobox", {
-      name: "Examples",
-    });
-    fireEvent.mouseDown(examplesSelect);
+    // AntD Select roles/structures can vary in jsdom; use a stable test id.
+    const examplesSelect = await screen.findByTestId("keyword-examples-select");
+    const trigger =
+      examplesSelect.querySelector(".ant-select-selector") ?? examplesSelect;
+    fireEvent.mouseDown(trigger);
 
     const exampleOption = await screen.findByText("Mask GitHub tokens");
     fireEvent.click(exampleOption);

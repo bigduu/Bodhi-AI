@@ -284,6 +284,7 @@ const SystemSettingsKeywordMaskingTab: React.FC = () => {
                     />
                     <Flex gap={8} align="center" wrap="wrap">
                       <Select
+                        data-testid="keyword-examples-select"
                         aria-label="Examples"
                         placeholder="Examples"
                         value={exampleValue}

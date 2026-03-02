@@ -33,6 +33,11 @@ describe("McpServerFormModal", () => {
       />,
     );
 
+    // Let the modal/form effects apply initial values before we start interacting.
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("filesystem")).toBeInTheDocument();
+    });
+
     fireEvent.change(screen.getByPlaceholderText("filesystem"), {
       target: { value: "filesystem" },
     });
@@ -47,18 +52,19 @@ describe("McpServerFormModal", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => {
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: "filesystem",
-          name: "Filesystem",
-          transport: expect.objectContaining({
-            type: "stdio",
-            command: "npx",
-          }),
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    const submitted = onSubmit.mock.calls[0]?.[0];
+    expect(submitted).toEqual(
+      expect.objectContaining({
+        id: "filesystem",
+        name: "Filesystem",
+        transport: expect.objectContaining({
+          type: "stdio",
+          command: "npx",
         }),
-      );
-    });
+      }),
+    );
   });
 
   it("preserves form data when submission fails", async () => {
