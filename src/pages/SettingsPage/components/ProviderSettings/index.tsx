@@ -540,7 +540,7 @@ export const ProviderSettings: React.FC = () => {
       setModelsFetchError(null);
       setHasTriedFetchModels(true);
 
-      // Copilot models are exposed via the OpenAI-compatible /models endpoint.
+      // Copilot models are exposed via the OpenAI-compatible /openai/v1/models endpoint.
       const models = await modelService.getModels();
       const formattedModels = models.map((model: string) => ({
         value: model,

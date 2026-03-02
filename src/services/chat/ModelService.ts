@@ -1,4 +1,5 @@
-import { apiClient, ApiError } from "../api";
+import { ApiClient, ApiError } from "../api";
+import { getBackendBaseUrlSync } from "../../shared/utils/backendBaseUrl";
 
 export class ProxyAuthRequiredError extends Error {
   readonly code = "proxy_auth_required";
@@ -21,9 +22,26 @@ export class ModelService {
     return ModelService.instance;
   }
 
+  private resolveOpenAICompatBaseUrl(): string {
+    // The UI stores the "standard" backend base URL as ".../v1".
+    // OpenAI-compatible forwarding endpoints live under "/openai/v1/*".
+    const base = getBackendBaseUrlSync().trim().replace(/\/+$/, "");
+
+    // If the override already targets the OpenAI prefix, keep it.
+    if (base.endsWith("/openai/v1")) return base;
+
+    // Strip the standard v1 suffix if present.
+    const origin = base.endsWith("/v1") ? base.slice(0, -"/v1".length) : base;
+
+    return `${origin}/openai/v1`;
+  }
+
   async getModels(): Promise<string[]> {
     try {
-      const data = await apiClient.get<{ data: Array<{ id: string }> }>(
+      const openaiClient = new ApiClient({
+        baseUrl: this.resolveOpenAICompatBaseUrl(),
+      });
+      const data = await openaiClient.get<{ data: Array<{ id: string }> }>(
         "models",
       );
       return data.data.map((model) => model.id);
