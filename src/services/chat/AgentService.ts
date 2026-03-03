@@ -508,6 +508,14 @@ export class AgentClient {
         reader.releaseLock();
       }
     } catch (error) {
+      if (signal?.aborted) {
+        // Normal lifecycle (caller aborted due to navigation, completion, etc.)
+        console.debug(
+          "[AgentClient] Events subscription aborted for session:",
+          sessionId,
+        );
+        return;
+      }
       console.error("[AgentClient] Events subscription error:", error);
       throw error;
     }

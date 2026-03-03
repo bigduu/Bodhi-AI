@@ -69,7 +69,21 @@ export function useAgentEventSubscription() {
   // Chats that are processing but we couldn't subscribe yet (missing sessionId)
   const pendingChatIdsRef = useRef<Set<string>>(new Set());
 
+  // Reconnect backoff state (chatId -> state)
+  const reconnectStateByChatRef = useRef<
+    Map<string, { attempt: number; timer: ReturnType<typeof setTimeout> | null }>
+  >(new Map());
+
+  const clearReconnect = useCallback((chatId: string) => {
+    const existing = reconnectStateByChatRef.current.get(chatId);
+    if (existing?.timer) {
+      clearTimeout(existing.timer);
+    }
+    reconnectStateByChatRef.current.delete(chatId);
+  }, []);
+
   const cleanupChat = useCallback((chatId: string, opts?: { clearDraft?: boolean }) => {
+    clearReconnect(chatId);
     pendingChatIdsRef.current.delete(chatId);
 
     const existing = subscriptionsByChatRef.current.get(chatId);
@@ -96,6 +110,9 @@ export function useAgentEventSubscription() {
 
   const startSubscription = useCallback(
     (chatId: string, sessionId: string) => {
+      // If a reconnect was scheduled, starting a new subscription supersedes it.
+      clearReconnect(chatId);
+
       const controller = new AbortController();
       subscriptionsByChatRef.current.set(chatId, {
         chatId,
@@ -479,20 +496,62 @@ export function useAgentEventSubscription() {
           controller,
         )
         .then(() => {
-          // Stream ended without throwing. If we're still active, clean up.
+          // Stream ended without throwing. Backend SSE should be long-lived; treat this as a
+          // disconnect and attempt to resubscribe (unless we were explicitly aborted).
           if (controller.signal.aborted) return;
-          const current = subscriptionsByChatRef.current.get(chatId);
-          if (current?.sessionId === sessionId) {
+          const stillProcessing = useAppStore.getState().processingChats.has(chatId);
+          if (!stillProcessing) {
             cleanupChat(chatId, { clearDraft: true });
-            setChatProcessing(chatId, false);
+            return;
           }
+
+          // Restart subscription with backoff.
+          const prev = reconnectStateByChatRef.current.get(chatId);
+          const attempt = prev?.attempt ?? 0;
+          const delayMs = Math.min(5000, 250 * Math.pow(2, attempt));
+
+          cleanupChat(chatId, { clearDraft: false });
+          const timer = setTimeout(() => {
+            reconnectStateByChatRef.current.delete(chatId);
+            if (!useAppStore.getState().processingChats.has(chatId)) return;
+            const chat = useAppStore.getState().chats.find((c) => c.id === chatId);
+            const sid = chat?.id?.trim();
+            if (!sid) return;
+            startSubscription(chatId, sid);
+          }, delayMs);
+          reconnectStateByChatRef.current.set(chatId, { attempt: attempt + 1, timer });
         })
         .catch((err) => {
-          if (controller.signal.aborted || isAbortError(err)) return;
-          console.error(
-            "[useAgentEventSubscription] Subscription error:",
-            err,
-          );
+          // If we explicitly aborted, do nothing (normal cleanup path).
+          if (controller.signal.aborted) return;
+
+          // Some runtimes surface network disconnects as AbortError even when we didn't abort.
+          // In that case, attempt to resubscribe instead of tearing down processing state.
+          if (isAbortError(err)) {
+            const stillProcessing = useAppStore.getState().processingChats.has(chatId);
+            if (!stillProcessing) {
+              cleanupChat(chatId, { clearDraft: true });
+              return;
+            }
+
+            const prev = reconnectStateByChatRef.current.get(chatId);
+            const attempt = prev?.attempt ?? 0;
+            const delayMs = Math.min(5000, 250 * Math.pow(2, attempt));
+
+            cleanupChat(chatId, { clearDraft: false });
+            const timer = setTimeout(() => {
+              reconnectStateByChatRef.current.delete(chatId);
+              if (!useAppStore.getState().processingChats.has(chatId)) return;
+              const chat = useAppStore.getState().chats.find((c) => c.id === chatId);
+              const sid = chat?.id?.trim();
+              if (!sid) return;
+              startSubscription(chatId, sid);
+            }, delayMs);
+            reconnectStateByChatRef.current.set(chatId, { attempt: attempt + 1, timer });
+            return;
+          }
+
+          console.error("[useAgentEventSubscription] Subscription error:", err);
           cleanupChat(chatId, { clearDraft: true });
           setChatProcessing(chatId, false);
         });
@@ -509,6 +568,7 @@ export function useAgentEventSubscription() {
       setEvaluationState,
       clearEvaluationState,
       cleanupChat,
+      clearReconnect,
     ],
   );
 

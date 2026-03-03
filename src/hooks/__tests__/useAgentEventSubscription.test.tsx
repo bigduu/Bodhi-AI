@@ -18,7 +18,11 @@ vi.mock("../../pages/ChatPage/store", () => {
 });
 
 vi.mock("../../services/chat/AgentService", () => {
-  const mockSubscribeToEvents = vi.fn().mockResolvedValue(undefined);
+  // SSE subscriptions are long-lived; default to a never-resolving promise so the hook
+  // doesn't interpret the stream as "ended" and attempt to reconnect in tests.
+  const mockSubscribeToEvents = vi.fn().mockImplementation(
+    () => new Promise<void>(() => {}),
+  );
   return {
     AgentClient: class MockAgentClient {
       subscribeToEvents = mockSubscribeToEvents;
@@ -82,7 +86,7 @@ describe("useAgentEventSubscription", () => {
     // Get the subscribeToEvents mock from the AgentClient instance
     const client = new AgentClient();
     mockSubscribeToEvents = client.subscribeToEvents as ReturnType<typeof vi.fn>;
-    mockSubscribeToEvents.mockResolvedValue(undefined);
+    mockSubscribeToEvents.mockImplementation(() => new Promise<void>(() => {}));
   });
 
   it("should not subscribe when processingChats is empty", () => {
@@ -94,7 +98,7 @@ describe("useAgentEventSubscription", () => {
   it("should subscribe when chat is processing and session exists", async () => {
     mockState.processingChats = new Set(["session-1"]); // Session is processing
     mockStore.getState.mockReturnValue(mockState);
-    mockSubscribeToEvents.mockResolvedValue(undefined);
+    mockSubscribeToEvents.mockImplementation(() => new Promise<void>(() => {}));
 
     renderHook(() => useAgentEventSubscription());
 
@@ -223,7 +227,7 @@ describe("useAgentEventSubscription", () => {
   it("should not create duplicate subscriptions", async () => {
     mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
-    mockSubscribeToEvents.mockResolvedValue(undefined);
+    mockSubscribeToEvents.mockImplementation(() => new Promise<void>(() => {}));
 
     const { rerender } = renderHook(() => useAgentEventSubscription());
 
@@ -239,11 +243,39 @@ describe("useAgentEventSubscription", () => {
     });
   });
 
+  it("should reconnect on unexpected AbortError without clearing processing state", async () => {
+    mockState.processingChats = new Set(["session-1"]);
+    mockStore.getState.mockReturnValue(mockState);
+
+    const abortErr = Object.assign(new Error("stream aborted"), {
+      name: "AbortError",
+    });
+    mockSubscribeToEvents
+      .mockRejectedValueOnce(abortErr)
+      .mockImplementation(() => new Promise<void>(() => {}));
+
+    renderHook(() => useAgentEventSubscription());
+
+    await waitFor(() => {
+      expect(mockSubscribeToEvents).toHaveBeenCalledTimes(1);
+    });
+
+    // Default backoff starts at 250ms; use a real-time sleep to avoid fake-timer + waitFor edge cases.
+    await new Promise((r) => setTimeout(r, 350));
+
+    await waitFor(() => {
+      expect(mockSubscribeToEvents.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    expect(mockSetChatProcessing).not.toHaveBeenCalledWith("session-1", false);
+  });
+
   it("should handle token streaming", async () => {
     let tokenHandler: any;
     mockSubscribeToEvents.mockImplementation(
-      async (_sessionId: string, handlers: any) => {
+      (_sessionId: string, handlers: any) => {
         tokenHandler = handlers.onToken;
+        return new Promise<void>(() => {});
       },
     );
 
@@ -270,8 +302,9 @@ describe("useAgentEventSubscription", () => {
   it("should append tool_token output to the matching tool_call card", async () => {
     let capturedHandlers: any;
     mockSubscribeToEvents.mockImplementation(
-      async (_sessionId: string, handlers: any) => {
+      (_sessionId: string, handlers: any) => {
         capturedHandlers = handlers;
+        return new Promise<void>(() => {});
       },
     );
 
@@ -332,7 +365,7 @@ describe("useAgentEventSubscription", () => {
   it("should cleanup subscription on unmount", async () => {
     mockState.processingChats = new Set(["session-1"]);
     mockStore.getState.mockReturnValue(mockState);
-    mockSubscribeToEvents.mockResolvedValue(undefined);
+    mockSubscribeToEvents.mockImplementation(() => new Promise<void>(() => {}));
 
     const { unmount } = renderHook(() => useAgentEventSubscription());
 
