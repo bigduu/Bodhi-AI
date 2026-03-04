@@ -12,6 +12,7 @@ import {
   type McpServer,
   type McpServerApiRecord,
   type McpServerConfig,
+  type McpToolInfo,
   type RuntimeInfo,
   type ServerListResponse,
   type ToolListResponse,
@@ -235,6 +236,87 @@ const normalizeServer = (record: McpServerApiRecord): McpServer => {
   };
 };
 
+const buildAlias = (serverId: string, toolName: string): string =>
+  `mcp__${serverId}__${toolName}`;
+
+const parseAlias = (
+  value: string,
+): { server_id: string; original_name: string } | null => {
+  if (!value.startsWith("mcp__")) return null;
+  const rest = value.slice("mcp__".length);
+  const sep = rest.indexOf("__");
+  if (sep <= 0) return null;
+  const server_id = rest.slice(0, sep);
+  const original_name = rest.slice(sep + 2);
+  if (!server_id || !original_name) return null;
+  return { server_id, original_name };
+};
+
+const normalizeToolInfo = (
+  raw: unknown,
+  serverIdFallback?: string,
+  index = 0,
+): McpToolInfo | null => {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+
+  const aliasCandidate =
+    typeof record.alias === "string"
+      ? record.alias
+      : typeof record.name === "string" && record.name.startsWith("mcp__")
+        ? record.name
+        : undefined;
+
+  const parsedFromAlias =
+    aliasCandidate && typeof aliasCandidate === "string"
+      ? parseAlias(aliasCandidate)
+      : null;
+
+  const server_id =
+    (typeof record.server_id === "string" ? record.server_id : undefined) ??
+    (typeof record.serverId === "string" ? record.serverId : undefined) ??
+    parsedFromAlias?.server_id ??
+    serverIdFallback ??
+    "";
+
+  const original_name =
+    (typeof record.original_name === "string"
+      ? record.original_name
+      : undefined) ??
+    (typeof record.originalName === "string"
+      ? record.originalName
+      : undefined) ??
+    parsedFromAlias?.original_name ??
+    (typeof record.name === "string" ? record.name : undefined) ??
+    "";
+
+  const alias =
+    aliasCandidate ??
+    (server_id && original_name ? buildAlias(server_id, original_name) : "");
+
+  const description =
+    typeof record.description === "string" ? record.description : "";
+
+  const parameters =
+    "parameters" in record
+      ? (record as any).parameters
+      : "inputSchema" in record
+        ? (record as any).inputSchema
+        : "input_schema" in record
+          ? (record as any).input_schema
+          : undefined;
+
+  const safeAlias = alias || original_name || `mcp_tool_${index}`;
+
+  return {
+    alias: safeAlias,
+    server_id: server_id || "unknown",
+    original_name: original_name || safeAlias,
+    description,
+    parameters,
+  };
+};
+
 export class McpService {
   async getServers(): Promise<McpServer[]> {
     const response =
@@ -284,10 +366,13 @@ export class McpService {
     );
   }
 
-  async getTools(serverId?: string): Promise<ToolListResponse["tools"]> {
+  async getTools(serverId?: string): Promise<McpToolInfo[]> {
     const path = serverId ? `mcp/servers/${serverId}/tools` : "mcp/tools";
     const response = await agentApiClient.get<ToolListResponse>(path);
-    return Array.isArray(response.tools) ? response.tools : [];
+    const rawTools = Array.isArray(response.tools) ? response.tools : [];
+    return rawTools
+      .map((tool, index) => normalizeToolInfo(tool, serverId, index))
+      .filter((tool): tool is McpToolInfo => Boolean(tool));
   }
 
   async importServers(payload: {

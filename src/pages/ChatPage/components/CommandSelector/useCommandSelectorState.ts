@@ -49,9 +49,19 @@ export const useCommandSelectorState = ({
   useEffect(() => {
     const filtered = commands.filter((command) => {
       const searchLower = searchText.toLowerCase();
+      const displayNameLower = (command.displayName ?? "").toLowerCase();
       return (
         command.name.toLowerCase().includes(searchLower) ||
+        displayNameLower.includes(searchLower) ||
         command.description.toLowerCase().includes(searchLower) ||
+        (command.type === "mcp" &&
+          [
+            command.metadata?.serverId,
+            command.metadata?.serverName,
+            command.metadata?.originalName,
+          ]
+            .filter((v): v is string => typeof v === "string")
+            .some((v) => v.toLowerCase().includes(searchLower))) ||
         (command.category?.toLowerCase().includes(searchLower) ?? false) ||
         (command.tags?.some((tag: string) =>
           tag.toLowerCase().includes(searchLower),

@@ -1,9 +1,10 @@
 import React, { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Collapse, Space, Button, Typography, theme, Tooltip } from "antd";
+import { Collapse, Space, Button, Typography, theme, Tooltip, Tag } from "antd";
 import { ToolOutlined, CopyOutlined } from "@ant-design/icons";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { safeStringify } from "../../utils/resultFormatters";
+import { parseMcpToolAlias } from "../../utils/mcpAlias";
 
 const { Text } = Typography;
 
@@ -22,6 +23,11 @@ function generateIntentDescription(
   toolName: string,
   params: Record<string, any>,
 ): string {
+  const mcpParts = parseMcpToolAlias(toolName);
+  if (mcpParts) {
+    return `MCP ${mcpParts.serverId}: ${mcpParts.toolName}`;
+  }
+
   const truncate = (value: unknown, maxLen: number) => {
     const str = typeof value === "string" ? value : String(value ?? "");
     if (!str || str.length <= maxLen) return str;
@@ -57,6 +63,7 @@ const ToolCallCardComponent: React.FC<ToolCallCardProps> = ({
   defaultExpanded = false,
 }) => {
   const { token } = theme.useToken();
+  const mcpParts = useMemo(() => parseMcpToolAlias(toolName), [toolName]);
 
   const [activeKeys, setActiveKeys] = useState<string[]>(
     defaultExpanded ? [toolCallId] : [],
@@ -158,9 +165,25 @@ const ToolCallCardComponent: React.FC<ToolCallCardProps> = ({
               <ToolOutlined
                 style={{ color: token.colorPrimary, flexShrink: 0 }}
               />
-              <Text strong style={{ color: token.colorText, flexShrink: 0 }}>
-                {toolName}
-              </Text>
+              {mcpParts ? (
+                <Space size="small" wrap={false}>
+                  <Tag color="purple" style={{ marginInlineEnd: 0 }}>
+                    MCP
+                  </Tag>
+                  <Text strong style={{ color: token.colorText }}>
+                    {mcpParts.toolName}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: token.fontSizeSM }}>
+                    <Text code style={{ fontSize: token.fontSizeSM }}>
+                      {mcpParts.serverId}
+                    </Text>
+                  </Text>
+                </Space>
+              ) : (
+                <Text strong style={{ color: token.colorText, flexShrink: 0 }}>
+                  {toolName}
+                </Text>
+              )}
               <Text
                 type="secondary"
                 ellipsis

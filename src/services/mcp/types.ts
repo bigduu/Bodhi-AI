@@ -82,6 +82,21 @@ export interface McpToolInfo {
   parameters?: unknown;
 }
 
+// Raw tool record returned by the backend. Historically this used snake_case
+// fields, but newer MCP-compatible backends may return `name` + `inputSchema`.
+export type McpToolApiRecord = Partial<{
+  alias: string;
+  server_id: string;
+  serverId: string;
+  original_name: string;
+  originalName: string;
+  name: string;
+  description: string;
+  parameters: unknown;
+  inputSchema: unknown;
+  input_schema: unknown;
+}>;
+
 export interface McpServerApiRecord {
   id: string;
   name?: string;
@@ -99,7 +114,7 @@ export interface ServerListResponse {
 }
 
 export interface ToolListResponse {
-  tools: McpToolInfo[];
+  tools: McpToolApiRecord[];
 }
 
 export interface McpActionResponse {

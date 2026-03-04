@@ -68,6 +68,26 @@
   z-index: 10;
 }
 
+.chat-view-input-container-wrapper .active-tool-card-wrapper {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 220ms ease,
+    transform 220ms ease;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.chat-view-input-container-wrapper .active-tool-card-wrapper.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
 @keyframes highlight-pulse {
   0% {
     background-color: color-mix(in srgb, var(--ant-color-primary) 10%, transparent);

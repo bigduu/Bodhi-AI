@@ -2,6 +2,7 @@ import React from "react";
 import { Spin, Tag, theme } from "antd";
 import { useCommandSelectorState } from "./useCommandSelectorState";
 import type { CommandItem } from "../../types/command";
+import { parseMcpToolAlias } from "../../utils/mcpAlias";
 import "./index.css";
 
 const { useToken } = theme;
@@ -113,6 +114,23 @@ const CommandSelector: React.FC<CommandSelectorProps> = ({
     const typeConfig = TYPE_CONFIG[command.type];
     const isSelected = index === selectedIndex;
 
+    const mcpParts =
+      command.type === "mcp" ? parseMcpToolAlias(command.name) : null;
+    const mcpToolName =
+      command.type === "mcp"
+        ? command.metadata?.originalName ||
+          mcpParts?.toolName ||
+          command.displayName ||
+          command.name
+        : null;
+    const mcpServerLabel =
+      command.type === "mcp"
+        ? command.metadata?.serverName ||
+          command.metadata?.serverId ||
+          mcpParts?.serverId ||
+          null
+        : null;
+
     return (
       <div
         key={command.id}
@@ -128,11 +146,16 @@ const CommandSelector: React.FC<CommandSelectorProps> = ({
               color: token.colorPrimary,
             }}
           >
-            /{command.name}
+            /{command.type === "mcp" && mcpToolName ? mcpToolName : command.name}
           </div>
-          <Tag color={typeConfig.color}>
-            {typeConfig.icon} {typeConfig.label}
-          </Tag>
+          <div style={{ display: "flex", gap: token.marginXS }}>
+            {command.type === "mcp" && mcpServerLabel && (
+              <Tag color="geekblue">{mcpServerLabel}</Tag>
+            )}
+            <Tag color={typeConfig.color}>
+              {typeConfig.icon} {typeConfig.label}
+            </Tag>
+          </div>
         </div>
 
         <div
@@ -143,6 +166,17 @@ const CommandSelector: React.FC<CommandSelectorProps> = ({
         >
           {command.description}
         </div>
+
+        {command.type === "mcp" && mcpServerLabel && (
+          <div
+            className="command-selector-item-category"
+            style={{
+              color: token.colorTextTertiary,
+            }}
+          >
+            Server: {mcpServerLabel}
+          </div>
+        )}
 
         {command.category && (
           <div

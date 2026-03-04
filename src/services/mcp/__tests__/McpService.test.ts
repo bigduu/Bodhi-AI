@@ -117,6 +117,8 @@ describe("mcpService", () => {
 
     expect(serverTools).toHaveLength(1);
     expect(serverTools[0].alias).toBe("mcp__filesystem__read_file");
+    expect(serverTools[0].server_id).toBe("filesystem");
+    expect(serverTools[0].original_name).toBe("read_file");
     expect(globalTools).toEqual([]);
 
     expect(global.fetch).toHaveBeenNthCalledWith(
@@ -128,6 +130,37 @@ describe("mcpService", () => {
       2,
       "http://127.0.0.1:9562/api/v1/mcp/tools",
       expect.objectContaining({ method: "GET" }),
+    );
+  });
+
+  it("normalizes MCP-style tool payloads (name + inputSchema)", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce(
+      mockFetchResponse({
+        tools: [
+          {
+            name: "read_file",
+            description: "Read file contents",
+            inputSchema: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+            },
+          },
+        ],
+      }),
+    );
+
+    const tools = await mcpService.getTools("filesystem");
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0].server_id).toBe("filesystem");
+    expect(tools[0].original_name).toBe("read_file");
+    expect(tools[0].alias).toBe("mcp__filesystem__read_file");
+    expect(tools[0].parameters).toEqual(
+      expect.objectContaining({
+        type: "object",
+        required: ["path"],
+      }),
     );
   });
 });

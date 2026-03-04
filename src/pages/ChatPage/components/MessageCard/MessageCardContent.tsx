@@ -1,5 +1,5 @@
 import React, { memo } from "react";
-import { Space, Typography, Button, Alert } from "antd";
+import { Space, Typography, Button, Alert, Tag } from "antd";
 import { SettingOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import type { Components } from "react-markdown";
@@ -13,8 +13,62 @@ import {
 import ToolResultCard from "../ToolResultCard";
 import ToolCallCard from "../ToolCallCard";
 import WorkflowResultCard from "../WorkflowResultCard";
+import { parseMcpToolAlias } from "../../utils/mcpAlias";
 
 const { Text } = Typography;
+
+type SelectionHint =
+  | { type: "mcp"; label: string; serverId?: string; toolName?: string }
+  | { type: "skill"; label: string; category?: string };
+
+const extractSelectionHints = (
+  input: string,
+): { cleanText: string; hints: SelectionHint[] } => {
+  if (!input) return { cleanText: input, hints: [] };
+
+  const lines = input.split("\n");
+  const hints: SelectionHint[] = [];
+  const keptLines: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    const mcpMatch = line.match(
+      /^\[User explicitly selected MCP tool:\s*(.+?)\s*\]$/,
+    );
+    if (mcpMatch) {
+      const label = mcpMatch[1] ?? "";
+      const parsed = parseMcpToolAlias(label);
+      hints.push({
+        type: "mcp",
+        label,
+        serverId: parsed?.serverId,
+        toolName: parsed?.toolName,
+      });
+      continue;
+    }
+
+    const skillMatch = line.match(
+      /^\[User explicitly selected skill:\s*(.+?)\s*\]$/,
+    );
+    if (skillMatch) {
+      const label = skillMatch[1] ?? "";
+      const categoryMatch = label.match(/\(Category:\s*(.+?)\s*\)\s*$/);
+      const category = categoryMatch?.[1];
+      hints.push({
+        type: "skill",
+        label,
+        category,
+      });
+      continue;
+    }
+
+    keptLines.push(rawLine);
+  }
+
+  const cleanText = keptLines.join("\n").trimStart();
+  return { cleanText, hints };
+};
 
 interface MessageCardContentProps {
   message: Message;
@@ -142,14 +196,70 @@ const MessageCardContent: React.FC<MessageCardContentProps> = ({
     );
   }
 
+  const { cleanText, hints } =
+    message.role === "user"
+      ? extractSelectionHints(messageText)
+      : { cleanText: messageText, hints: [] };
+
   return (
-    <ReactMarkdown
-      remarkPlugins={markdownPlugins}
-      rehypePlugins={rehypePlugins}
-      components={markdownComponents}
-    >
-      {isUserToolCall ? formatUserToolCall(messageText) : messageText}
-    </ReactMarkdown>
+    <Space direction="vertical" style={{ width: "100%" }} size="small">
+      {hints.map((hint, idx) => {
+        if (hint.type === "mcp") {
+          return (
+            <Alert
+              key={`hint-mcp-${idx}`}
+              type="info"
+              showIcon={false}
+              message={
+                <Space wrap size="small">
+                  <Tag color="purple">MCP</Tag>
+                  <Text strong>Selected tool</Text>
+                  {hint.serverId && (
+                    <Text type="secondary">
+                      <Text code>{hint.serverId}</Text>
+                    </Text>
+                  )}
+                  {hint.toolName && (
+                    <Text type="secondary">
+                      <Text code>{hint.toolName}</Text>
+                    </Text>
+                  )}
+                </Space>
+              }
+              style={{ marginBottom: 0 }}
+            />
+          );
+        }
+
+        return (
+          <Alert
+            key={`hint-skill-${idx}`}
+            type="success"
+            showIcon={false}
+            message={
+              <Space wrap size="small">
+                <Tag color="green">Skill</Tag>
+                <Text strong>Selected</Text>
+                {hint.category && (
+                  <Text type="secondary">
+                    <Text code>{hint.category}</Text>
+                  </Text>
+                )}
+              </Space>
+            }
+            style={{ marginBottom: 0 }}
+          />
+        );
+      })}
+
+      <ReactMarkdown
+        remarkPlugins={markdownPlugins}
+        rehypePlugins={rehypePlugins}
+        components={markdownComponents}
+      >
+        {isUserToolCall ? formatUserToolCall(cleanText) : cleanText}
+      </ReactMarkdown>
+    </Space>
   );
 };
 

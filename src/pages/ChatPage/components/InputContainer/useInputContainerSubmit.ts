@@ -75,7 +75,13 @@ export const useInputContainerSubmit = ({
         );
         if (hasToken) {
           const extraInput = trimmedInput.slice(token.length).trim();
-          const mcpHint = `[User explicitly selected MCP tool: ${selectedWorkflow.displayName || selectedWorkflow.name}]`;
+          // Use the fully-qualified alias in the hint to disambiguate tools
+          // across servers. UI will render this hint as a structured chip.
+          const mcpHint = `[User explicitly selected MCP tool: ${
+            selectedWorkflow.mcpAlias ||
+            selectedWorkflow.displayName ||
+            selectedWorkflow.name
+          }]`;
           composedInput = [mcpHint, extraInput].filter(Boolean).join("\n\n");
         }
       }

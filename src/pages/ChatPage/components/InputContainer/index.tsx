@@ -48,6 +48,13 @@ export type WorkflowDraft = {
   type?: "workflow" | "skill" | "mcp"; // Add command type
   displayName?: string; // Add display name for better prompts
   category?: string; // Add category for skills
+  // For non-workflow commands (skill/mcp), keep additional identifiers.
+  // `name` is the token shown in the input (e.g. "read_file"), while `mcpAlias`
+  // can be the fully-qualified MCP tool name (e.g. "mcp__filesystem__read_file").
+  mcpAlias?: string;
+  mcpServerId?: string;
+  mcpServerName?: string;
+  mcpOriginalName?: string;
 };
 
 interface InputContainerProps {

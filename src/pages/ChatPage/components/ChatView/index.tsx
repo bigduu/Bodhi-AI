@@ -10,7 +10,11 @@ import { DownOutlined, UpOutlined } from "@ant-design/icons";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { selectChatById, useAppStore } from "../../store";
-import type { Message } from "../../types/chat";
+import {
+  isAssistantToolCallMessage,
+  isAssistantToolResultMessage,
+  type Message,
+} from "../../types/chat";
 import { ChatInputArea } from "./ChatInputArea";
 import { ChatMessagesList } from "./ChatMessagesList";
 import { TodoList } from "@components/TodoList";
@@ -24,6 +28,7 @@ import {
   useChatViewMessages,
   type RenderableEntry,
 } from "./useChatViewMessages";
+import type { PendingToolCall } from "./ActiveToolMessageCard";
 
 const { useToken } = theme;
 const { useBreakpoint } = Grid;
@@ -81,6 +86,33 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const isProcessing = chatId
     ? processingChats.has(chatId)
     : false;
+
+  const pendingToolCalls = useMemo<PendingToolCall[]>(() => {
+    if (!currentMessages || currentMessages.length === 0) return [];
+
+    const completedToolCallIds = new Set<string>();
+    for (const msg of currentMessages) {
+      if (isAssistantToolResultMessage(msg) && msg.toolCallId) {
+        completedToolCallIds.add(msg.toolCallId);
+      }
+    }
+
+    const pendingById = new Map<string, PendingToolCall>();
+    for (const msg of currentMessages) {
+      if (!isAssistantToolCallMessage(msg)) continue;
+      for (const call of msg.toolCalls ?? []) {
+        if (completedToolCallIds.has(call.toolCallId)) continue;
+        pendingById.set(call.toolCallId, {
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+          parameters: call.parameters,
+          streamingOutput: call.streamingOutput,
+        });
+      }
+    }
+
+    return Array.from(pendingById.values());
+  }, [currentMessages]);
 
   const interactionState = useMemo(() => {
     const value: "IDLE" | "THINKING" | "AWAITING_APPROVAL" = isProcessing
@@ -406,6 +438,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           maxWidth={showMessagesView ? getContainerMaxWidth() : "100%"}
           onWorkflowDraftChange={setWorkflowDraft}
           showMessagesView={Boolean(showMessagesView)}
+          pendingToolCalls={pendingToolCalls}
         />
       </Flex>
     </Layout>

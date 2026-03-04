@@ -4,6 +4,7 @@ import { CommandService } from "../../services/CommandService";
 import type { WorkflowCommandInfo } from "../../utils/inputHighlight";
 import type { WorkflowDraft } from "./index";
 import type { CommandItem } from "../../types/command";
+import { parseMcpToolAlias } from "../../utils/mcpAlias";
 
 interface UseInputContainerCommandProps {
   setContent: (value: string) => void;
@@ -100,6 +101,22 @@ export const useInputContainerCommand = ({
     async (command: CommandItem) => {
       setShowCommandSelector(false);
 
+      const getInsertToken = (cmd: CommandItem): string => {
+        if (cmd.type !== "mcp") return cmd.name;
+        // Prefer server-provided original tool name (short, user-friendly).
+        const original = cmd.metadata?.originalName;
+        if (typeof original === "string" && original.trim()) {
+          return original.trim();
+        }
+        // Fallback: parse from alias (mcp__server__tool).
+        const parsed = parseMcpToolAlias(cmd.name);
+        if (parsed?.toolName) return parsed.toolName;
+        // Last resort.
+        return cmd.displayName || cmd.name;
+      };
+
+      const insertToken = getInsertToken(command);
+
       // Get current cursor position
       const textArea = textAreaRef.current?.resizableTextArea?.textArea;
       const cursorPosition = textArea?.selectionStart ?? content.length;
@@ -117,18 +134,18 @@ export const useInputContainerCommand = ({
         const startIndex = cursorPosition - commandMatch[0].length;
         const before = content.substring(0, startIndex);
         const after = content.substring(cursorPosition);
-        newValue = `${before}/${command.name} ${after}`;
-        newCursorPos = `${before}/${command.name} `.length;
+        newValue = `${before}/${insertToken} ${after}`;
+        newCursorPos = `${before}/${insertToken} `.length;
       } else if (content.trim() === "") {
         // Case 2: Empty input, just set the command
-        newValue = `/${command.name} `;
+        newValue = `/${insertToken} `;
         newCursorPos = newValue.length;
       } else {
         // Case 3: Insert at cursor position
         const before = content.substring(0, cursorPosition);
         const after = content.substring(cursorPosition);
-        newValue = `${before}/${command.name} ${after}`;
-        newCursorPos = `${before}/${command.name} `.length;
+        newValue = `${before}/${insertToken} ${after}`;
+        newCursorPos = `${before}/${insertToken} `.length;
       }
 
       // Update content
@@ -150,12 +167,21 @@ export const useInputContainerCommand = ({
         // But we store the command info for use in submit
         const draft: WorkflowDraft = {
           id: `command-draft-${command.id}`,
-          name: command.name,
+          name: insertToken,
           content: "", // No content preview for skills/mcp
           createdAt: new Date().toISOString(),
           type: command.type,
           displayName: command.displayName,
           category: command.category,
+          mcpAlias: command.type === "mcp" ? command.name : undefined,
+          mcpServerId:
+            command.type === "mcp" ? command.metadata?.serverId : undefined,
+          mcpServerName:
+            command.type === "mcp" ? command.metadata?.serverName : undefined,
+          mcpOriginalName:
+            command.type === "mcp"
+              ? command.metadata?.originalName
+              : undefined,
         };
         setSelectedCommand(draft);
         onWorkflowDraftChange?.(draft);

@@ -1,5 +1,13 @@
 import React, { memo, useMemo, useState } from "react";
-import { Collapse, Space, Typography, theme, Badge, CollapseProps } from "antd";
+import {
+  Collapse,
+  Space,
+  Typography,
+  theme,
+  Badge,
+  CollapseProps,
+  Tag,
+} from "antd";
 import type { GlobalToken } from "antd/es/theme/interface";
 import {
   ToolOutlined,
@@ -15,6 +23,7 @@ import type {
   AssistantToolCallMessage,
   AssistantToolResultMessage,
 } from "../../types/chat";
+import { parseMcpToolAlias } from "../../utils/mcpAlias";
 
 const { Text } = Typography;
 
@@ -67,6 +76,11 @@ function generateToolIntent(
   toolName: string,
   params: Record<string, any>,
 ): string {
+  const mcpParts = parseMcpToolAlias(toolName);
+  if (mcpParts) {
+    return `MCP ${mcpParts.serverId}: ${mcpParts.toolName}`;
+  }
+
   const truncate = (value: unknown, maxLen: number) => {
     const str = typeof value === "string" ? value : String(value ?? "");
     if (!str || str.length <= maxLen) return str;
@@ -162,6 +176,7 @@ const ToolSessionCardComponent: React.FC<ToolSessionCardProps> = ({
           toolCall.toolName,
           toolCall.parameters,
         );
+        const mcpParts = parseMcpToolAlias(toolCall.toolName);
 
         return {
           key: item.call.id,
@@ -184,12 +199,28 @@ const ToolSessionCardComponent: React.FC<ToolSessionCardProps> = ({
                 {index + 1}.
               </span>
               <span style={{ flexShrink: 0 }}>{status.icon}</span>
-              <Text
-                strong
-                style={{ fontSize: token.fontSizeSM, flexShrink: 0 }}
-              >
-                {toolCall.toolName}
-              </Text>
+              {mcpParts ? (
+                <Space size="small" wrap={false}>
+                  <Tag color="purple" style={{ marginInlineEnd: 0 }}>
+                    MCP
+                  </Tag>
+                  <Text strong style={{ fontSize: token.fontSizeSM }}>
+                    {mcpParts.toolName}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: token.fontSizeSM }}>
+                    <Text code style={{ fontSize: token.fontSizeSM }}>
+                      {mcpParts.serverId}
+                    </Text>
+                  </Text>
+                </Space>
+              ) : (
+                <Text
+                  strong
+                  style={{ fontSize: token.fontSizeSM, flexShrink: 0 }}
+                >
+                  {toolCall.toolName}
+                </Text>
+              )}
               <Text
                 type="secondary"
                 ellipsis
@@ -212,15 +243,16 @@ const ToolSessionCardComponent: React.FC<ToolSessionCardProps> = ({
                 streamingOutput={toolCall.streamingOutput}
                 defaultExpanded={true}
               />
-              {item.result && (
-                <ToolResultCard
-                  content={item.result.result.result}
-                  toolName={toolCall.toolName}
-                  status={item.result.isError ? "error" : "success"}
-                  timestamp={item.result.createdAt}
-                  defaultCollapsed={false}
-                />
-              )}
+              {item.result &&
+                item.result.result.display_preference !== "Hidden" && (
+                  <ToolResultCard
+                    content={item.result.result.result}
+                    toolName={toolCall.toolName}
+                    status={item.result.isError ? "error" : "success"}
+                    timestamp={item.result.createdAt}
+                    defaultCollapsed={false}
+                  />
+                )}
             </Space>
           ),
           style: {

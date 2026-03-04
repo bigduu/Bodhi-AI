@@ -97,7 +97,10 @@ function groupToolMessages(
       } else if (isToolResultMessage(message)) {
         // Find the matching call by toolCallId and add result
         const matchingCallIndex = currentToolSession.findIndex(
-          (item) => item.call.toolCalls[0]?.toolCallId === message.toolCallId,
+          (item) =>
+            item.call.toolCalls?.some(
+              (tc) => tc.toolCallId === message.toolCallId,
+            ),
         );
         if (matchingCallIndex !== -1) {
           currentToolSession[matchingCallIndex].result = message;
@@ -145,14 +148,9 @@ export const useChatViewMessages = (
     return null;
   }, [currentChat, currentMessages]);
 
-  const shouldHideMessage = useCallback((item: Message): boolean => {
-    if ("type" in item && item.type === "tool_result") {
-      const toolResultMsg = item as any;
-      if (toolResultMsg.result?.display_preference === "Hidden") {
-        return true;
-      }
-    }
-
+  const shouldHideMessage = useCallback((_item: Message): boolean => {
+    // Keep tool_result messages even when `display_preference === "Hidden"` so
+    // ToolSessionCard can accurately compute completion status.
     return false;
   }, []);
 
