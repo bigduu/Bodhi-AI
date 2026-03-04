@@ -5,17 +5,68 @@ This project uses an automated branding system to maintain separate identities f
 ## Quick Start
 
 ```bash
+# Development with branding
+npm run tauri:dev:internal    # Development with internal branding (Bodhi)
+npm run tauri:dev:public      # Development with public branding (Bamboo)
+
 # Build for internal development
 npm run build:internal
+npm run tauri:build:internal
 
 # Build for public release
 npm run build:public
-
-# Build Tauri app for internal use
-npm run tauri:build:internal
-
-# Build Tauri app for public release
 npm run tauri:build:public
+```
+
+## Branding Targets
+
+### Internal (default)
+- **Product Name**: Bodhi
+- **Package Name**: bodhi
+- **Window Title**: Bodhi
+- **System Prompt**: "You are Bodhi"
+
+**Use for**:
+- Local development
+- Internal testing
+- Development builds
+
+### Public
+- **Product Name**: Bamboo
+- **Package Name**: bamboo
+- **Window Title**: Bamboo
+- **System Prompt**: "You are Bamboo"
+
+**Use for**:
+- GitHub releases
+- Public distribution
+- Production builds
+
+## Available Commands
+
+### Rebranding Commands
+```bash
+# Switch brand without building
+npm run rebrand:internal     # Switch to internal branding
+npm run rebrand:public       # Switch to public branding
+```
+
+### Build Commands
+```bash
+# Frontend-only builds
+npm run build:internal       # Build frontend with internal branding
+npm run build:public         # Build frontend with public branding
+
+# Full Tauri application builds
+npm run tauri:build:internal # Build Tauri app with internal branding
+npm run tauri:build:public   # Build Tauri app with public branding
+```
+
+### Development Commands
+```bash
+# Development with hot reload
+npm run tauri:dev:internal   # Dev mode with internal branding
+npm run tauri:dev:public     # Dev mode with public branding
 ```
 
 ## Branding Targets
