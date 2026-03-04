@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Bamboo",
+  "productName": "Bodhi",
   "version": "2026.3.8",
-  "identifier": "com.bamboo.app",
+  "identifier": "com.bodhi.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Bamboo",
+        "title": "Bodhi",
         "width": 1200,
         "height": 800,
         "decorations": true,
