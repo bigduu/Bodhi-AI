@@ -1,4 +1,4 @@
-import { Card, Empty, List, Space, Typography } from "antd";
+import { Card, Collapse, Empty, List, Space, Typography } from "antd";
 import type { McpServer, McpToolInfo } from "../../../../../services/mcp";
 
 const { Text } = Typography;
@@ -34,6 +34,16 @@ export const McpToolList: React.FC<McpToolListProps> = ({
               tool.server_id,
               tool.original_name,
             );
+            const schemaText =
+              tool.parameters === undefined
+                ? null
+                : (() => {
+                    try {
+                      return JSON.stringify(tool.parameters, null, 2);
+                    } catch {
+                      return String(tool.parameters);
+                    }
+                  })();
             return (
               <List.Item>
                 <Space direction="vertical" size={2} style={{ width: "100%" }}>
@@ -45,6 +55,28 @@ export const McpToolList: React.FC<McpToolListProps> = ({
                   <Text type="secondary">
                     Alias mapping: <Text code>{expectedAlias}</Text>
                   </Text>
+                  {schemaText && (
+                    <Collapse
+                      size="small"
+                      items={[
+                        {
+                          key: "schema",
+                          label: "Parameters schema",
+                          children: (
+                            <pre
+                              style={{
+                                margin: 0,
+                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
+                              }}
+                            >
+                              {schemaText}
+                            </pre>
+                          ),
+                        },
+                      ]}
+                    />
+                  )}
                 </Space>
               </List.Item>
             );

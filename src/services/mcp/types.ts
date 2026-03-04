@@ -77,6 +77,9 @@ export interface McpToolInfo {
   server_id: string;
   original_name: string;
   description: string;
+  // JSON Schema describing expected arguments for this MCP tool.
+  // Optional for backward compatibility with older backends.
+  parameters?: unknown;
 }
 
 export interface McpServerApiRecord {
