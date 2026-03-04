@@ -211,8 +211,6 @@ export function useMessageStreaming(
 
       await deps.addMessage(chatId, userMessage);
 
-      deps.setChatProcessing(chatId, true);
-
       try {
         console.log("[useChatStreaming] Using Agent Server");
         await sendWithAgent(content, chatId, userMessage);

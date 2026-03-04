@@ -229,4 +229,59 @@ describe("useMessageStreaming", () => {
       }),
     );
   });
+
+  it("does not set processing true until after execute starts (avoid early /events subscribe)", async () => {
+    mockStoreState.agentAvailability = true;
+
+    const order: string[] = [];
+    mockAgentSendMessage.mockImplementationOnce(async () => {
+      order.push("chat");
+      return { session_id: "chat-1", status: "started" };
+    });
+    mockAgentExecute.mockImplementationOnce(async () => {
+      order.push("execute");
+      return {
+        session_id: "chat-1",
+        status: "started",
+        events_url: "/api/v1/events/chat-1",
+      };
+    });
+
+    const mockChat = {
+      id: "chat-1",
+      title: "Test Chat",
+      createdAt: Date.now(),
+      messages: [],
+      config: {
+        systemPromptId: "general_assistant",
+        baseSystemPrompt: "",
+        lastUsedEnhancedPrompt: null,
+      },
+      currentInteraction: {
+        machineState: "idle",
+        streamingMessageId: null,
+        streamingContent: null,
+      },
+    };
+    mockStoreState.chats = [mockChat];
+
+    const deps = {
+      chatId: "chat-1",
+      addMessage: vi.fn(async () => undefined),
+      setChatProcessing: vi.fn((chatId: string, isProcessing: boolean) => {
+        order.push(`processing:${chatId}:${String(isProcessing)}`);
+      }),
+      updateChat: vi.fn(),
+    };
+
+    const { result } = renderHook(() => useMessageStreaming(deps));
+
+    await act(async () => {
+      await result.current.sendMessage("hello");
+    });
+
+    // The key safety property: we should not turn on processing (which triggers SSE subscribe)
+    // before the user message is persisted and the agent execution is started.
+    expect(order).toEqual(["chat", "execute", "processing:chat-1:true"]);
+  });
 });
