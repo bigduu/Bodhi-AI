@@ -9,6 +9,8 @@
     "fs:default",
     {
       "identifier": "fs:write-all"
-    }
+    },
+    "process:default",
+    "process:allow-exit"
   ]
 }

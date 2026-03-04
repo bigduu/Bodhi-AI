@@ -1,8 +1,5 @@
 [workspace]
-members = [
-    "src-tauri",
-    "e2e-backend",
-]
+members = ["src-tauri", "e2e-backend"]
 resolver = "2"
 default-members = ["src-tauri"]
 
@@ -34,7 +31,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # HTTP
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "rustls-tls",
+    "gzip",
+] }
 actix-web = "4"
 actix-cors = "0.7"
 actix-http = "3"
@@ -65,13 +67,14 @@ hex = "0.4"
 rusqlite = "0.31"
 
 # Tauri
-tauri = { version = "2.10", features = ["macos-private-api"] }
+tauri = { version = "2.5", features = ["macos-private-api"] }
 tauri-build = "2.5"
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-process = "2"
 
 # Bamboo engine (shared by src-tauri and e2e-backend)
 bamboo-agent = { path = "../bamboo" }
