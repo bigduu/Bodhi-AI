@@ -10,6 +10,7 @@ import {
 import type { UserSystemPrompt } from "../../types/chat";
 import { useAppStore } from "../../store";
 import { SystemPromptListItem } from "./SystemPromptListItem";
+import { copyText } from "@shared/utils/clipboard";
 
 const { Text } = Typography;
 const { useToken } = theme;
@@ -60,19 +61,7 @@ const SystemPromptSelector: React.FC<SystemPromptSelectorProps> = ({
     const content = prompt.content ?? "";
 
     try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(content);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = content;
-        textarea.style.position = "fixed";
-        textarea.style.opacity = "0";
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand("copy");
-        document.body.removeChild(textarea);
-      }
-
+      await copyText(content);
       messageApi.success(`Copied "${prompt.name}" prompt`);
     } catch (error) {
       console.error("[SystemPromptSelector] Failed to copy prompt:", error);

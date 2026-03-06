@@ -4,10 +4,10 @@
   "version": "2026.3.8",
   "identifier": "com.bodhi.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run web:dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "npm run web:build",
+    "frontendDist": "../../lotus/dist"
   },
   "app": {
     "macOSPrivateApi": true,

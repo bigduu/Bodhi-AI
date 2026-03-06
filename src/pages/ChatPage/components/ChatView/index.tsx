@@ -273,6 +273,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
     return screens.xs ? 16 : 32;
   };
 
+  const activeToolSessionId = useMemo(() => {
+    // Prefer the latest tool session with a pending tool, so "View output" jumps
+    // to the most relevant live output in the message list.
+    for (let i = renderableMessagesWithDraft.length - 1; i >= 0; i--) {
+      const entry = renderableMessagesWithDraft[i];
+      if (!entry) continue;
+      if (!("type" in entry) || entry.type !== "tool_session") continue;
+      if (entry.tools.some((t) => !t.result)) return entry.id;
+    }
+    return null;
+  }, [renderableMessagesWithDraft]);
+
   return (
     <Layout
       style={{
@@ -439,6 +451,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           onWorkflowDraftChange={setWorkflowDraft}
           showMessagesView={Boolean(showMessagesView)}
           pendingToolCalls={pendingToolCalls}
+          activeToolSessionId={activeToolSessionId}
         />
       </Flex>
     </Layout>

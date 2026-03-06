@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Button, Card, message } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
 import LazyMermaidChart from "../MermaidChart/LazyMermaidChart";
+import { copyText } from "@shared/utils/clipboard";
 import {
   getSyntaxTheme,
   registeredLanguages,
@@ -23,7 +24,7 @@ const CodeBlockWithCopy: React.FC<CodeBlockWithCopyProps> = ({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(codeString);
+      await copyText(codeString);
       message.success("Code copied to clipboard");
     } catch (error) {
       console.error("Copy failed:", error);
@@ -173,7 +174,7 @@ export const renderCodeBlock = (
           className="fallback-copy-btn"
           onClick={async () => {
             try {
-              await navigator.clipboard.writeText(codeString);
+              await copyText(codeString);
               message.success("Code copied to clipboard");
             } catch (error) {
               console.error("Copy failed:", error);

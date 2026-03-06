@@ -69,17 +69,15 @@
 }
 
 .chat-view-input-container-wrapper .active-tool-card-wrapper {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 8px);
+  /* Render in normal flow above the input so it doesn't cover the messages. */
+  width: 100%;
+  margin-bottom: 8px;
   opacity: 0;
   transform: translateY(8px);
   transition:
     opacity 220ms ease,
     transform 220ms ease;
   pointer-events: none;
-  z-index: 20;
 }
 
 .chat-view-input-container-wrapper .active-tool-card-wrapper.visible {

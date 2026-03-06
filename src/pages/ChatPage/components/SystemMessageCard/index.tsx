@@ -6,6 +6,7 @@ import type { ChatItem, Message } from "../../types/chat";
 import { useAppStore } from "../../store";
 import { SystemPromptMarkdown } from "./SystemPromptMarkdown";
 import { useSystemPromptContent } from "./useSystemPromptContent";
+import { copyText } from "@shared/utils/clipboard";
 
 const { Text } = Typography;
 const { useToken } = theme;
@@ -33,7 +34,7 @@ const SystemMessageCard: React.FC<SystemMessageCardProps> = ({
 
   const copyToClipboard = useCallback(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
     } catch (e) {
       console.error("Failed to copy text:", e);
     }

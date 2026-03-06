@@ -5,6 +5,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { safeStringify } from "../../utils/resultFormatters";
 import { parseMcpToolAlias } from "../../utils/mcpAlias";
+import { copyText } from "@shared/utils/clipboard";
 
 const { Text } = Typography;
 
@@ -101,7 +102,7 @@ const ToolCallCardComponent: React.FC<ToolCallCardProps> = ({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(formattedJson);
+      await copyText(formattedJson);
     } catch (error) {
       console.error("[ToolCallCard] Failed to copy parameters:", error);
     }

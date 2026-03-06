@@ -29,6 +29,7 @@ import {
   safeStringify,
 } from "../../utils/resultFormatters";
 import { ExecutionStatus } from "../../types/chat";
+import { copyText } from "@shared/utils/clipboard";
 
 const { Text } = Typography;
 
@@ -110,7 +111,7 @@ const WorkflowResultCardComponent: React.FC<WorkflowResultCardProps> = ({
       const textToCopy = formattedResult.isJson
         ? safeStringify(formattedResult.parsedJson)
         : formattedResult.formattedText;
-      await navigator.clipboard.writeText(textToCopy);
+      await copyText(textToCopy);
     } catch (error) {
       console.error("[WorkflowResultCard] Failed to copy content:", error);
     }
@@ -122,7 +123,7 @@ const WorkflowResultCardComponent: React.FC<WorkflowResultCardProps> = ({
       const textToCopy = formattedParameters.isJson
         ? safeStringify(formattedParameters.parsedJson)
         : formattedParameters.formattedText;
-      await navigator.clipboard.writeText(textToCopy);
+      await copyText(textToCopy);
     } catch (error) {
       console.error("[WorkflowResultCard] Failed to copy parameters:", error);
     }

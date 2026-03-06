@@ -70,11 +70,14 @@ Bamboo uses an **embedded architecture** where the bamboo-agent HTTP server runs
 
 ```bash
 # Clone the repository
-git clone https://github.com/bigduu/Bamboo-bot.git
-cd Bamboo-bot
+git clone https://github.com/bigduu/Bodhi.git
+cd Bodhi
 
-# Install dependencies
-npm install
+# Install shell dependencies
+cd bodhi && npm install
+
+# Install frontend dependencies
+cd lotus && npm install
 
 # Configure API token
 # Create a .token file in src-tauri/ with your GitHub Copilot token
@@ -83,21 +86,21 @@ npm install
 ### Development
 
 ```bash
-# Start development server
-npm run tauri dev
+# Start Tauri shell + frontend
+cd bodhi && npm run tauri:dev
 
-# Run tests
-npm run test
+# Run frontend tests
+cd bodhi && npm run test
 
-# Format code
-npm run format
+# Format frontend code
+cd bodhi && npm run format
 ```
 
 ### Build
 
 ```bash
 # Create production build
-npm run tauri build
+cd bodhi && npm run tauri:build
 ```
 
 ## Project Structure
@@ -115,8 +118,7 @@ bamboo/
 │   │   ├── process/       # Process registry
 │   │   └── ...
 │   └── Cargo.toml         # bamboo-agent dependency
-├── docker/                # Docker deployment
-├── e2e/                   # End-to-end tests
+├── ../lotus/e2e/          # End-to-end tests (Playwright)
 └── docs/                  # Documentation
 ```
 
@@ -137,17 +139,12 @@ Bamboo supports multiple deployment modes:
 - Single process architecture
 - Embedded HTTP server on `127.0.0.1:8080`
 - Native desktop features
-- Use: `npm run tauri dev` or `npm run tauri build`
+- Use: `cd bodhi && npm run tauri:dev` or `cd bodhi && npm run tauri:build`
 
 ### Browser Development Mode
 - Frontend served by Vite dev server (port 1420)
 - Backend runs as standalone process
-- Use: `cargo run -p bamboo-agent -- serve`
-
-### Docker Production Mode
-- Single container serving both frontend and backend
-- Backend serves static frontend files + API
-- Use: `cd docker && docker-compose up`
+- Use: `cargo run --manifest-path ../bamboo/Cargo.toml --bin bamboo -- serve --port 9562 --bind 127.0.0.1 --data-dir /tmp/bamboo-data`
 
 ## Documentation
 

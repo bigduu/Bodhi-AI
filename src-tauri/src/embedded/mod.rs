@@ -3,25 +3,19 @@
 //! This module manages the embedded bamboo-agent HTTP server running within the Tauri app.
 //! Instead of using a sidecar process, we run the HTTP server directly in the app process.
 
-use log::{error, info};
+use log::info;
 use std::sync::Arc;
-use std::{io::Error, path::PathBuf};
-use tokio::task::JoinHandle;
+use std::path::PathBuf;
 
 // Import the server module from bamboo-agent
-use bamboo_agent::server;
+use bamboo_agent::server::WebService;
 
 /// Embedded web service manager
 ///
 /// Manages the lifecycle of the embedded HTTP server
 pub struct EmbeddedWebService {
     port: u16,
-    data_dir: PathBuf,
-    server_handle: Arc<
-        tokio::sync::Mutex<
-            Option<JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>>>,
-        >,
-    >,
+    web_service: Arc<tokio::sync::Mutex<WebService>>,
 }
 
 impl EmbeddedWebService {
@@ -29,55 +23,27 @@ impl EmbeddedWebService {
     pub fn new(port: u16, data_dir: PathBuf) -> Self {
         Self {
             port,
-            data_dir,
-            server_handle: Arc::new(tokio::sync::Mutex::new(None)),
+            web_service: Arc::new(tokio::sync::Mutex::new(WebService::new(data_dir))),
         }
     }
 
     /// Start the embedded HTTP server
     ///
-    /// This spawns the bamboo-agent HTTP server in a tokio async task
+    /// This uses bamboo-agent's managed WebService lifecycle to avoid Send constraints.
     pub async fn start(&self) -> Result<(), String> {
         info!("Starting embedded web service on port {}", self.port);
 
-        // Check if already running
+        // Check if already running and start managed service
         {
-            let handle = self.server_handle.lock().await;
-            if handle.is_some() {
+            let mut service = self.web_service.lock().await;
+            if service.is_running() {
                 info!("Embedded web service is already running");
                 return Ok(());
             }
-        }
-
-        // Prepare configuration
-        let port = self.port;
-        let data_dir = self.data_dir.clone();
-        let server_handle = self.server_handle.clone();
-
-        // Spawn the HTTP server in a background task
-        let handle = tokio::spawn(async move {
-            info!("Embedded HTTP server task started");
-
-            // Run the bamboo-agent HTTP server
-            let result = server::run(data_dir, port).await;
-
-            match result {
-                Ok(_) => {
-                    info!("Embedded HTTP server stopped gracefully");
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Embedded HTTP server error: {}", e);
-                    Err(Box::new(Error::other(format!("Server error: {}", e)))
-                        as Box<dyn std::error::Error + Send + Sync>)
-                }
-            }
-        });
-
-        // Store the handle
-        {
-            let mut server = server_handle.lock().await;
-            *server = Some(handle);
+            service
+                .start(self.port)
+                .await
+                .map_err(|e| format!("Failed to start embedded web service: {}", e))?;
         }
 
         // Wait a bit for server to start
@@ -86,7 +52,10 @@ impl EmbeddedWebService {
         // Check if server is healthy
         self.wait_for_health().await?;
 
-        info!("Embedded web service is healthy and ready on port {}", port);
+        info!(
+            "Embedded web service is healthy and ready on port {}",
+            self.port
+        );
         Ok(())
     }
 
@@ -94,14 +63,13 @@ impl EmbeddedWebService {
     pub async fn stop(&self) -> Result<(), String> {
         info!("Stopping embedded web service");
 
-        let handle = {
-            let mut server = self.server_handle.lock().await;
-            server.take()
-        };
+        let mut service = self.web_service.lock().await;
 
-        if let Some(handle) = handle {
-            // Abort the server task
-            handle.abort();
+        if service.is_running() {
+            service
+                .stop()
+                .await
+                .map_err(|e| format!("Failed to stop embedded web service: {}", e))?;
             info!("Embedded web service stopped");
         } else {
             info!("No running server to stop");
@@ -175,7 +143,7 @@ impl EmbeddedWebService {
 impl Drop for EmbeddedWebService {
     fn drop(&mut self) {
         // Note: We can't await in Drop, so we just log
-        // The tokio runtime will clean up the task when the app shuts down
+        // The process exit will terminate any remaining background tasks.
         log::info!("EmbeddedWebService being dropped");
     }
 }

@@ -18,7 +18,7 @@ struct Args {
     #[arg(long)]
     data_dir: Option<PathBuf>,
 
-    /// Bind address (127.0.0.1 for local, 0.0.0.0 for Docker)
+    /// Bind address (127.0.0.1 for local development, 0.0.0.0 for external access)
     #[arg(long, default_value = "127.0.0.1")]
     bind: String,
 

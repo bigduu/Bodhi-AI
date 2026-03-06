@@ -9,6 +9,7 @@ import {
 import type { MenuProps } from "antd";
 import { App as AntApp } from "antd";
 import { MessageExportService } from "../../services/MessageExportService";
+import { copyText } from "@shared/utils/clipboard";
 
 interface UseMessageCardActionsProps {
   messageText: string;
@@ -30,7 +31,7 @@ export const useMessageCardActions = ({
 
   const copyToClipboard = useCallback(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
     } catch (e) {
       console.error("Failed to copy text:", e);
     }

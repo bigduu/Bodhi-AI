@@ -297,7 +297,7 @@ None currently identified. All tests passing.
 
 - [bamboo-agent on crates.io](https://crates.io/crates/bamboo-agent)
 - [bamboo-agent Repository](https://github.com/bigduu/Bamboo-agent)
-- [Migration PR #44](https://github.com/bigduu/Bamboo-bot/pull/44)
+- [Migration PR #44](https://github.com/bigduu/Bodhi/pull/44)
 - [Architecture Discussion](./plans/)
 
 ## Changelog

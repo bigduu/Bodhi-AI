@@ -112,6 +112,7 @@ export const ChatMessagesList: React.FC<ChatMessagesListProps> = ({
                       style={{ width: "100%", maxWidth: "100%" }}
                     >
                       <div
+                        id={`message-${convertedEntry.id}`}
                         style={{
                           width: "100%",
                           maxWidth: screens.xs ? "100%" : "90%",
@@ -121,6 +122,9 @@ export const ChatMessagesList: React.FC<ChatMessagesListProps> = ({
                           tools={convertedEntry.tools}
                           sessionId={convertedEntry.sessionId}
                           createdAt={convertedEntry.createdAt}
+                          defaultExpanded={convertedEntry.tools.some(
+                            (t) => !t.result,
+                          )}
                         />
                       </div>
                     </Flex>

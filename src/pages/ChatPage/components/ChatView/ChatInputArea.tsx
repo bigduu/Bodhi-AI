@@ -14,6 +14,7 @@ type ChatInputAreaProps = {
   onWorkflowDraftChange: (draft: WorkflowDraft | null) => void;
   showMessagesView: boolean;
   pendingToolCalls: PendingToolCall[];
+  activeToolSessionId?: string | null;
 };
 
 export const ChatInputArea: React.FC<ChatInputAreaProps> = ({
@@ -23,6 +24,7 @@ export const ChatInputArea: React.FC<ChatInputAreaProps> = ({
   onWorkflowDraftChange,
   showMessagesView,
   pendingToolCalls,
+  activeToolSessionId,
 }) => {
   return (
     <Flex
@@ -40,7 +42,10 @@ export const ChatInputArea: React.FC<ChatInputAreaProps> = ({
         }}
       >
         {showMessagesView && (
-          <ActiveToolMessageCard pendingToolCalls={pendingToolCalls} />
+          <ActiveToolMessageCard
+            pendingToolCalls={pendingToolCalls}
+            activeToolSessionId={activeToolSessionId}
+          />
         )}
         <InputContainer
           chatId={chatId}

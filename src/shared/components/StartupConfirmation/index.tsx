@@ -153,18 +153,7 @@ export const useStartupConfirmation = (isInternal: boolean) => {
 
   const handleDecline = () => {
     setShowConfirmation(false);
-    // Exit the application
-    if (typeof window !== "undefined" && "__TAURI__" in window) {
-      // Use Tauri plugin-process to exit
-      import("@tauri-apps/plugin-process").then(({ exit }) => {
-        exit(0);
-      }).catch((error) => {
-        console.error("Failed to exit app:", error);
-        // Fallback: close window
-        window.close();
-      });
-    } else {
-      // Browser fallback
+    if (typeof window !== "undefined") {
       window.close();
     }
   };

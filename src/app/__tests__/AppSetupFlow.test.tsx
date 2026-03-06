@@ -124,16 +124,16 @@ describe("App setup flow", () => {
     });
   });
 
-  it("renders SetupPage when setup status check fails", async () => {
+  it("shows a backend-unreachable message (instead of assuming setup is incomplete) when setup status check fails", async () => {
     // Mock all retry attempts to fail
     (fetch as any).mockRejectedValue(new Error("fetch failed"));
 
     render(<App />);
 
-    // Wait longer because of retry logic (3 attempts with backoff)
     expect(
-      await screen.findByText("SetupPage", {}, { timeout: 10000 }),
+      await screen.findByText(/Backend not reachable at/i, {}, { timeout: 10000 }),
     ).toBeTruthy();
     expect(screen.queryByText("MainLayout")).toBeNull();
+    expect(screen.queryByText("SetupPage")).toBeNull();
   });
 });

@@ -23,6 +23,7 @@ import { useMcpSettings } from "./hooks/useMcpSettings";
 import { McpServerTable } from "./mcp/McpServerTable";
 import { McpServerFormModal } from "./mcp/McpServerFormModal";
 import { McpToolList } from "./mcp/McpToolList";
+import { copyText } from "@shared/utils/clipboard";
 
 const { Text } = Typography;
 const { useToken } = theme;
@@ -262,7 +263,7 @@ const SystemSettingsMcpTab: React.FC = () => {
     const text = JSON.stringify(chunk, null, 2);
 
     try {
-      await navigator.clipboard.writeText(text);
+      await copyText(text);
       msgApi.success("Copied MCP config to clipboard");
     } catch {
       // Clipboard can be blocked depending on platform/webview permissions.

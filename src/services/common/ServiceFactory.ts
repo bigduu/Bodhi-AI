@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import { apiClient } from "../api";
+import { copyText } from "@shared/utils/clipboard";
 
 /**
  * Bamboo configuration structure
@@ -141,17 +141,13 @@ export interface UtilityService {
     message: string;
   }>;
   markSetupComplete(): Promise<ApiSuccessResponse>;
-
-  /**
-   * Tauri invoke for desktop-only features
-   */
-  invoke<T = unknown>(
-    command: string,
-    args?: Record<string, unknown>,
-  ): Promise<T>;
 }
 
 class HttpUtilityService implements Partial<UtilityService> {
+  async copyToClipboard(text: string): Promise<void> {
+    await copyText(text);
+  }
+
   async getBambooConfig(): Promise<BambooConfig> {
     try {
       return await apiClient.get<BambooConfig>("bamboo/config");
@@ -288,22 +284,14 @@ class HttpUtilityService implements Partial<UtilityService> {
     has_proxy_env: boolean;
     message: string;
   }> {
-    try {
-      return await apiClient.get<{
-        is_complete: boolean;
-        has_proxy_config: boolean;
-        has_proxy_env: boolean;
-        message: string;
-      }>("bamboo/setup/status");
-    } catch (error) {
-      console.error("Failed to fetch setup status:", error);
-      return {
-        is_complete: false,
-        has_proxy_config: false,
-        has_proxy_env: false,
-        message: "Failed to fetch setup status",
-      };
-    }
+    // Important: do not swallow network/startup failures here. The app bootstrap
+    // flow distinguishes "setup incomplete" from "backend not reachable yet".
+    return await apiClient.get<{
+      is_complete: boolean;
+      has_proxy_config: boolean;
+      has_proxy_env: boolean;
+      message: string;
+    }>("bamboo/setup/status");
   }
 
   async markSetupComplete(): Promise<ApiSuccessResponse> {
@@ -315,32 +303,6 @@ class HttpUtilityService implements Partial<UtilityService> {
   }
 }
 
-class TauriUtilityService {
-  /**
-   * Copy text to clipboard
-   */
-  async copyToClipboard(text: string): Promise<void> {
-    await invoke("copy_to_clipboard", { text });
-  }
-
-  /**
-   * Reset setup status (mark as incomplete)
-   */
-  async resetSetupStatus(): Promise<void> {
-    await invoke("mark_setup_incomplete");
-  }
-
-  /**
-   * Invoke Tauri command (desktop-only)
-   */
-  async invoke<T = unknown>(
-    command: string,
-    args?: Record<string, unknown>,
-  ): Promise<T> {
-    return await invoke<T>(command, args);
-  }
-}
-
 /**
  * ServiceFactory - Simplified to use only Web/HTTP mode
  * All services now use HTTP API calls to the backend
@@ -349,7 +311,6 @@ export class ServiceFactory {
   private static instance: ServiceFactory;
 
   // Service instances
-  private tauriUtilityService = new TauriUtilityService();
   private httpUtilityService = new HttpUtilityService();
 
   private constructor() {
@@ -364,11 +325,10 @@ export class ServiceFactory {
   }
 
   getUtilityService(): UtilityService {
-    // Composite service:
-    // - Native functions (copyToClipboard, invoke) use Tauri
+    // All utility services are HTTP/web based.
     return {
       copyToClipboard: (text: string) =>
-        this.tauriUtilityService.copyToClipboard(text),
+        this.httpUtilityService.copyToClipboard(text),
       getBambooConfig: () => this.httpUtilityService.getBambooConfig(),
       setBambooConfig: (config: BambooConfig) =>
         this.httpUtilityService.setBambooConfig(config),
@@ -383,7 +343,7 @@ export class ServiceFactory {
       setAnthropicModelMapping: (mapping: AnthropicModelMapping) =>
         this.httpUtilityService.setAnthropicModelMapping(mapping),
       resetBambooConfig: () => this.httpUtilityService.resetBambooConfig(),
-      resetSetupStatus: () => this.tauriUtilityService.resetSetupStatus(),
+      resetSetupStatus: () => this.httpUtilityService.resetSetupStatus(),
       // Workflow management
       saveWorkflow: (name: string, content: string) =>
         this.httpUtilityService.saveWorkflow(name, content),
@@ -399,9 +359,6 @@ export class ServiceFactory {
       // Setup status
       getSetupStatus: () => this.httpUtilityService.getSetupStatus(),
       markSetupComplete: () => this.httpUtilityService.markSetupComplete(),
-      // Tauri invoke
-      invoke: <T = unknown>(command: string, args?: Record<string, unknown>) =>
-        this.tauriUtilityService.invoke<T>(command, args),
     };
   }
 
@@ -505,13 +462,6 @@ export class ServiceFactory {
 
   async markSetupComplete(): Promise<ApiSuccessResponse> {
     return this.getUtilityService().markSetupComplete();
-  }
-
-  async invoke<T = unknown>(
-    command: string,
-    args?: Record<string, unknown>,
-  ): Promise<T> {
-    return this.getUtilityService().invoke(command, args);
   }
 }
 

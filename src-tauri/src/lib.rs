@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Manager;
 use tauri::{App, Runtime};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use tauri_plugin_log::{Target, TargetKind};
 
@@ -94,6 +95,63 @@ fn should_exit_on_main_window_close(label: &str, is_close_requested: bool) -> bo
     label == "main" && is_close_requested
 }
 
+fn parse_truthy_flag(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn is_internal_build_mode() -> bool {
+    if let Some(compiled_flag) = option_env!("BODHI_INTERNAL_BUILD") {
+        return parse_truthy_flag(compiled_flag);
+    }
+
+    std::env::var("BODHI_INTERNAL_BUILD")
+        .map(|value| parse_truthy_flag(&value))
+        .unwrap_or(false)
+}
+
+fn show_internal_startup_confirmation<R: Runtime>(app: &App<R>) {
+    if !is_internal_build_mode() {
+        return;
+    }
+
+    if let Some(main_window) = app.get_webview_window("main") {
+        if let Err(error) = main_window.hide() {
+            log::warn!("Failed to hide main window before startup confirmation: {}", error);
+        }
+    }
+
+    let app_handle = app.handle().clone();
+    app.dialog()
+        .message(
+            "This is an internal development build of Bodhi.\n\nAccept to continue, or decline to exit.",
+        )
+        .title("Welcome to Bodhi")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Accept and Continue".to_string(),
+            "Decline and Exit".to_string(),
+        ))
+        .show(move |accepted| {
+            if accepted {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    if let Err(error) = window.show() {
+                        log::warn!("Failed to show main window after confirmation: {}", error);
+                    }
+                    if let Err(error) = window.set_focus() {
+                        log::warn!("Failed to focus main window after confirmation: {}", error);
+                    }
+                }
+                return;
+            }
+
+            log::info!("Startup confirmation declined; exiting application");
+            app_handle.exit(0);
+        });
+}
+
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let app_data_dir = bamboo_dir();
     std::fs::create_dir_all(&app_data_dir)?;
@@ -104,6 +162,16 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
 
     let web_service_clone = Arc::clone(&web_service);
     tauri::async_runtime::spawn(async move {
+        // If an external backend is already running on the port,
+        // don't try to start the embedded server (avoids noisy bind/health failures).
+        if web_service_clone.is_running().await {
+            log::info!(
+                "Backend already running on port {}; skipping embedded web service start",
+                9562
+            );
+            return;
+        }
+
         if let Err(e) = web_service_clone.start().await {
             log::error!("Failed to start embedded web service: {}", e);
         }
@@ -112,8 +180,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     // Manage web service state for later access
     app.manage(WebServiceState(web_service));
 
-    // Proxy configuration is handled by frontend SetupPage
-    // No startup proxy auth dialog needed
+    show_internal_startup_confirmation(app);
 
     Ok(())
 }

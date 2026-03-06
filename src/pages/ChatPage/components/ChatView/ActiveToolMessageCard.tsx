@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Card, Space, Typography, theme } from "antd";
+import { Button, Card, Space, Typography, theme } from "antd";
 import { ToolOutlined } from "@ant-design/icons";
-import ToolCallCard from "../ToolCallCard";
 
 const { Text } = Typography;
 
@@ -14,12 +13,18 @@ export type PendingToolCall = {
 
 type ActiveToolMessageCardProps = {
   pendingToolCalls: PendingToolCall[];
+  /**
+   * Id of the active tool session entry in the message list.
+   * Used to jump the user to the running tool output.
+   */
+  activeToolSessionId?: string | null;
 };
 
 const EXIT_ANIMATION_MS = 220;
 
 export const ActiveToolMessageCard: React.FC<ActiveToolMessageCardProps> = ({
   pendingToolCalls,
+  activeToolSessionId,
 }) => {
   const { token } = theme.useToken();
 
@@ -54,6 +59,8 @@ export const ActiveToolMessageCard: React.FC<ActiveToolMessageCardProps> = ({
 
   if (!shouldRender) return null;
 
+  const primaryToolName = normalizedCalls[0]?.toolName ?? "Tool";
+
   return (
     <div
       className={`active-tool-card-wrapper ${isVisible ? "visible" : ""}`}
@@ -68,35 +75,59 @@ export const ActiveToolMessageCard: React.FC<ActiveToolMessageCardProps> = ({
           background: token.colorBgContainer,
           boxShadow: token.boxShadowSecondary,
         }}
-        bodyStyle={{ padding: token.paddingSM }}
+        bodyStyle={{ padding: `${token.paddingXS}px ${token.paddingSM}px` }}
       >
-        <Space direction="vertical" style={{ width: "100%" }} size="small">
+        <Space
+          align="center"
+          style={{ width: "100%", justifyContent: "space-between" }}
+          size={token.marginSM}
+        >
           <div
             style={{
               display: "flex",
               alignItems: "center",
               gap: token.marginSM,
+              minWidth: 0,
             }}
           >
             <ToolOutlined style={{ color: token.colorPrimary }} />
-            <Text strong>Tools running</Text>
-            <Text type="secondary" style={{ fontSize: token.fontSizeSM }}>
+            <Text strong style={{ whiteSpace: "nowrap" }}>
+              Tools running
+            </Text>
+            <Text
+              type="secondary"
+              style={{ fontSize: token.fontSizeSM, whiteSpace: "nowrap" }}
+            >
               ({normalizedCalls.length})
+            </Text>
+            <Text
+              type="secondary"
+              ellipsis
+              style={{
+                fontSize: token.fontSizeSM,
+                minWidth: 0,
+                maxWidth: 520,
+              }}
+            >
+              {primaryToolName}
             </Text>
           </div>
 
-          <Space direction="vertical" style={{ width: "100%" }} size="small">
-            {normalizedCalls.map((call) => (
-              <ToolCallCard
-                key={call.toolCallId}
-                toolName={call.toolName}
-                parameters={call.parameters}
-                toolCallId={call.toolCallId}
-                streamingOutput={call.streamingOutput}
-                defaultExpanded={false}
-              />
-            ))}
-          </Space>
+          <Button
+            size="small"
+            type="link"
+            disabled={!activeToolSessionId}
+            onClick={() => {
+              if (!activeToolSessionId) return;
+              window.dispatchEvent(
+                new CustomEvent("navigate-to-message", {
+                  detail: { messageId: activeToolSessionId },
+                }),
+              );
+            }}
+          >
+            View output
+          </Button>
         </Space>
       </Card>
     </div>

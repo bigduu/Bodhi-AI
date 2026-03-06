@@ -46,6 +46,7 @@ import {
   ServiceFactory,
   type BambooConfigValidationIssue,
 } from "../../../../services/common/ServiceFactory";
+import { copyText } from "@shared/utils/clipboard";
 
 const { Option } = Select;
 const { Password } = Input;
@@ -283,7 +284,7 @@ export const ProviderSettings: React.FC = () => {
   const handleCopyUserCode = async () => {
     if (deviceCodeInfo) {
       try {
-        await navigator.clipboard.writeText(deviceCodeInfo.user_code);
+        await copyText(deviceCodeInfo.user_code);
         setCopiedUserCode(true);
         message.success("User code copied to clipboard!");
         setTimeout(() => setCopiedUserCode(false), 2000);

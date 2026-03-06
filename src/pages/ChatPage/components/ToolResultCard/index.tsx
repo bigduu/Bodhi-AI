@@ -19,6 +19,7 @@ import {
   safeStringify,
 } from "../../utils/resultFormatters";
 import { ExecutionStatus } from "../../types/chat";
+import { copyText } from "@shared/utils/clipboard";
 
 const { Text } = Typography;
 
@@ -62,7 +63,7 @@ const ToolResultCardComponent: React.FC<ToolResultCardProps> = ({
       const textToCopy = formatted.isJson
         ? safeStringify(formatted.parsedJson)
         : formatted.formattedText;
-      await navigator.clipboard.writeText(textToCopy);
+      await copyText(textToCopy);
     } catch (error) {
       console.error("[ToolResultCard] Failed to copy result:", error);
     }

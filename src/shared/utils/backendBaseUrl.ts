@@ -24,17 +24,29 @@ export const getDefaultBackendBaseUrl = (): string => {
  */
 const checkBackendHealth = async (baseUrl: string): Promise<boolean> => {
   try {
-    const healthUrl = `${baseUrl}/health`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    // The UI stores a base like ".../v1". The health endpoint lives under "/api/v1/health".
+    // Keep a legacy fallback to ".../health" for older deployments.
+    const normalized = normalizeBackendBaseUrl(baseUrl);
+    const origin = normalized.endsWith("/v1") ? normalized.slice(0, -3) : normalized;
+    const healthUrls = [`${origin}/api/v1/health`, `${normalized}/health`];
 
-    const response = await fetch(healthUrl, {
-      method: 'GET',
-      signal: controller.signal,
-    });
+    for (const healthUrl of healthUrls) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2000);
 
-    clearTimeout(timeoutId);
-    return response.ok;
+      try {
+        const response = await fetch(healthUrl, {
+          method: "GET",
+          signal: controller.signal,
+        });
+
+        if (response.ok) return true;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    return false;
   } catch (e) {
     // Backend not available at this URL
     return false;

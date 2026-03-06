@@ -6,6 +6,8 @@ import { SetupPage } from "../pages/SetupPage";
 import { initializeStore } from "../pages/ChatPage/store";
 import { ServiceFactory } from "../services/common/ServiceFactory";
 import { StartupConfirmation } from "../shared/components/StartupConfirmation";
+import { getBackendBaseUrlSync } from "../shared/utils/backendBaseUrl";
+import { Button } from "antd";
 
 const THEME_STORAGE_KEY = "copilot_ui_theme_v1";
 
@@ -19,7 +21,11 @@ function App() {
     return (saved as "light" | "dark") || "light";
   });
   const [isSetupComplete, setIsSetupComplete] = useState<boolean | null>(null);
+  const [backendStartupError, setBackendStartupError] = useState<string | null>(
+    null,
+  );
   const [startupConfirmed, setStartupConfirmed] = useState(!IS_INTERNAL_BUILD);
+  const [setupProbeNonce, setSetupProbeNonce] = useState(0);
 
   // Save theme to localStorage when it changes
   useEffect(() => {
@@ -27,19 +33,51 @@ function App() {
   }, [themeMode]);
 
   useEffect(() => {
+    let cancelled = false;
+    const startedAt = Date.now();
+
     const checkSetupStatus = async () => {
       try {
         const serviceFactory = ServiceFactory.getInstance();
         const status = await serviceFactory.getSetupStatus();
+        if (cancelled) return;
+        setBackendStartupError(null);
         setIsSetupComplete(status.is_complete);
       } catch (error) {
-        console.error("Failed to check setup status:", error);
-        setIsSetupComplete(false);
+        if (cancelled) return;
+
+        const elapsedMs = Date.now() - startedAt;
+        // Give a local backend (embedded or standalone) time to come up before treating this
+        // as a real "setup incomplete" signal.
+        const maxWaitMs = import.meta.env.MODE === "test" ? 250 : 20_000;
+
+        if (elapsedMs >= maxWaitMs) {
+          const baseUrl = getBackendBaseUrlSync();
+          const message =
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : "Unknown error";
+          setBackendStartupError(
+            `Backend not reachable at ${baseUrl} (last error: ${message})`,
+          );
+          // Keep `isSetupComplete` as null so we don't incorrectly show SetupPage.
+          return;
+        }
+
+        // Retry with a small backoff. ApiClient already retries per request;
+        // this loop handles the "backend not listening yet" startup window.
+        const delayMs = Math.min(500 + Math.floor(elapsedMs / 2), 2000);
+        setTimeout(() => {
+          if (!cancelled) void checkSetupStatus();
+        }, delayMs);
       }
     };
 
     void checkSetupStatus();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [setupProbeNonce]);
 
   useEffect(() => {
     document.body.setAttribute("data-theme", themeMode);
@@ -68,18 +106,7 @@ function App() {
           <StartupConfirmation
             onConfirm={() => setStartupConfirmed(true)}
             onDecline={() => {
-              // Exit the application
-              if (typeof window !== "undefined" && "__TAURI__" in window) {
-                // Tauri specific exit - use plugin-process
-                import("@tauri-apps/plugin-process").then(({ exit }) => {
-                  exit(0);
-                }).catch((error) => {
-                  console.error("Failed to exit app:", error);
-                  // Fallback: close window
-                  window.close();
-                });
-              } else {
-                // Browser fallback - close tab
+              if (typeof window !== "undefined") {
                 window.close();
               }
             }}
@@ -90,6 +117,23 @@ function App() {
   }
 
   if (isSetupComplete === null) {
+    if (backendStartupError) {
+      return (
+        <div style={{ padding: 40, textAlign: "center" }}>
+          <div style={{ marginBottom: 12 }}>{backendStartupError}</div>
+          <Button
+            type="primary"
+            onClick={() => {
+              setBackendStartupError(null);
+              setIsSetupComplete(null);
+              setSetupProbeNonce((v) => v + 1);
+            }}
+          >
+            Retry
+          </Button>
+        </div>
+      );
+    }
     return <div style={{ padding: 40, textAlign: "center" }}>Loading...</div>;
   }
 
