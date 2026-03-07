@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bodhi_version:
-        description: "Bodhi app version to publish (default: use src-tauri/Cargo.toml)"
+        description: "Bodhi app version to publish (default: keep current app version)"
         required: false
         default: "latest"
       bamboo_version:
@@ -63,16 +63,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set Bodhi app version (workflow override)
-        if: github.event_name == 'workflow_dispatch' && github.event.inputs.bodhi_version != '' && github.event.inputs.bodhi_version != 'latest'
-        shell: bash
-        run: |
-          TARGET_VERSION="${{ github.event.inputs.bodhi_version }}"
-          sed -i.bak -E '0,/^version = "[^"]+"/s//version = "'"${TARGET_VERSION}"'"/' src-tauri/Cargo.toml
-          rm -f src-tauri/Cargo.toml.bak
-          echo "Using bodhi version override: ${TARGET_VERSION}"
-          grep '^version = ' src-tauri/Cargo.toml | head -1
-
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -85,6 +75,47 @@ jobs:
           node-version: lts/*
           cache: "npm"
           cache-dependency-path: package-lock.json
+
+      - name: Resolve Bodhi release version
+        id: release_version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.bodhi_version }}" ] && [ "${{ github.event.inputs.bodhi_version }}" != "latest" ]; then
+            VERSION="${{ github.event.inputs.bodhi_version }}"
+          else
+            VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Bodhi release version: ${VERSION}"
+
+      - name: Set Bodhi app version (workflow override)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.bodhi_version != '' && github.event.inputs.bodhi_version != 'latest'
+        shell: bash
+        run: |
+          TARGET_VERSION="${{ steps.release_version.outputs.version }}"
+          export TARGET_VERSION
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const target = process.env.TARGET_VERSION;
+          const cargoPath = 'src-tauri/Cargo.toml';
+          const tauriConfigPath = 'src-tauri/tauri.conf.json';
+
+          const cargoBefore = fs.readFileSync(cargoPath, 'utf8');
+          const cargoAfter = cargoBefore.replace(/^version\s*=\s*"[^"]+"/m, `version = "${target}"`);
+          if (cargoBefore === cargoAfter) {
+            throw new Error('Unable to update src-tauri/Cargo.toml version');
+          }
+          fs.writeFileSync(cargoPath, cargoAfter);
+
+          const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, 'utf8'));
+          tauriConfig.version = target;
+          fs.writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`);
+          NODE
+
+          echo "Using bodhi version override: ${TARGET_VERSION}"
+          grep '^version = ' src-tauri/Cargo.toml | head -1
+          node -p "require('./src-tauri/tauri.conf.json').version"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -150,8 +181,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__ # Templates out the app version from Cargo.toml
-          releaseName: "App v__VERSION__"
+          tagName: app-v${{ steps.release_version.outputs.version }}
+          releaseName: "App v${{ steps.release_version.outputs.version }}"
           releaseBody: "See the assets to download this version and install."
           releaseDraft: false # Release directly (was true for draft)
           prerelease: false
