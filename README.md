@@ -96,22 +96,24 @@ These profiles control shell mode/rebrand behavior while keeping app identity as
 - Lotus CI: web checks and frontend artifacts only
 - Bodhi CI: Tauri build and desktop packaging
 
-## macOS Release Signing
+## macOS Local Self-Signing
 
-`bodhi/.github/workflows/release.yml` now enforces signing/notarization secrets for macOS release jobs.
+Releases may provide unsigned macOS app bundles. End users can self-sign locally after download.
 
-Required GitHub repository secrets:
-- `APPLE_CERTIFICATE` (base64-encoded `.p12`)
-- `APPLE_CERTIFICATE_PASSWORD`
-- `APPLE_SIGNING_IDENTITY` (for example `Developer ID Application: <Name> (<TeamID>)`)
-- `APPLE_ID` (Apple account email)
-- `APPLE_PASSWORD` (app-specific password for notarization)
-- `APPLE_TEAM_ID`
-
-Validation script:
+Use:
 
 ```bash
-bash scripts/check-macos-signing-env.sh
+bash scripts/self-sign-macos-app.sh --input ~/Downloads/Bodhi_2026.3.11_aarch64.dmg
 ```
 
-If any secret is missing, the macOS release job fails early instead of shipping a DMG that Gatekeeper marks as damaged.
+Or sign an existing app directly:
+
+```bash
+bash scripts/self-sign-macos-app.sh --input /Applications/Bodhi.app --open
+```
+
+What the script does:
+- mounts `.dmg` and copies `Bodhi.app` to `/Applications` (configurable via `--install-dir`)
+- removes quarantine attribute
+- applies ad-hoc deep signature (`codesign --force --deep --sign -`)
+- runs verification commands (`codesign` and `spctl`)
