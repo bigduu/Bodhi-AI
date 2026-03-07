@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-13"
+          - platform: "macos-latest"
             target: "x86_64-apple-darwin"
             args: "--target x86_64-apple-darwin"
             artifact_name: "macos-x64"
@@ -73,6 +73,10 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
