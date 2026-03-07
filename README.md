@@ -95,3 +95,23 @@ These profiles control shell mode/rebrand behavior while keeping app identity as
 
 - Lotus CI: web checks and frontend artifacts only
 - Bodhi CI: Tauri build and desktop packaging
+
+## macOS Release Signing
+
+`bodhi/.github/workflows/release.yml` now enforces signing/notarization secrets for macOS release jobs.
+
+Required GitHub repository secrets:
+- `APPLE_CERTIFICATE` (base64-encoded `.p12`)
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY` (for example `Developer ID Application: <Name> (<TeamID>)`)
+- `APPLE_ID` (Apple account email)
+- `APPLE_PASSWORD` (app-specific password for notarization)
+- `APPLE_TEAM_ID`
+
+Validation script:
+
+```bash
+bash scripts/check-macos-signing-env.sh
+```
+
+If any secret is missing, the macOS release job fails early instead of shipping a DMG that Gatekeeper marks as damaged.
