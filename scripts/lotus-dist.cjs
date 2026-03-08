@@ -72,7 +72,8 @@ function resolvePackageRoot() {
 
 function runNpmScript(prefix, script) {
   const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  const result = spawnSync(npmCmd, ["--prefix", prefix, "run", script], {
+  const npmArgs = ["--prefix", prefix, "run", script];
+  let result = spawnSync(npmCmd, npmArgs, {
     stdio: "inherit",
     env: process.env,
   });
@@ -82,6 +83,28 @@ function runNpmScript(prefix, script) {
       process.exit(result.status);
     }
     return;
+  }
+
+  // Some Windows shells/process environments fail to resolve npm.cmd when
+  // spawned directly. Retry once through shell before failing.
+  if (process.platform === "win32") {
+    const fallbackCommand = `npm --prefix "${prefix}" run ${script}`;
+    if (result.error && result.error.message) {
+      console.warn(`⚠️ Direct npm launch failed: ${result.error.message}`);
+    }
+    console.warn(`⚠️ Retrying via shell: ${fallbackCommand}`);
+    result = spawnSync(fallbackCommand, {
+      stdio: "inherit",
+      env: process.env,
+      shell: true,
+    });
+
+    if (typeof result.status === "number") {
+      if (result.status !== 0) {
+        process.exit(result.status);
+      }
+      return;
+    }
   }
 
   fail(`Failed to run npm script "${script}" in ${prefix}`);
