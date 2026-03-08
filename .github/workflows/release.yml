@@ -169,22 +169,26 @@ jobs:
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.bamboo_version }}" ] && [ "${{ github.event.inputs.bamboo_version }}" != "latest" ]; then
-            BAMBOO_VERSION="${{ github.event.inputs.bamboo_version }}"
+            export BAMBOO_VERSION="${{ github.event.inputs.bamboo_version }}"
             echo "Using ${BAMBOO_CRATE_NAME}@${BAMBOO_VERSION}"
-            export BAMBOO_VERSION
-            node <<'NODE'
-            const fs = require('node:fs');
-            const cargoTomlPath = 'Cargo.toml';
-            const content = fs.readFileSync(cargoTomlPath, 'utf8');
-            const updated = content.replace(
-              /bamboo-agent\s*=\s*\"[^\"]*\"/,
-              `bamboo-agent = "${process.env.BAMBOO_VERSION}"`,
-            );
-            fs.writeFileSync(cargoTomlPath, updated);
-            NODE
           else
+            unset BAMBOO_VERSION
             echo "Using latest compatible ${BAMBOO_CRATE_NAME} from crates.io"
           fi
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const cargoTomlPath = 'Cargo.toml';
+          const version = process.env.BAMBOO_VERSION || '';
+          if (!version) process.exit(0);
+          const content = fs.readFileSync(cargoTomlPath, 'utf8');
+          const updated = content.replace(
+            /bamboo-agent\s*=\s*\"[^\"]*\"/,
+            `bamboo-agent = "${version}"`,
+          );
+          fs.writeFileSync(cargoTomlPath, updated);
+          console.log(`Pinned bamboo-agent to ${version}`);
+          NODE
 
           cargo update
           cargo tree --manifest-path src-tauri/Cargo.toml --locked -p bodhi | grep -m1 "${BAMBOO_CRATE_NAME} v"
