@@ -40,7 +40,7 @@ const env = {
 const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmArgs = ["run", `tauri:${target}`];
 
-const result = spawnSync(npmCmd, npmArgs, {
+let result = spawnSync(npmCmd, npmArgs, {
   stdio: "inherit",
   env,
 });
@@ -49,5 +49,26 @@ if (typeof result.status === "number") {
   process.exit(result.status);
 }
 
+// Some Windows shells/process environments fail to resolve npm.cmd when spawned
+// without an intermediate shell. Retry once through shell for resilience.
+if (process.platform === "win32") {
+  const fallbackCommand = `npm run tauri:${target}`;
+  if (result.error && result.error.message) {
+    console.warn(`⚠️ Direct npm launch failed: ${result.error.message}`);
+  }
+  console.warn(`⚠️ Retrying via shell: ${fallbackCommand}`);
+  result = spawnSync(fallbackCommand, {
+    stdio: "inherit",
+    env,
+    shell: true,
+  });
+  if (typeof result.status === "number") {
+    process.exit(result.status);
+  }
+}
+
 console.error("❌ Failed to launch tauri command");
+if (result.error && result.error.message) {
+  console.error(`   ${result.error.message}`);
+}
 process.exit(1);
