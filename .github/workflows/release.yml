@@ -147,6 +147,24 @@ jobs:
           path: node_modules
           key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
 
+      - name: Switch bamboo-agent dependency to crates.io
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const cargoTomlPath = 'Cargo.toml';
+          const localPathDep = 'bamboo-agent = { path = "../bamboo" }';
+          const cratesIoDep = 'bamboo-agent = "*"';
+          const before = fs.readFileSync(cargoTomlPath, 'utf8');
+          if (!before.includes(localPathDep)) {
+            console.log('bamboo-agent already points to crates.io');
+            process.exit(0);
+          }
+          const after = before.replace(localPathDep, cratesIoDep);
+          fs.writeFileSync(cargoTomlPath, after);
+          console.log('Switched bamboo-agent dependency to crates.io for release build');
+          NODE
+
       - name: Resolve bamboo-agent dependency
         shell: bash
         run: |
