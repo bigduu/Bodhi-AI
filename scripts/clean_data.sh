@@ -13,13 +13,13 @@ echo ""
 # Default location for Tauri app data
 if [[ "$OSTYPE" == "darwin"* ]]; then
     # macOS
-    APP_DATA_DIR="$HOME/Library/Application Support/com.copilot.chat"
+    APP_DATA_DIR="$HOME/Library/Application Support/com.bodhi.app"
 elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
     # Linux
-    APP_DATA_DIR="$HOME/.local/share/copilot-chat"
+    APP_DATA_DIR="$HOME/.local/share/com.bodhi.app"
 elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
     # Windows
-    APP_DATA_DIR="$APPDATA/com.copilot.chat"
+    APP_DATA_DIR="$APPDATA/com.bodhi.app"
 else
     echo "❌ Unsupported OS: $OSTYPE"
     exit 1
@@ -74,4 +74,3 @@ echo ""
 echo "⚠️  If you need to restore the backup:"
 echo "   rm -rf '$APP_DATA_DIR'"
 echo "   mv '$BACKUP_DIR' '$APP_DATA_DIR'"
-

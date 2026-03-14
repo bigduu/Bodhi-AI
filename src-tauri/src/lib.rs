@@ -3,7 +3,6 @@ use crate::embedded::EmbeddedWebService;
 use chrono::{SecondsFormat, Utc};
 use log::{info, LevelFilter};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
@@ -84,14 +83,6 @@ fn read_proxy_auth_unified(config: &Value) -> Option<bamboo_agent::core::ProxyAu
     // Legacy per-scheme keys (back-compat).
     read_proxy_auth_from_config(config, "http")
         .or_else(|| read_proxy_auth_from_config(config, "https"))
-}
-
-fn bamboo_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".bamboo")
 }
 
 fn should_exit_on_main_window_close(label: &str, is_close_requested: bool) -> bool {
@@ -239,7 +230,7 @@ fn show_internal_startup_confirmation<R: Runtime>(app: &App<R>) {
 }
 
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let app_data_dir = bamboo_dir();
+    let app_data_dir = app_settings::bamboo_dir();
     std::fs::create_dir_all(&app_data_dir)?;
     info!("App data dir: {:?}", app_data_dir);
 
@@ -427,7 +418,7 @@ pub fn run() {
         .targets([
             Target::new(TargetKind::Stdout),
             Target::new(TargetKind::Folder {
-                path: bamboo_dir().join("logs"),
+                path: app_settings::bamboo_dir().join("logs"),
                 file_name: None,
             }),
         ])

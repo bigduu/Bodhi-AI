@@ -14,10 +14,10 @@ set APP_DATA_DIR ""
 switch (uname)
     case Darwin
         # macOS
-        set APP_DATA_DIR "$HOME/Library/Application Support/com.copilot.chat"
+        set APP_DATA_DIR "$HOME/Library/Application Support/com.bodhi.app"
     case Linux
         # Linux
-        set APP_DATA_DIR "$HOME/.local/share/copilot-chat"
+        set APP_DATA_DIR "$HOME/.local/share/com.bodhi.app"
     case '*'
         echo "❌ Unsupported OS: "(uname)
         exit 1
@@ -72,4 +72,3 @@ echo ""
 echo "⚠️  If you need to restore the backup:"
 echo "   rm -rf '$APP_DATA_DIR'"
 echo "   mv '$BACKUP_DIR' '$APP_DATA_DIR'"
-
