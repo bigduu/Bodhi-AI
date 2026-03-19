@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Bodhi",
-  "version": "2026.3.50",
+  "version": "2026.3.60",
   "identifier": "com.bodhi.app",
   "build": {
     "beforeDevCommand": "npm run web:dev",
