@@ -1,8 +1,8 @@
 use crate::command::copy::copy_to_clipboard;
 use crate::embedded::EmbeddedWebService;
+use bamboo_agent::infrastructure::{Config, ProxyAuth};
 use chrono::{SecondsFormat, Utc};
 use log::{info, LevelFilter};
-use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
@@ -18,72 +18,6 @@ pub mod embedded;
 
 // Embedded web service state wrapper for Tauri state management
 pub struct WebServiceState(pub Arc<EmbeddedWebService>);
-
-fn read_config_json() -> Result<Value, String> {
-    let config_path = app_settings::config_json_path();
-    app_settings::load_config_json(&config_path)
-}
-
-fn write_config_json(config: &Value) -> Result<(), String> {
-    let config_path = app_settings::config_json_path();
-    app_settings::write_config_json(&config_path, config)
-}
-
-fn read_proxy_auth_from_plain(config: &Value, key: &str) -> Option<bamboo_agent::core::ProxyAuth> {
-    config
-        .get(key)
-        .cloned()
-        .and_then(|value| serde_json::from_value::<bamboo_agent::core::ProxyAuth>(value).ok())
-}
-
-fn read_proxy_auth_from_encrypted(
-    config: &Value,
-    key: &str,
-) -> Option<bamboo_agent::core::ProxyAuth> {
-    let encrypted = config.get(key).and_then(|value| value.as_str())?;
-
-    match bamboo_agent::core::encryption::decrypt(encrypted) {
-        Ok(decrypted) => match serde_json::from_str::<bamboo_agent::core::ProxyAuth>(&decrypted) {
-            Ok(auth) => Some(auth),
-            Err(error) => {
-                log::warn!(
-                    "Failed to parse decrypted proxy auth from {}: {}",
-                    key,
-                    error
-                );
-                None
-            }
-        },
-        Err(error) => {
-            log::warn!("Failed to decrypt proxy auth from {}: {}", key, error);
-            None
-        }
-    }
-}
-
-fn read_proxy_auth_from_config(
-    config: &Value,
-    proxy_type: &str,
-) -> Option<bamboo_agent::core::ProxyAuth> {
-    let encrypted_key = format!("{}_proxy_auth_encrypted", proxy_type);
-    if let Some(auth) = read_proxy_auth_from_encrypted(config, &encrypted_key) {
-        return Some(auth);
-    }
-
-    let plain_key = format!("{}_proxy_auth", proxy_type);
-    read_proxy_auth_from_plain(config, &plain_key)
-}
-
-fn read_proxy_auth_unified(config: &Value) -> Option<bamboo_agent::core::ProxyAuth> {
-    // Canonical Bamboo key (preferred).
-    if let Some(auth) = read_proxy_auth_from_encrypted(config, "proxy_auth_encrypted") {
-        return Some(auth);
-    }
-
-    // Legacy per-scheme keys (back-compat).
-    read_proxy_auth_from_config(config, "http")
-        .or_else(|| read_proxy_auth_from_config(config, "https"))
-}
 
 fn should_exit_on_main_window_close(label: &str, is_close_requested: bool) -> bool {
     label == "main" && is_close_requested
@@ -266,22 +200,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
 
 #[tauri::command]
 async fn get_proxy_config() -> Result<serde_json::Value, String> {
-    let config = read_config_json()?;
+    let data_dir = app_settings::bamboo_dir();
+    let config = Config::from_data_dir(Some(data_dir));
 
-    let http_proxy = config
-        .get("http_proxy")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let https_proxy = config
-        .get("https_proxy")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string();
-
-    let stored_auth = read_proxy_auth_unified(&config);
-
-    let (username, password, remember) = if let Some(auth) = stored_auth {
+    let (username, password, remember) = if let Some(auth) = config.proxy_auth {
         (Some(auth.username), Some(auth.password), true)
     } else if let (Ok(env_username), Ok(env_password)) = (
         std::env::var("PROXY_USERNAME"),
@@ -293,8 +215,8 @@ async fn get_proxy_config() -> Result<serde_json::Value, String> {
     };
 
     Ok(serde_json::json!({
-        "http_proxy": http_proxy,
-        "https_proxy": https_proxy,
+        "http_proxy": config.http_proxy,
+        "https_proxy": config.https_proxy,
         "username": username,
         "password": password,
         "remember": remember,
@@ -303,39 +225,20 @@ async fn get_proxy_config() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 async fn mark_setup_incomplete() -> Result<(), String> {
-    let mut config = read_config_json()?;
+    let data_dir = app_settings::bamboo_dir();
+    let mut config = Config::from_data_dir(Some(data_dir.clone()));
 
-    // If setup field exists and is an object, set completed to false
-    if let Some(config_obj) = config.as_object_mut() {
-        if let Some(setup_entry) = config_obj.get_mut("setup") {
-            if let Some(setup_obj) = setup_entry.as_object_mut() {
-                setup_obj.insert("completed".to_string(), Value::Bool(false));
-                setup_obj.insert(
-                    "reset_at".to_string(),
-                    Value::String(Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)),
-                );
-                return write_config_json(&config);
-            }
-        }
-    }
+    config.extra.insert(
+        "setup".to_string(),
+        serde_json::json!({
+            "completed": false,
+            "reset_at": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        }),
+    );
 
-    // If config doesn't have setup object, we still need to create one with completed=false
-    // to force the setup flow on next launch
-    let setup_obj = serde_json::json!({
-        "completed": false,
-        "reset_at": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-    });
-
-    if let Some(config_obj) = config.as_object_mut() {
-        config_obj.insert("setup".to_string(), setup_obj);
-        write_config_json(&config)
-    } else {
-        // If config is not an object, create a new one
-        let new_config = serde_json::json!({
-            "setup": setup_obj
-        });
-        write_config_json(&new_config)
-    }
+    config
+        .save_to_dir(data_dir)
+        .map_err(|e| format!("Failed to save config: {e}"))
 }
 
 #[tauri::command]
@@ -353,44 +256,20 @@ async fn set_proxy_config(
     let password = password.unwrap_or_default();
     let has_auth = !username.is_empty();
 
-    let mut config = read_config_json()?;
-    let config_obj = config
-        .as_object_mut()
-        .ok_or_else(|| "config.json must be a JSON object".to_string())?;
+    let mut config = Config::from_data_dir(Some(app_settings::bamboo_dir()));
 
-    config_obj.insert("http_proxy".to_string(), Value::String(http_proxy.clone()));
-    config_obj.insert(
-        "https_proxy".to_string(),
-        Value::String(https_proxy.clone()),
-    );
-
-    // Never persist plaintext proxy auth fields.
-    config_obj.remove("http_proxy_auth");
-    config_obj.remove("https_proxy_auth");
-    config_obj.remove("proxy_auth");
-
-    // Legacy keys (back-compat): older builds stored per-scheme encrypted values.
-    // We now persist the canonical Bamboo field `proxy_auth_encrypted`.
-    config_obj.remove("http_proxy_auth_encrypted");
-    config_obj.remove("https_proxy_auth_encrypted");
+    config.http_proxy = http_proxy.clone();
+    config.https_proxy = https_proxy.clone();
 
     if remember && has_auth && (!http_proxy.is_empty() || !https_proxy.is_empty()) {
-        let auth = bamboo_agent::core::ProxyAuth {
-            username: username.clone(),
-            password: password.clone(),
-        };
-
-        let auth_json =
-            serde_json::to_string(&auth).map_err(|e| format!("Failed to serialize auth: {}", e))?;
-        let encrypted = bamboo_agent::core::encryption::encrypt(&auth_json)
-            .map_err(|e| format!("Failed to encrypt auth: {}", e))?;
-
-        config_obj.insert("proxy_auth_encrypted".to_string(), Value::String(encrypted));
+        config.proxy_auth = Some(ProxyAuth { username, password });
     } else {
-        config_obj.remove("proxy_auth_encrypted");
+        config.proxy_auth = None;
     }
 
-    write_config_json(&config)?;
+    config
+        .save_to_dir(app_settings::bamboo_dir())
+        .map_err(|e| format!("Failed to save config: {e}"))?;
 
     // Note: Runtime proxy auth is handled by frontend via HTTP API (POST /bamboo/proxy-auth)
     // The bamboo-agent will read proxy auth from config.json when needed
