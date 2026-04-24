@@ -1,94 +1,39 @@
 # Bodhi AI
 
-Bodhi AI is the AI agent that feels like a real product, not just a smarter chat box.
+Bodhi AI is a **desktop AI workbench** designed to help you move work forward on your own machine: plan tasks, run tools, connect MCP systems, keep long-running context alive, and turn repeated work into automation.
 
-It is a **desktop AI workbench** designed to help you move work forward on your own machine: plan tasks, run tools, connect MCP systems, keep long-running context alive, and turn repeated work into automation.
+## The pitch
 
-<p align="center">
-  <img src="./docs/assets/bodhi-workbench.png" alt="Bodhi AI workbench" width="100%" />
-</p>
-
-## Why people try Bodhi AI
-
-Because most AI tools still stop at one of these stages:
-
-- they answer well, but do not really **work**
-- they can call tools, but still feel like a **wrapper around chat**
-- they look powerful, but the execution is still a **black box**
-- they help once, but do not become a **lasting work system**
-
-Bodhi AI is built to push past that.
+**Bodhi AI turns AI from a chat experience into a desktop work system.**
 
 ## What Bodhi AI wants to be
 
-Bodhi AI is not trying to be “just another AI interface.”
-It is trying to become your **desktop AI teammate**:
-
-- something you can install and actually use every day
-- something that shows its work instead of hiding it
-- something that can remember, adapt, and keep long tasks moving
-- something that turns success into workflows and schedules
-
-## The pitch in one sentence
-
-**Bodhi AI turns AI from a chat experience into a desktop work system.**
+- Something you can install and actually use every day
+- Something that shows its work instead of hiding it
+- Something that can remember, adapt, and keep long tasks moving
+- Something that turns success into workflows and schedules
 
 ## Why Bodhi AI feels different
 
 ### 1. It feels like an AI product, not a demo
-Bodhi AI is built as a desktop-native experience with real surfaces for settings, providers, env vars, metrics, skills, MCP, and workflow-driven work.
+Desktop-native experience with real surfaces for settings, providers, env vars, metrics, skills, MCP, and workflows.
 
 ### 2. It does not just answer — it advances work
-The point is not only to generate output. The point is to break work into steps, run tools, manage state, and keep execution moving.
+Break work into steps, run tools, manage state, and keep execution moving.
 
 ### 3. The process is visible
-Instead of waiting on a black box, you can see tasks, tools, events, status changes, and runtime behavior as the system moves.
+See tasks, tools, events, status changes, and runtime behavior as the system moves.
 
 ### 4. It gets more valuable over time
-A one-off useful run can become a workflow. A workflow can become a schedule. Bodhi AI is designed to compound.
+A one-off useful run can become a workflow. A workflow can become a schedule.
 
-### 5. It has a real runtime behind it
-Bodhi AI is powered by Bamboo, a structured Rust runtime for context, memory, tools, tasks, scheduling, MCP, and execution boundaries.
-
-## Compared with other AI agents
-
-| Common pattern | Bodhi AI |
-|---|---|
-| Chat-first AI interface | **Desktop-first AI workbench** |
-| Good at answers, weaker at execution | **Built to move tasks forward** |
-| Black-box behavior | **Visible tasks, tools, and event flow** |
-| One-off usefulness | **Workflow + schedule compounding** |
-| Thin shell around model access | **Backed by a structured runtime** |
-
-## Screenshots
-
-### Main workbench
-<p align="center">
-  <img src="./docs/assets/bodhi-workbench.png" alt="Bodhi AI desktop workbench" width="100%" />
-</p>
-
-### Provider settings
-<p align="center">
-  <img src="./docs/assets/bodhi-provider-settings.png" alt="Bodhi AI provider settings" width="100%" />
-</p>
-
-### Environment variables and local integrations
-<p align="center">
-  <img src="./docs/assets/bodhi-env-vars.png" alt="Bodhi AI environment variables settings" width="100%" />
-</p>
-
-### Metrics and usage view
-<p align="center">
-  <img src="./docs/assets/bodhi-metrics.png" alt="Bodhi AI metrics" width="100%" />
-</p>
-
-## What’s underneath
+## What's underneath
 
 Bodhi AI is one layer in a larger system:
 
 - `bodhi` — desktop shell and product surface
-- `lotus` — visible UI layer
-- `bamboo` — structured local Rust runtime
+- `lotus` — React + Vite UI layer
+- `bamboo` — structured Rust runtime (backend)
 
 ```mermaid
 graph TD
@@ -97,7 +42,39 @@ graph TD
   L --> R
 ```
 
+## Architecture Overview
+
+Bodhi owns the desktop shell (Tauri), packaging, and native integrations. Lotus owns the frontend UI. Bamboo owns the backend runtime.
+
+Key runtime components:
+- **Agent loop**: LLM-driven tool execution with approval checkpoints
+- **Tool system**: 20+ built-in tools (file ops, search, edit, shell, workspace) with registry and permission control
+- **Memory system**: Session notes, Dream notebook, long-session compaction
+- **Workflows & Schedules**: Saved agent behaviors that can run on demand or automatically
+- **MCP integration**: Connect external Model Context Protocol servers
+
+## Configuration
+
+### Agent loop environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AGENT_MAX_ITERATIONS` | `10` | Max agent loop iterations |
+| `AGENT_TIMEOUT_SECS` | `300` | Total timeout (5 min) |
+| `AGENT_TOOL_TIMEOUT_SECS` | `60` | Per-tool timeout |
+
+### Build modes
+
+Internal/public mode controls whether a startup confirmation dialog is shown. Set `VITE_INTERNAL_BUILD` in lotus `.env`:
+
+```bash
+cd lotus && npm run rebrand:internal
+cd lotus && npm run rebrand:public
+```
+
 ## Development
+
+### Quick start
 
 ```bash
 cd bodhi
@@ -105,44 +82,47 @@ npm install
 npm run tauri:dev
 ```
 
-Useful commands:
+Bodhi can source Lotus assets from either a local sibling checkout (`../lotus`) or the published npm package (`@bigduu/lotus`), controlled by `LOTUS_SOURCE=auto|local|package`.
+
+### Standalone mode
+
+For debugging frontend/backend independently:
 
 ```bash
-npm run tauri:build
-npm run web:build
-npm run web:source:info
-npm run type-check
-npm run test:run
-npm run test:e2e
-cargo test --manifest-path src-tauri/Cargo.toml
+# Terminal 1: Start backend
+cd bamboo && cargo run -- serve --port 9562
+
+# Terminal 2: Start frontend
+cd lotus && npm run dev
 ```
 
-## Lotus source modes
+### Useful commands
 
-Bodhi AI can source Lotus assets from:
+```bash
+npm run tauri:build      # production build
+npm run web:build        # web build
+npm run type-check       # TypeScript
+npm run test:run         # Vitest
+npm run test:e2e         # Playwright E2E
+```
 
-- a local sibling checkout (`../lotus`)
-- the published npm package (`@bigduu/lotus`)
+## Testing
 
-Supported environment variables:
+- Bamboo: 1,700+ Rust tests (`cd bamboo && cargo test --all`)
+- Lotus: Vitest unit tests (`npm run test:run`) + Playwright E2E (`npm run test:e2e`)
+- Bodhi: Desktop shell tests (`npm run test:run`)
 
-- `LOTUS_SOURCE=auto|local|package`
-- `LOTUS_LOCAL_PATH`
-- `LOTUS_PACKAGE_NAME`
+## Documentation
 
-## Docs
-
-- [Docs index](./docs/README.md)
-- [Architecture docs](./docs/architecture/README.md)
-- [Reports](./docs/reports/README.md)
-- [Configuration docs](./docs/configuration/README.md)
-- [Deployment docs](./docs/deployment/DEPLOYMENT_GUIDE.md)
+- [Architecture overview](./docs/architecture/zenith-flow-diagram.md)
+- [Agent configuration](./docs/configuration/AGENT_CONFIGURATION.md)
+- [Migration guide (v0.3.0)](./docs/release/MIGRATION_v0.3.0.md)
+- [Moved-to-Lotus redirect map](./docs/MOVED_TO_LOTUS.md)
 
 ## When Bodhi AI is the right choice
 
 Choose Bodhi AI if you want:
-
-- a **desktop AI agent product** with stronger AI product feel
-- a system that **shows its work** instead of hiding execution
-- something that can evolve from one run into **workflows and schedules**
-- Bamboo’s runtime power in a **more usable, more compelling product surface**
+- A **desktop AI agent product** with stronger AI product feel
+- A system that **shows its work** instead of hiding execution
+- Something that can evolve from one run into **workflows and schedules**
+- Bamboo's runtime power in a **more usable, more compelling product surface**
