@@ -55,7 +55,7 @@ cd ~/workspace/bodhi/e2e
 
 # 运行测试
 echo "运行所有测试..."
-yarn test
+npm run test
 
 echo ""
 echo "========================================"

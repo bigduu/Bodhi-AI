@@ -722,6 +722,7 @@ dependencies = [
  "futures",
  "regex",
  "rusqlite",
+ "seahash",
  "serde",
  "serde_json",
  "serde_yaml",
