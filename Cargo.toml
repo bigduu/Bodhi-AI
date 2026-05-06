@@ -75,6 +75,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
 
 # Bamboo engine (shared by src-tauri and e2e-backend)
 # Local dev uses the [patch.crates-io] override below.

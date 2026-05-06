@@ -305,6 +305,25 @@ fn toggle_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+#[tauri::command]
+fn show_desktop_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| format!("Failed to show notification: {}", e))
+}
+
+#[tauri::command]
+fn is_main_window_focused(app: tauri::AppHandle) -> bool {
+    app.get_webview_window("main")
+        .map(|w| w.is_focused().unwrap_or(true))
+        .unwrap_or(true)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let log_plugin = tauri_plugin_log::Builder::new()
@@ -328,6 +347,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Register global shortcut: Cmd+Shift+Space (or Ctrl+Shift+Space on Windows/Linux)
             #[cfg(target_os = "macos")]
@@ -354,6 +374,8 @@ pub fn run() {
             mark_setup_incomplete,
             set_proxy_config,
             set_window_theme,
+            show_desktop_notification,
+            is_main_window_focused,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

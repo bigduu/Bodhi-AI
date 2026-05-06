@@ -54,6 +54,7 @@ tauri-plugin-fs = { workspace = true }
 tauri-plugin-global-shortcut = { workspace = true }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-process = { workspace = true }
+tauri-plugin-notification = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 uuid = { workspace = true }

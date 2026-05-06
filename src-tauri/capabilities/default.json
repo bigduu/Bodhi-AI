@@ -13,6 +13,7 @@
     "shell:default",
     "process:default",
     "process:allow-exit",
-    "core:webview:allow-set-webview-zoom"
+    "core:webview:allow-set-webview-zoom",
+    "notification:default"
   ]
 }
