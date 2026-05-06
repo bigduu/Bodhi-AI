@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run web:dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run web:build",
+    "beforeBuildCommand": "cd ../lotus && npm run build && cd ../bodhi && node scripts/lotus-dist.cjs stage",
     "frontendDist": "../.lotus-dist"
   },
   "app": {

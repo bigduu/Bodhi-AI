@@ -9,7 +9,7 @@
     "build": "npm run web:build",
     "preview": "cd ../lotus && npm run preview",
     "web:dev": "cd ../lotus && npm run dev",
-    "web:build": "node scripts/lotus-dist.cjs stage",
+    "web:build": "cd ../lotus && npm run build && cd ../bodhi && node scripts/lotus-dist.cjs stage",
     "web:source:info": "node scripts/lotus-dist.cjs info",
     "rebrand:public": "cd ../lotus && npm run rebrand:public",
     "rebrand:internal": "cd ../lotus && npm run rebrand:internal",
