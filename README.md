@@ -1,5 +1,7 @@
 # Bodhi AI
 
+> **Note:** This is a **Tauri desktop shell**. For the complete architecture and implementation, see the [Zenith](https://github.com/bigduu/zenith) repository.
+
 Bodhi AI is a **desktop AI workbench** designed to help you move work forward on your own machine: plan tasks, run tools, connect MCP systems, keep long-running context alive, and turn repeated work into automation.
 
 ## The pitch
