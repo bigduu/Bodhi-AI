@@ -418,7 +418,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot 0.12.5",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
  "x11rb",
 ]
 
@@ -630,7 +630,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "bamboo-agent"
-version = "2026.4.24"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "101e943d34f1444688a53b25e22947d4f2529c34e6babd5192ffe707e7791b46"
 dependencies = [
  "actix-cors",
  "actix-files",
@@ -691,7 +693,9 @@ dependencies = [
 
 [[package]]
 name = "bamboo-agent-core"
-version = "0.1.0"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63ca400ad25b626058778cb9f1ef6de5f682050d64cf0dff4e724dde6fd4c1ef"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -713,7 +717,9 @@ dependencies = [
 
 [[package]]
 name = "bamboo-compression"
-version = "0.1.0"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b6b8b99bbbc598317477d3864241d2bda8c1172a4b4a18c2557633debc6d634"
 dependencies = [
  "async-trait",
  "bamboo-agent-core",
@@ -731,7 +737,9 @@ dependencies = [
 
 [[package]]
 name = "bamboo-domain"
-version = "0.1.0"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21957f0e4920781525a36910699c156583044a0f5577542ab983cb1dd1c1099b"
 dependencies = [
  "async-trait",
  "chrono",
@@ -745,7 +753,9 @@ dependencies = [
 
 [[package]]
 name = "bamboo-engine"
-version = "0.1.0"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aac817b3307396dcb29ea5c88f20ba47d10871257f358bdeb2c729b9590973e1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -793,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "bamboo-infrastructure"
-version = "0.1.0"
+version = "2026.5.24"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -829,7 +839,9 @@ dependencies = [
 
 [[package]]
 name = "bamboo-memory"
-version = "0.1.0"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c691bfa97b0000fbe431f6c4decedc7c2131ef0cf32cd71463cd37be01751a8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -853,7 +865,9 @@ dependencies = [
 
 [[package]]
 name = "bamboo-server"
-version = "0.1.0"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bce04545f190d15fee8c9f578f950acfb20bddf53817e72f39841525fa3f3698"
 dependencies = [
  "actix-cors",
  "actix-files",
@@ -901,7 +915,9 @@ dependencies = [
 
 [[package]]
 name = "bamboo-tools"
-version = "0.1.0"
+version = "2026.5.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e3a45454e0c19ad3d9da9033eaa8f6ea2026ec901e96b346bc4daf7baf26534"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1857,7 +1873,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2079,7 +2095,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3111,7 +3127,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -3958,7 +3974,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4229,7 +4245,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -4796,7 +4812,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.1",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4833,9 +4849,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5405,7 +5421,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -6603,7 +6619,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7668,7 +7684,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -1,5 +1,6 @@
 [workspace]
 members = ["src-tauri", "e2e-backend"]
+exclude = ["vendor/bamboo-infrastructure"]
 resolver = "2"
 default-members = ["src-tauri"]
 
@@ -78,9 +79,7 @@ tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 
 # Bamboo engine (shared by src-tauri and e2e-backend)
-# Local dev uses the [patch.crates-io] override below.
-# CI/release removes the patch to use the crates.io version here.
-bamboo-agent = "2026.4.24"
+bamboo-agent = "2026.5.24"
 
 # Development
 tempfile = "3"
@@ -101,6 +100,6 @@ portable-pty = "0.8"
 toml = "0.8"
 
 [patch.crates-io]
-# Local development override: use the bamboo workspace checkout instead of crates.io.
-# CI/release workflows remove this section to pull from crates.io.
-bamboo-agent = { path = "../bamboo" }
+# Patch Gemini schema conversion until the upstream crate release accepts
+# Gemini's supported schema subset.
+bamboo-infrastructure = { path = "vendor/bamboo-infrastructure" }

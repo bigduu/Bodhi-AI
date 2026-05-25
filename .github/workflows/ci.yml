@@ -77,33 +77,21 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Remove local patch for crates.io build
+      - name: Remove local bamboo-agent patch for crates.io build
         shell: bash
         run: |
           node <<'NODE'
           const fs = require('node:fs');
           const content = fs.readFileSync('Cargo.toml', 'utf8');
-          if (!content.includes('[patch.crates-io]')) {
-            console.log('No [patch.crates-io] found; already using crates.io');
-            process.exit(0);
-          }
           const lines = content.split('\n');
-          const result = [];
-          let skip = false;
-          for (const line of lines) {
-            if (line.trim() === '[patch.crates-io]') {
-              skip = true;
-              continue;
-            }
-            if (skip && line.startsWith('[')) {
-              skip = false;
-            }
-            if (!skip) {
-              result.push(line);
-            }
+          const localPatch = /^bamboo-agent\s*=\s*\{\s*path\s*=\s*["']\.\.\/bamboo["']\s*\}\s*$/;
+          const result = lines.filter((line) => !localPatch.test(line.trim()));
+          if (result.length === lines.length) {
+            console.log('No local bamboo-agent patch found; already using crates.io bamboo-agent');
+          } else {
+            fs.writeFileSync('Cargo.toml', result.join('\n'));
+            console.log('Removed local bamboo-agent patch for crates.io build');
           }
-          fs.writeFileSync('Cargo.toml', result.join('\n'));
-          console.log('Removed [patch.crates-io] for crates.io build');
           NODE
 
       - name: Rust cache
@@ -172,33 +160,21 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Remove local patch for crates.io build
+      - name: Remove local bamboo-agent patch for crates.io build
         shell: bash
         run: |
           node <<'NODE'
           const fs = require('node:fs');
           const content = fs.readFileSync('Cargo.toml', 'utf8');
-          if (!content.includes('[patch.crates-io]')) {
-            console.log('No [patch.crates-io] found; already using crates.io');
-            process.exit(0);
-          }
           const lines = content.split('\n');
-          const result = [];
-          let skip = false;
-          for (const line of lines) {
-            if (line.trim() === '[patch.crates-io]') {
-              skip = true;
-              continue;
-            }
-            if (skip && line.startsWith('[')) {
-              skip = false;
-            }
-            if (!skip) {
-              result.push(line);
-            }
+          const localPatch = /^bamboo-agent\s*=\s*\{\s*path\s*=\s*["']\.\.\/bamboo["']\s*\}\s*$/;
+          const result = lines.filter((line) => !localPatch.test(line.trim()));
+          if (result.length === lines.length) {
+            console.log('No local bamboo-agent patch found; already using crates.io bamboo-agent');
+          } else {
+            fs.writeFileSync('Cargo.toml', result.join('\n'));
+            console.log('Removed local bamboo-agent patch for crates.io build');
           }
-          fs.writeFileSync('Cargo.toml', result.join('\n'));
-          console.log('Removed [patch.crates-io] for crates.io build');
           NODE
 
       - name: Add Rust target
