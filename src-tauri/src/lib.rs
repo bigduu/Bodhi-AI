@@ -1,16 +1,15 @@
 use crate::command::copy::copy_to_clipboard;
 use crate::embedded::EmbeddedWebService;
 use bamboo_agent::core::ProxyAuth;
+use bamboo_agent::server::logging;
 use bamboo_agent::Config;
 use chrono::{SecondsFormat, Utc};
-use log::{info, LevelFilter};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
 use tauri::{App, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
-use tauri_plugin_log::{Target, TargetKind};
 use tokio::time::sleep;
 
 pub mod app_settings;
@@ -167,7 +166,7 @@ fn show_internal_startup_confirmation<R: Runtime>(app: &App<R>) {
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let app_data_dir = app_settings::bamboo_dir();
     std::fs::create_dir_all(&app_data_dir)?;
-    info!("App data dir: {:?}", app_data_dir);
+    log::info!("App data dir: {:?}", app_data_dir);
 
     // Start embedded web service
     let web_service = Arc::new(EmbeddedWebService::new(9562, app_data_dir.clone()));
@@ -326,23 +325,16 @@ fn is_main_window_focused(app: tauri::AppHandle) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let log_plugin = tauri_plugin_log::Builder::new()
-        .level(LevelFilter::Debug)
-        .clear_targets()
-        .targets([
-            Target::new(TargetKind::Stdout),
-            Target::new(TargetKind::Folder {
-                path: app_settings::bamboo_dir().join("logs"),
-                file_name: None,
-            }),
-        ])
-        .build();
+    // Shared logging policy (daily-rotating files under `{bamboo_dir}/logs`,
+    // date-based retention, debug level in debug builds / info in release,
+    // `RUST_LOG` override). `log::*` calls are bridged into tracing automatically.
+    logging::init_logging_with_home(&app_settings::bamboo_dir(), cfg!(debug_assertions));
+
     let dialog_plugin = tauri_plugin_dialog::init();
     let fs_plugin = tauri_plugin_fs::init();
 
     tauri::Builder::default()
         .plugin(fs_plugin)
-        .plugin(log_plugin)
         .plugin(dialog_plugin)
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_shell::init())

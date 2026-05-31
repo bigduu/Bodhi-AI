@@ -69,7 +69,6 @@ rusqlite = "0.31"
 # Tauri
 tauri = { version = "2.5", features = ["macos-private-api"] }
 tauri-build = "2.5"
-tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-global-shortcut = "2"

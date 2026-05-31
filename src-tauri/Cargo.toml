@@ -39,7 +39,6 @@ anyhow = { workspace = true }
 # Logging and Debug
 log = { workspace = true }
 env_logger = { workspace = true }
-tauri-plugin-log = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 regex = { workspace = true }
