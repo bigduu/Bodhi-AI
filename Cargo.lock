@@ -626,7 +626,6 @@ dependencies = [
  "glob",
  "globset",
  "hex",
- "lazy_static",
  "libc",
  "parking_lot 0.12.5",
  "rand 0.8.5",
@@ -681,7 +680,6 @@ name = "bamboo-compression"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "bamboo-agent-core",
  "bamboo-domain",
  "bamboo-infrastructure",
  "chrono",
@@ -730,7 +728,6 @@ dependencies = [
  "futures",
  "globset",
  "hex",
- "lazy_static",
  "libc",
  "parking_lot 0.12.5",
  "rand 0.8.5",
@@ -771,7 +768,6 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "hex",
- "lazy_static",
  "libc",
  "parking_lot 0.12.5",
  "rand 0.8.5",
