@@ -7,9 +7,14 @@
     "core:default",
     "dialog:default",
     "fs:default",
-    {
-      "identifier": "fs:write-all"
-    },
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    "fs:allow-appconfig-write-recursive",
+    "fs:allow-appdata-write-recursive",
+    "fs:allow-applocaldata-write-recursive",
+    "fs:allow-download-write-recursive",
+    "fs:allow-document-write-recursive",
+    "fs:allow-desktop-write-recursive",
     "shell:default",
     "process:default",
     "process:allow-exit",
