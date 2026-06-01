@@ -1,9 +1,10 @@
 use crate::command::copy::copy_to_clipboard;
+use crate::command::notification::show_desktop_notification;
+use crate::command::proxy::{get_proxy_config, set_proxy_config};
+use crate::command::setup::mark_setup_incomplete;
+use crate::command::window::{is_main_window_focused, set_window_theme};
 use crate::embedded::EmbeddedWebService;
-use bamboo_agent::core::ProxyAuth;
 use bamboo_agent::server::logging;
-use bamboo_agent::Config;
-use chrono::{SecondsFormat, Utc};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
@@ -15,6 +16,10 @@ use tokio::time::sleep;
 pub mod app_settings;
 pub mod command;
 pub mod embedded;
+
+/// Default port for the embedded web service (bamboo-agent backend).
+/// Centralized here so the value is defined in exactly one place.
+pub const DEFAULT_WEB_SERVICE_PORT: u16 = 9562;
 
 // Embedded web service state wrapper for Tauri state management
 pub struct WebServiceState(pub Arc<EmbeddedWebService>);
@@ -169,7 +174,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     log::info!("App data dir: {:?}", app_data_dir);
 
     // Start embedded web service
-    let web_service = Arc::new(EmbeddedWebService::new(9562, app_data_dir.clone()));
+    let web_service = Arc::new(EmbeddedWebService::new(
+        DEFAULT_WEB_SERVICE_PORT,
+        app_data_dir.clone(),
+    ));
 
     let web_service_clone = Arc::clone(&web_service);
     tauri::async_runtime::spawn(async move {
@@ -178,7 +186,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
         if web_service_clone.is_running().await {
             log::info!(
                 "Backend already running on port {}; skipping embedded web service start",
-                9562
+                DEFAULT_WEB_SERVICE_PORT
             );
             return;
         }
@@ -198,100 +206,6 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     Ok(())
 }
 
-#[tauri::command]
-async fn get_proxy_config() -> Result<serde_json::Value, String> {
-    let data_dir = app_settings::bamboo_dir();
-    let config = Config::from_data_dir(Some(data_dir));
-
-    let (username, password, remember) = if let Some(auth) = config.proxy_auth {
-        (Some(auth.username), Some(auth.password), true)
-    } else if let (Ok(env_username), Ok(env_password)) = (
-        std::env::var("PROXY_USERNAME"),
-        std::env::var("PROXY_PASSWORD"),
-    ) {
-        (Some(env_username), Some(env_password), false)
-    } else {
-        (None, None, false)
-    };
-
-    Ok(serde_json::json!({
-        "http_proxy": config.http_proxy,
-        "https_proxy": config.https_proxy,
-        "username": username,
-        "password": password,
-        "remember": remember,
-    }))
-}
-
-#[tauri::command]
-async fn mark_setup_incomplete() -> Result<(), String> {
-    let data_dir = app_settings::bamboo_dir();
-    let mut config = Config::from_data_dir(Some(data_dir.clone()));
-
-    config.extra.insert(
-        "setup".to_string(),
-        serde_json::json!({
-            "completed": false,
-            "reset_at": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-        }),
-    );
-
-    config
-        .save_to_dir(data_dir)
-        .map_err(|e| format!("Failed to save config: {e}"))
-}
-
-#[tauri::command]
-async fn set_proxy_config(
-    http_proxy: String,
-    https_proxy: String,
-    username: Option<String>,
-    password: Option<String>,
-    remember: bool,
-) -> Result<(), String> {
-    let http_proxy = http_proxy.trim().to_string();
-    let https_proxy = https_proxy.trim().to_string();
-
-    let username = username.unwrap_or_default().trim().to_string();
-    let password = password.unwrap_or_default();
-    let has_auth = !username.is_empty();
-
-    let mut config = Config::from_data_dir(Some(app_settings::bamboo_dir()));
-
-    config.http_proxy = http_proxy.clone();
-    config.https_proxy = https_proxy.clone();
-
-    if remember && has_auth && (!http_proxy.is_empty() || !https_proxy.is_empty()) {
-        config.proxy_auth = Some(ProxyAuth { username, password });
-    } else {
-        config.proxy_auth = None;
-    }
-
-    config
-        .save_to_dir(app_settings::bamboo_dir())
-        .map_err(|e| format!("Failed to save config: {e}"))?;
-
-    // Note: Runtime proxy auth is handled by frontend via HTTP API (POST /bamboo/proxy-auth)
-    // The bamboo-agent will read proxy auth from config.json when needed
-
-    Ok(())
-}
-
-#[tauri::command]
-fn set_window_theme(window: tauri::WebviewWindow, theme: String) -> Result<(), String> {
-    let normalized = theme.trim().to_ascii_lowercase();
-    let target_theme = match normalized.as_str() {
-        "light" => Some(tauri::Theme::Light),
-        "dark" => Some(tauri::Theme::Dark),
-        "system" | "" => None,
-        _ => return Err(format!("Unsupported theme '{}'", theme)),
-    };
-
-    window
-        .set_theme(target_theme)
-        .map_err(|error| format!("Failed to set window theme: {}", error))
-}
-
 /// Toggle main window visibility - show if hidden, hide if visible
 fn toggle_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
@@ -302,25 +216,6 @@ fn toggle_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
             let _ = window.set_focus();
         }
     }
-}
-
-#[tauri::command]
-fn show_desktop_notification(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
-    use tauri_plugin_notification::NotificationExt;
-
-    app.notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show()
-        .map_err(|e| format!("Failed to show notification: {}", e))
-}
-
-#[tauri::command]
-fn is_main_window_focused(app: tauri::AppHandle) -> bool {
-    app.get_webview_window("main")
-        .map(|w| w.is_focused().unwrap_or(true))
-        .unwrap_or(true)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
