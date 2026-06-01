@@ -11,7 +11,7 @@ edition = "2021"
 # The `_lib` suffix may seem redundant but it is necessary
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "copilot_chat_lib"
+name = "bodhi_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -22,8 +22,9 @@ tauri-build = { workspace = true }
 bamboo-agent = { workspace = true }
 
 # Tauri core and plugins
-# Enable `devtools` so release builds can open Web Inspector when needed.
-tauri = { workspace = true, features = ["devtools"] }
+# `devtools` is only enabled for development/debug builds via the `dev` feature
+# (wired to debug builds in build.rs). Release builds ship without devtools.
+tauri = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -68,6 +69,9 @@ once_cell = { workspace = true }
 
 [features]
 default = []
+# Enable the Tauri Web Inspector (devtools). Intended for development/debug
+# builds only; keep it out of `default` so release builds ship without it.
+dev = ["tauri/devtools"]
 # Internal company features - only enable in company environment
 internal = []
 

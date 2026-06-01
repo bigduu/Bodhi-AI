@@ -662,7 +662,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bamboo-domain",
- "bamboo-infrastructure",
  "base64 0.22.1",
  "chrono",
  "dashmap",

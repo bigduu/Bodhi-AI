@@ -3,5 +3,5 @@
 
 #[tokio::main]
 async fn main() {
-    copilot_chat_lib::run()
+    bodhi_lib::run()
 }
