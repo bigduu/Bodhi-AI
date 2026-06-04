@@ -41,12 +41,14 @@ fn is_webview_diag_enabled() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(feature = "dev")]
 fn should_open_devtools() -> bool {
     std::env::var("BODHI_OPEN_DEVTOOLS")
         .map(|value| parse_truthy_flag(&value))
         .unwrap_or(false)
 }
 
+#[cfg(feature = "dev")]
 fn maybe_open_devtools<R: Runtime>(app: &App<R>) {
     if !should_open_devtools() {
         return;
@@ -59,6 +61,10 @@ fn maybe_open_devtools<R: Runtime>(app: &App<R>) {
         log::warn!("[webview-diag] main window not found for devtools");
     }
 }
+
+/// No-op when the `dev` feature is disabled (release builds).
+#[cfg(not(feature = "dev"))]
+fn maybe_open_devtools<R: Runtime>(_app: &App<R>) {}
 
 fn schedule_webview_diag<R: Runtime>(app: &App<R>) {
     if !is_webview_diag_enabled() {
