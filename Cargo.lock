@@ -596,9 +596,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "bamboo-agent"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4fe0fa43eef156e56808c1e94ef76fe557a74f2251c4b427aa26269fa841794"
+version = "2026.6.5"
 dependencies = [
  "actix-cors",
  "actix-files",
@@ -611,6 +609,7 @@ dependencies = [
  "bamboo-domain",
  "bamboo-engine",
  "bamboo-infrastructure",
+ "bamboo-sdk",
  "bamboo-server",
  "bamboo-tools",
  "base64 0.22.1",
@@ -658,9 +657,7 @@ dependencies = [
 
 [[package]]
 name = "bamboo-agent-core"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bf80d06511d0649be168ebd5f6a1008a347fa6c4b12bd95bc3ff142c272bcfa"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -681,13 +678,10 @@ dependencies = [
 
 [[package]]
 name = "bamboo-compression"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c411c41b981d6093135eebe82d30e190929d3fc46f1b298940b7eb0c28fa3452"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bamboo-domain",
- "bamboo-infrastructure",
  "chrono",
  "futures",
  "serde",
@@ -699,10 +693,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamboo-config"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "bamboo-domain",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "hex",
+ "rand 0.8.5",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "bamboo-domain"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1ed7385b92babb0a62fb21dba20aa47a3c124ea4aafd6bb85894b86fd2f8501"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -711,14 +724,13 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror 1.0.69",
+ "tracing",
  "uuid",
 ]
 
 [[package]]
 name = "bamboo-engine"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11e4887ec62d200404e50596fa7c50ccbd43f6b5fa4190be8c3317f8d46f307c"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -726,7 +738,10 @@ dependencies = [
  "bamboo-compression",
  "bamboo-domain",
  "bamboo-infrastructure",
+ "bamboo-mcp",
  "bamboo-memory",
+ "bamboo-metrics",
+ "bamboo-skills",
  "bamboo-tools",
  "base64 0.22.1",
  "bytes",
@@ -734,21 +749,16 @@ dependencies = [
  "colored",
  "dashmap",
  "dirs 5.0.1",
- "eventsource-stream",
  "futures",
  "globset",
- "hex",
  "libc",
  "parking_lot 0.12.5",
  "rand 0.8.5",
  "regex",
  "reqwest 0.12.28",
- "reqwest-eventsource",
- "rusqlite",
  "rust_ocr",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2",
  "sysinfo",
  "thiserror 1.0.69",
@@ -760,38 +770,28 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "walkdir",
 ]
 
 [[package]]
 name = "bamboo-infrastructure"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02684ec58b479e268e765918c58ee1a68af69de4a10915f6992161cbadea3ffd"
+version = "0.1.0"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "async-trait",
+ "bamboo-config",
  "bamboo-domain",
+ "bamboo-llm",
  "base64 0.22.1",
  "chrono",
  "dashmap",
- "dirs 5.0.1",
  "eventsource-stream",
  "futures",
- "hex",
  "libc",
  "parking_lot 0.12.5",
- "rand 0.8.5",
- "regex",
  "reqwest 0.12.28",
- "reqwest-eventsource",
- "reqwest-middleware",
- "reqwest-retry",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2",
  "sysinfo",
  "thiserror 1.0.69",
  "tokio",
@@ -803,10 +803,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamboo-llm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bamboo-config",
+ "bamboo-domain",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "eventsource-stream",
+ "futures",
+ "reqwest 0.12.28",
+ "reqwest-eventsource",
+ "reqwest-middleware",
+ "reqwest-retry",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "bamboo-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bamboo-agent-core",
+ "bamboo-domain",
+ "bamboo-infrastructure",
+ "chrono",
+ "dashmap",
+ "eventsource-stream",
+ "futures",
+ "hex",
+ "reqwest 0.12.28",
+ "reqwest-eventsource",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bamboo-memory"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77e7559488b3622c71daacf621092da88fff470581884114dbb7b71bab7624ee"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -829,10 +875,61 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamboo-metrics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bamboo-agent-core",
+ "bamboo-domain",
+ "bamboo-infrastructure",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "bamboo-permission"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bamboo-domain",
+ "bamboo-infrastructure",
+ "chrono",
+ "dashmap",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "url",
+]
+
+[[package]]
+name = "bamboo-sdk"
+version = "0.1.0"
+dependencies = [
+ "bamboo-agent-core",
+ "bamboo-domain",
+ "bamboo-engine",
+ "bamboo-infrastructure",
+ "bamboo-tools",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "bamboo-server"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0787267865e0e2e95d9e594beffa2c8aedb11b12851fc31b0e17f15ea841fca9"
+version = "0.1.0"
 dependencies = [
  "actix-cors",
  "actix-files",
@@ -879,10 +976,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamboo-skills"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bamboo-domain",
+ "bamboo-infrastructure",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "walkdir",
+]
+
+[[package]]
 name = "bamboo-tools"
-version = "2026.6.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76c49d34f53a7c718492eeb59df07e45de8c8e2118f171b36f13f232d164cc4a"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -891,6 +1002,7 @@ dependencies = [
  "bamboo-domain",
  "bamboo-infrastructure",
  "bamboo-memory",
+ "bamboo-permission",
  "base64 0.22.1",
  "chrono",
  "colored",
@@ -898,11 +1010,9 @@ dependencies = [
  "dirs 5.0.1",
  "futures",
  "globset",
- "libc",
  "parking_lot 0.12.5",
  "regex",
  "reqwest 0.12.28",
- "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -910,8 +1020,6 @@ dependencies = [
  "tokio",
  "toml 0.8.2",
  "tracing",
- "tree-sitter",
- "tree-sitter-bash",
  "url",
  "uuid",
  "walkdir",
@@ -4100,7 +4208,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
