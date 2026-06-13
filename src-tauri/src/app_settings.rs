@@ -1,4 +1,4 @@
-pub use bamboo_agent::config::paths::{bamboo_dir, config_json_path, keyword_masking_json_path};
+pub use bamboo_agent::core::paths::{bamboo_dir, config_json_path, keyword_masking_json_path};
 
 pub fn load_config_json(path: &std::path::Path) -> Result<serde_json::Value, String> {
     if !path.exists() {
