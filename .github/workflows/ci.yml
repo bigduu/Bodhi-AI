@@ -77,34 +77,12 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Remove local patch for crates.io build
+      - name: Prepare crates.io build (strip patch, resolve bamboo-agent)
+        # Plain CI has no release version, so the placeholder bamboo-agent
+        # requirement is rewritten to "*" (latest published). See
+        # scripts/prepare-crates-io-build.cjs.
         shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const content = fs.readFileSync('Cargo.toml', 'utf8');
-          if (!content.includes('[patch.crates-io]')) {
-            console.log('No [patch.crates-io] found; already using crates.io');
-            process.exit(0);
-          }
-          const lines = content.split('\n');
-          const result = [];
-          let skip = false;
-          for (const line of lines) {
-            if (line.trim() === '[patch.crates-io]') {
-              skip = true;
-              continue;
-            }
-            if (skip && line.startsWith('[')) {
-              skip = false;
-            }
-            if (!skip) {
-              result.push(line);
-            }
-          }
-          fs.writeFileSync('Cargo.toml', result.join('\n'));
-          console.log('Removed [patch.crates-io] for crates.io build');
-          NODE
+        run: node scripts/prepare-crates-io-build.cjs
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -172,34 +150,12 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Remove local patch for crates.io build
+      - name: Prepare crates.io build (strip patch, resolve bamboo-agent)
+        # Plain CI has no release version, so the placeholder bamboo-agent
+        # requirement is rewritten to "*" (latest published). See
+        # scripts/prepare-crates-io-build.cjs.
         shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const content = fs.readFileSync('Cargo.toml', 'utf8');
-          if (!content.includes('[patch.crates-io]')) {
-            console.log('No [patch.crates-io] found; already using crates.io');
-            process.exit(0);
-          }
-          const lines = content.split('\n');
-          const result = [];
-          let skip = false;
-          for (const line of lines) {
-            if (line.trim() === '[patch.crates-io]') {
-              skip = true;
-              continue;
-            }
-            if (skip && line.startsWith('[')) {
-              skip = false;
-            }
-            if (!skip) {
-              result.push(line);
-            }
-          }
-          fs.writeFileSync('Cargo.toml', result.join('\n'));
-          console.log('Removed [patch.crates-io] for crates.io build');
-          NODE
+        run: node scripts/prepare-crates-io-build.cjs
 
       - name: Add Rust target
         shell: bash

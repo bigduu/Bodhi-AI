@@ -94,6 +94,15 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Resolved Bodhi release version: ${VERSION}"
 
+      - name: Refuse to publish the placeholder version
+        # Source ships 0.0.0 on purpose — you can tell at a glance it isn't a
+        # real version. The release train passes the real date-based version via
+        # bodhi_version; the 0.0.0 placeholder must never be published or tagged.
+        if: steps.release_version.outputs.version == '0.0.0'
+        run: |
+          echo "::error::Bodhi version resolved to the 0.0.0 placeholder. Pass bodhi_version (the release train provides one from the Zenith config)."
+          exit 1
+
       - name: Set Bodhi app version (workflow override)
         if: github.event_name == 'workflow_dispatch' && github.event.inputs.bodhi_version != '' && github.event.inputs.bodhi_version != 'latest'
         shell: bash
@@ -147,62 +156,25 @@ jobs:
           path: node_modules
           key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
 
-      - name: Remove local patch for crates.io build
-        shell: bash
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const content = fs.readFileSync('Cargo.toml', 'utf8');
-          if (!content.includes('[patch.crates-io]')) {
-            console.log('No [patch.crates-io] found; already using crates.io');
-            process.exit(0);
-          }
-          const lines = content.split('\n');
-          const result = [];
-          let skip = false;
-          for (const line of lines) {
-            if (line.trim() === '[patch.crates-io]') {
-              skip = true;
-              continue;
-            }
-            if (skip && line.startsWith('[')) {
-              skip = false;
-            }
-            if (!skip) {
-              result.push(line);
-            }
-          }
-          fs.writeFileSync('Cargo.toml', result.join('\n'));
-          console.log('Removed [patch.crates-io] for crates.io build');
-          NODE
-
-      - name: Resolve bamboo-agent dependency
+      - name: Prepare crates.io build (strip patch, resolve bamboo-agent)
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.bamboo_version }}" ] && [ "${{ github.event.inputs.bamboo_version }}" != "latest" ]; then
-            export BAMBOO_VERSION="${{ github.event.inputs.bamboo_version }}"
-            echo "Using ${BAMBOO_CRATE_NAME}@${BAMBOO_VERSION}"
+            export BAMBOO_AGENT_VERSION="${{ github.event.inputs.bamboo_version }}"
+            echo "Pinning ${BAMBOO_CRATE_NAME}@${BAMBOO_AGENT_VERSION}"
           else
-            unset BAMBOO_VERSION
             echo "Using latest compatible ${BAMBOO_CRATE_NAME} from crates.io"
           fi
 
-          node <<'NODE'
-          const fs = require('node:fs');
-          const cargoTomlPath = 'Cargo.toml';
-          const version = process.env.BAMBOO_VERSION || '';
-          if (!version) process.exit(0);
-          const content = fs.readFileSync(cargoTomlPath, 'utf8');
-          const updated = content.replace(
-            /bamboo-agent\s*=\s*\"[^\"]*\"/,
-            `bamboo-agent = "${version}"`,
-          );
-          fs.writeFileSync(cargoTomlPath, updated);
-          console.log(`Pinned bamboo-agent to ${version}`);
-          NODE
+          node scripts/prepare-crates-io-build.cjs
 
+          # Refresh the lock for the rewritten requirement, then report what
+          # bamboo-agent resolved to. The Bodhi shell no longer links
+          # bamboo-agent (it's an e2e-backend-only dep), so read the resolved
+          # version from the lockfile rather than bodhi's dependency tree.
           cargo update
-          cargo tree --manifest-path src-tauri/Cargo.toml --locked -p bodhi | grep -m1 "${BAMBOO_CRATE_NAME} v"
+          echo "Resolved ${BAMBOO_CRATE_NAME} in Cargo.lock:"
+          grep -A1 "^name = \"${BAMBOO_CRATE_NAME}\"$" Cargo.lock | grep '^version' || echo "(not present)"
 
       - name: Install shell dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'

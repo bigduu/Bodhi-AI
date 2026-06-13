@@ -77,10 +77,16 @@ tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 
 # Bamboo engine — used only by e2e-backend now (the Bodhi shell runs bamboo as a
-# sidecar binary, not a linked crate). `*`: local dev patches in ../bamboo (whose
-# source version is a 0.0.0 placeholder), and CI removes the patch to resolve the
-# latest published crate — so the requirement must accept any version.
-bamboo-agent = "*"
+# sidecar binary, not a linked crate).
+#
+# PLACEHOLDER: 0.0.0 is never a real published version, so it can't ship as-is —
+# that's the point (you can tell at a glance it must be replaced). Local dev
+# resolves it through the [patch.crates-io] override below (../bamboo also ships
+# the 0.0.0 placeholder). Every crates.io build — plain CI and release — runs
+# scripts/prepare-crates-io-build.cjs, which strips the patch and rewrites this
+# one line to a resolvable requirement: the pinned release version, or "*"
+# (latest published) in plain CI.
+bamboo-agent = "0.0.0"
 
 # Development
 tempfile = "3"
