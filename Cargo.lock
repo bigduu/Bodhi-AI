@@ -595,6 +595,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "bamboo-a2a"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "eventsource-stream",
+ "futures",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "bamboo-agent"
 version = "2026.6.5"
 dependencies = [
@@ -606,11 +621,14 @@ dependencies = [
  "async-stream",
  "async-trait",
  "bamboo-agent-core",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-engine",
  "bamboo-infrastructure",
+ "bamboo-llm",
  "bamboo-sdk",
  "bamboo-server",
+ "bamboo-storage",
  "bamboo-tools",
  "base64 0.22.1",
  "bytes",
@@ -734,14 +752,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bamboo-a2a",
  "bamboo-agent-core",
  "bamboo-compression",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-infrastructure",
+ "bamboo-llm",
  "bamboo-mcp",
  "bamboo-memory",
  "bamboo-metrics",
  "bamboo-skills",
+ "bamboo-storage",
  "bamboo-tools",
  "base64 0.22.1",
  "bytes",
@@ -778,28 +800,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bamboo-config",
  "bamboo-domain",
- "bamboo-llm",
- "base64 0.22.1",
  "chrono",
  "dashmap",
- "eventsource-stream",
- "futures",
  "libc",
- "parking_lot 0.12.5",
- "reqwest 0.12.28",
  "rusqlite",
  "serde",
  "serde_json",
  "sysinfo",
  "thiserror 1.0.69",
  "tokio",
- "tokio-stream",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -833,8 +846,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bamboo-agent-core",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-infrastructure",
+ "bamboo-llm",
  "chrono",
  "dashmap",
  "eventsource-stream",
@@ -858,8 +873,10 @@ dependencies = [
  "async-trait",
  "bamboo-agent-core",
  "bamboo-compression",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-infrastructure",
+ "bamboo-llm",
  "chrono",
  "dashmap",
  "futures",
@@ -896,8 +913,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-infrastructure",
+ "bamboo-llm",
  "chrono",
  "dashmap",
  "libc",
@@ -918,9 +937,14 @@ name = "bamboo-sdk"
 version = "0.1.0"
 dependencies = [
  "bamboo-agent-core",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-engine",
  "bamboo-infrastructure",
+ "bamboo-llm",
+ "bamboo-metrics",
+ "bamboo-skills",
+ "bamboo-storage",
  "bamboo-tools",
  "tokio",
  "tokio-util",
@@ -939,10 +963,17 @@ dependencies = [
  "async-trait",
  "bamboo-agent-core",
  "bamboo-compression",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-engine",
  "bamboo-infrastructure",
+ "bamboo-llm",
+ "bamboo-mcp",
  "bamboo-memory",
+ "bamboo-metrics",
+ "bamboo-server-tools",
+ "bamboo-skills",
+ "bamboo-storage",
  "bamboo-tools",
  "bytes",
  "chrono",
@@ -976,10 +1007,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamboo-server-tools"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bamboo-a2a",
+ "bamboo-agent-core",
+ "bamboo-config",
+ "bamboo-domain",
+ "bamboo-engine",
+ "bamboo-infrastructure",
+ "bamboo-llm",
+ "bamboo-memory",
+ "bamboo-metrics",
+ "bamboo-skills",
+ "bamboo-storage",
+ "bamboo-tools",
+ "dashmap",
+ "parking_lot 0.12.5",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "bamboo-skills"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-infrastructure",
  "serde",
@@ -992,6 +1050,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamboo-storage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bamboo-domain",
+ "base64 0.22.1",
+ "chrono",
+ "dashmap",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "bamboo-tools"
 version = "0.1.0"
 dependencies = [
@@ -999,10 +1075,13 @@ dependencies = [
  "async-trait",
  "bamboo-agent-core",
  "bamboo-compression",
+ "bamboo-config",
  "bamboo-domain",
  "bamboo-infrastructure",
+ "bamboo-llm",
  "bamboo-memory",
  "bamboo-permission",
+ "bamboo-storage",
  "base64 0.22.1",
  "chrono",
  "colored",

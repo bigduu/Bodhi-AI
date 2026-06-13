@@ -1,5 +1,5 @@
 use crate::app_settings;
-use bamboo_agent::core::ProxyAuth;
+use bamboo_agent::config::ProxyAuth;
 use bamboo_agent::Config;
 
 #[tauri::command]
