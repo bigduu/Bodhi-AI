@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "bodhi"
-version = "2026.6.13"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "arboard",
