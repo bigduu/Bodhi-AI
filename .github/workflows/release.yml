@@ -204,6 +204,13 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Ad-hoc macOS signing: the runner keychain has no "Zenith Nova Code
+          # Signing" cert (no Apple secrets configured), so the real identity in
+          # tauri.conf can't be used and the build fails at codesign. "-" signs
+          # ad-hoc so macOS bundles build. TODO: for distribution + persistent
+          # TCC grants, add the cert as a secret, import it into the keychain
+          # here, and drop this override so the real identity is used.
+          APPLE_SIGNING_IDENTITY: "-"
         with:
           tagName: app-v${{ steps.release_version.outputs.version }}
           releaseName: "App v${{ steps.release_version.outputs.version }}"
