@@ -1,8 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Main window. `remote` also grants this IPC to the bamboo sidecar's loopback URL (which serves lotus) so native shell features (window theme, desktop notifications, external-link open) keep working after the shell navigates the webview there. Loopback only.",
   "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://localhost:9562",
+      "http://127.0.0.1:9562",
+      "http://localhost:*",
+      "http://127.0.0.1:*"
+    ]
+  },
   "permissions": [
     "core:default",
     "dialog:default",

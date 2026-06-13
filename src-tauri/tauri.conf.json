@@ -4,10 +4,10 @@
   "version": "2026.4.24",
   "identifier": "com.bodhi.app",
   "build": {
-    "beforeDevCommand": "npm run web:dev",
+    "beforeDevCommand": "npm run build:sidecar:dev && npm run web:dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "cd ../lotus && npm run build && cd ../bodhi && node scripts/lotus-dist.cjs stage",
-    "frontendDist": "../.lotus-dist"
+    "beforeBuildCommand": "node scripts/build-sidecar.cjs",
+    "frontendDist": "../bodhi-splash"
   },
   "app": {
     "macOSPrivateApi": true,
@@ -41,6 +41,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/bamboo"
+    ],
     "macOS": {
       "signingIdentity": "Zenith Nova Code Signing"
     },

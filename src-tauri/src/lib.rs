@@ -1,11 +1,6 @@
 use crate::command::copy::copy_to_clipboard;
 use crate::command::notification::show_desktop_notification;
-use crate::command::proxy::{get_proxy_config, set_proxy_config};
-use crate::command::setup::mark_setup_incomplete;
 use crate::command::window::{is_main_window_focused, set_window_theme};
-use crate::embedded::EmbeddedWebService;
-use bamboo_agent::server::logging;
-use std::sync::Arc;
 use std::time::Duration;
 use tauri::Manager;
 use tauri::{App, Runtime};
@@ -15,14 +10,20 @@ use tokio::time::sleep;
 
 pub mod app_settings;
 pub mod command;
-pub mod embedded;
+pub mod sidecar;
 
-/// Default port for the embedded web service (bamboo-agent backend).
+/// Default port for the bamboo sidecar backend.
 /// Centralized here so the value is defined in exactly one place.
 pub const DEFAULT_WEB_SERVICE_PORT: u16 = 9562;
 
-// Embedded web service state wrapper for Tauri state management
-pub struct WebServiceState(pub Arc<EmbeddedWebService>);
+/// Resolve the backend port, allowing a `BODHI_BACKEND_PORT` env override
+/// (useful for dev, automated tests, or running multiple instances side by side).
+fn web_service_port() -> u16 {
+    std::env::var("BODHI_BACKEND_PORT")
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(DEFAULT_WEB_SERVICE_PORT)
+}
 
 fn should_exit_on_main_window_close(label: &str, is_close_requested: bool) -> bool {
     label == "main" && is_close_requested
@@ -179,31 +180,55 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     std::fs::create_dir_all(&app_data_dir)?;
     log::info!("App data dir: {:?}", app_data_dir);
 
-    // Start embedded web service
-    let web_service = Arc::new(EmbeddedWebService::new(
-        DEFAULT_WEB_SERVICE_PORT,
-        app_data_dir.clone(),
-    ));
+    // Run the bamboo backend as a managed sidecar process (replaces the in-process
+    // WebService). The child is held in SidecarState and killed on app exit; it also
+    // self-exits if this process dies uncleanly — see `sidecar` and the
+    // `--shutdown-on-stdin-close` flag on `bamboo serve`.
+    let port = web_service_port();
+    let data_dir = app_data_dir.clone();
+    app.manage(sidecar::SidecarState(std::sync::Mutex::new(None)));
 
-    let web_service_clone = Arc::clone(&web_service);
+    let sidecar_app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        // If an external backend is already running on the port,
-        // don't try to start the embedded server (avoids noisy bind/health failures).
-        if web_service_clone.is_running().await {
-            log::info!(
-                "Backend already running on port {}; skipping embedded web service start",
-                DEFAULT_WEB_SERVICE_PORT
-            );
-            return;
+        // If a backend is already serving on the port (e.g. a dev `bamboo serve`),
+        // reuse it; otherwise spawn our own managed sidecar.
+        if sidecar::backend_already_running(port).await {
+            log::info!("Backend already running on port {port}; reusing it");
+        } else {
+            match sidecar::spawn(&sidecar_app, port, &data_dir) {
+                Ok(child) => {
+                    if let Some(state) = sidecar_app.try_state::<sidecar::SidecarState>() {
+                        *state.0.lock().unwrap() = Some(child);
+                    }
+                    log::info!("bamboo sidecar spawned on port {port}");
+                }
+                Err(e) => log::error!("Failed to spawn bamboo sidecar: {}", e),
+            }
         }
 
-        if let Err(e) = web_service_clone.start().await {
-            log::error!("Failed to start embedded web service: {}", e);
+        // Once the backend is healthy, point the webview at it (the sidecar serves
+        // lotus). Release always navigates; in dev (debug) we keep the dev server
+        // unless BODHI_SIDECAR_FRONTEND forces the sidecar frontend (used in tests).
+        if sidecar::wait_for_health(port, 60).await {
+            let use_sidecar_frontend =
+                !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
+            if use_sidecar_frontend {
+                if let Some(win) = sidecar_app.get_webview_window("main") {
+                    match format!("http://127.0.0.1:{port}").parse::<tauri::Url>() {
+                        Ok(url) => match win.navigate(url) {
+                            Ok(()) => {
+                                log::info!("webview navigated to sidecar http://127.0.0.1:{port}")
+                            }
+                            Err(e) => log::error!("navigate to sidecar failed: {e}"),
+                        },
+                        Err(e) => log::error!("bad sidecar url: {e}"),
+                    }
+                }
+            }
+        } else {
+            log::error!("bamboo backend never became healthy on port {port}");
         }
     });
-
-    // Manage web service state for later access
-    app.manage(WebServiceState(web_service));
 
     show_internal_startup_confirmation(app);
     maybe_open_devtools(app);
@@ -226,10 +251,16 @@ fn toggle_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Shared logging policy (daily-rotating files under `{bamboo_dir}/logs`,
-    // date-based retention, debug level in debug builds / info in release,
-    // `RUST_LOG` override). `log::*` calls are bridged into tracing automatically.
-    logging::init_logging_with_home(&app_settings::bamboo_dir(), cfg!(debug_assertions));
+    // Lightweight shell logging to stderr (the bamboo sidecar owns file logging
+    // under its data dir). `RUST_LOG` overrides the default level.
+    env_logger::Builder::new()
+        .filter_level(if cfg!(debug_assertions) {
+            log::LevelFilter::Debug
+        } else {
+            log::LevelFilter::Info
+        })
+        .parse_default_env()
+        .init();
 
     let dialog_plugin = tauri_plugin_dialog::init();
     let fs_plugin = tauri_plugin_fs::init();
@@ -263,29 +294,32 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             copy_to_clipboard,
-            get_proxy_config,
-            mark_setup_incomplete,
-            set_proxy_config,
             set_window_theme,
             show_desktop_notification,
             is_main_window_focused,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::WindowEvent {
+        .run(|app_handle, event| match &event {
+            // App is exiting (incl. after `app_handle.exit(0)` below): make sure the
+            // bamboo sidecar goes with us. The stdin death-link is the crash-safe
+            // backstop; this is the clean path.
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                sidecar::kill(app_handle);
+            }
+            tauri::RunEvent::WindowEvent {
                 label,
                 event: window_event,
                 ..
-            } = event
-            {
+            } => {
                 let is_close_requested =
                     matches!(window_event, tauri::WindowEvent::CloseRequested { .. });
-                if should_exit_on_main_window_close(&label, is_close_requested) {
+                if should_exit_on_main_window_close(label, is_close_requested) {
                     log::info!("Main window close requested, exiting application...");
                     app_handle.exit(0);
                 }
             }
+            _ => {}
         });
 }
 

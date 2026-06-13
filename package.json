@@ -11,6 +11,8 @@
     "web:dev": "cd ../lotus && npm run dev",
     "web:build": "node scripts/web-build.cjs",
     "web:source:info": "node scripts/lotus-dist.cjs info",
+    "build:sidecar": "node scripts/build-sidecar.cjs",
+    "build:sidecar:dev": "node scripts/build-sidecar.cjs --debug",
     "rebrand:public": "cd ../lotus && npm run rebrand:public",
     "rebrand:internal": "cd ../lotus && npm run rebrand:internal",
     "rebrand:check": "cd ../lotus && npm run rebrand:check",
