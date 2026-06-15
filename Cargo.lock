@@ -933,6 +933,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bamboo-notification"
+version = "0.0.0"
+dependencies = [
+ "bamboo-agent-core",
+ "chrono",
+ "dashmap",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "bamboo-permission"
 version = "0.0.0"
 dependencies = [
@@ -997,6 +1011,7 @@ dependencies = [
  "bamboo-mcp",
  "bamboo-memory",
  "bamboo-metrics",
+ "bamboo-notification",
  "bamboo-server-tools",
  "bamboo-skills",
  "bamboo-storage",
