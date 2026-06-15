@@ -183,7 +183,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     // Run the bamboo backend as a managed sidecar process (replaces the in-process
     // WebService). The child is held in SidecarState and killed on app exit; it also
     // self-exits if this process dies uncleanly — see `sidecar` and the
-    // `--shutdown-on-stdin-close` flag on `bamboo serve`.
+    // `--parent-pid` orphan guard on `bamboo serve`.
     let port = web_service_port();
     let data_dir = app_data_dir.clone();
     app.manage(sidecar::SidecarState(std::sync::Mutex::new(None)));

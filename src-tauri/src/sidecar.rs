@@ -6,11 +6,12 @@
 //!
 //! 1. **Graceful** — the spawned [`CommandChild`] is held in [`SidecarState`]
 //!    and killed on `RunEvent::Exit` / `ExitRequested`.
-//! 2. **Crash-safe** — `bamboo serve --shutdown-on-stdin-close` watches its
-//!    stdin, whose write end this process holds open for the child's lifetime.
-//!    If the app dies *without* running cleanup (SIGKILL, force-quit, panic),
-//!    the OS closes the pipe, the child sees EOF and exits on its own. This is
-//!    the half a naive sidecar misses — the reason a backend can outlive a
+//! 2. **Crash-safe** — `bamboo serve --parent-pid <this-pid>` runs an orphan
+//!    guard: a dedicated thread that exits the backend when this process goes
+//!    away. The primary signal is `getppid()` changing (the kernel reparents
+//!    the child to init/launchd the moment its parent terminates), so it fires
+//!    even if the app dies *without* cleanup (SIGKILL, force-quit, panic). This
+//!    is the half a naive sidecar misses — the reason a backend can outlive a
 //!    force-quit.
 
 use std::sync::Mutex;
@@ -53,9 +54,10 @@ pub async fn wait_for_health(port: u16, max_secs: u64) -> bool {
 
 /// Spawn `bamboo serve` as a sidecar and return its child handle.
 ///
-/// IMPORTANT: the returned [`CommandChild`] must be kept alive for the app's
-/// lifetime — dropping it closes the child's stdin, which trips the
-/// `--shutdown-on-stdin-close` death-link and stops the backend.
+/// IMPORTANT: the returned [`CommandChild`] is the *graceful* handle — keep it
+/// in [`SidecarState`] and kill it on app exit. The `--parent-pid` orphan guard
+/// (wired below) is the crash-safe backstop for unclean exits where that kill
+/// never runs.
 pub fn spawn<R: Runtime>(
     app: &AppHandle<R>,
     port: u16,
