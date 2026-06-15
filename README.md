@@ -12,7 +12,7 @@
 
 Bodhi AI turns AI from a chat box into a **desktop work system that actually moves work forward**. You hand it a goal; it breaks the goal into steps, runs tools, reads and writes files, connects to your systems — and **shows every step of its work** instead of just handing you a wall of text. Better still: a one-off useful run can be saved as a reusable workflow, and a workflow can be put on a schedule. AI stops being a disposable answer and becomes an assistant that **compounds in value over time**.
 
-It installs and runs as a real desktop app (Windows / macOS / Linux), with a global hotkey, native notifications, and a local engine running inside the app — no separate server to babysit.
+It installs and runs as a real desktop app (Windows / macOS / Linux), with a global hotkey, native notifications, and a managed local engine (sidecar process) — no separate server to babysit.
 
 ---
 
@@ -22,10 +22,9 @@ It installs and runs as a real desktop app (Windows / macOS / Linux), with a glo
 |---|---|
 | 🖥️ Native desktop shell | A real desktop app window (Tauri 2), cross-platform packaging (`bundle.targets: all`) |
 | ⌨️ Global hotkey | `Cmd/Ctrl + Shift + Space` shows/hides the main window anytime |
-| 🔌 Embedded engine | Runs the Bamboo runtime HTTP service directly inside the app (default port `9562`), no separate sidecar process |
+| 🔌 Managed sidecar engine | Spawns the standalone `bamboo serve` binary as a managed Tauri sidecar (default port `9562`), killed on app exit |
 | 🔔 Native notifications | Pushes desktop alerts through the system notification center |
 | 📋 Clipboard | Native clipboard writes (macOS / Windows) |
-| 🌐 Proxy config | Reads/writes HTTP/HTTPS proxy and auth, persisted to `config.json` |
 | 🎨 Window theme | Follows the frontend to switch light/dark/system theme |
 | 📦 Lotus asset staging | Chooses the frontend source between local source or npm package via `LOTUS_SOURCE` |
 | 🏢 Build modes | Internal builds show a confirmation dialog at startup; public builds boot straight in |
@@ -34,14 +33,14 @@ It installs and runs as a real desktop app (Windows / macOS / Linux), with a glo
 
 ## Architecture
 
-Bodhi owns only the shell and the product surface — the desktop window, native integrations (clipboard, notifications, global shortcut, proxy), packaging and release. The UI comes from **Lotus**; the real execution engine is **Bamboo** (a local-first Rust agent runtime). The key detail: Bodhi **compiles the Bamboo engine directly into the app process** (via the `bamboo-agent` crate dependency) and starts an embedded HTTP service at launch. The Lotus frontend then talks to that local service over HTTP — the same boundary you'd get with a standalone backend.
+Bodhi owns only the shell and the product surface — the desktop window, native integrations (clipboard, notifications, global shortcut), packaging and release. The UI comes from **Lotus**; the real execution engine is **Bamboo** (a local-first Rust agent runtime). The key detail: Bodhi **spawns the standalone `bamboo serve` binary as a managed Tauri sidecar process** and owns its lifecycle. The shell does *not* link `bamboo-agent` as a crate dependency — `bamboo` is declared as an `externalBin` in `tauri.conf.json`. The Lotus frontend then talks to that local service over HTTP — the same boundary you'd get with a standalone backend.
 
 ```mermaid
 graph TD
   subgraph Desktop["Bodhi AI desktop app (Tauri 2)"]
     L["Lotus UI<br/>React + Vite assets<br/>(WebView)"]
-    E["Embedded WebService<br/>bamboo-agent HTTP server<br/>127.0.0.1:9562"]
-    N["Native commands<br/>clipboard · notifications<br/>proxy · window theme"]
+    E["Managed sidecar<br/>bamboo serve externalBin<br/>127.0.0.1:9562"]
+    N["Native commands<br/>clipboard · notifications<br/>window theme"]
     L -- "HTTP /api/v1/*" --> E
     L -- "Tauri IPC invoke" --> N
   end
@@ -71,15 +70,15 @@ This is the product pitch. Ordinary AI hands you text and stops; Bodhi advances 
 
 > Note: the run / workflow / schedule capability — and all tools and agent logic — live in the **Bamboo runtime**. Bodhi's job is to wrap it in a **desktop product you can actually use every day**.
 
-### Embedded runtime, not a sidecar
+### Managed sidecar process
 
-`EmbeddedWebService` in `src-tauri/src/embedded/mod.rs` runs `bamboo-agent::server::WebService` directly inside the app process:
+Instead of linking and running the Bamboo HTTP server in-process, the shell spawns the standalone `bamboo serve` binary as a **Tauri sidecar** (`src-tauri/src/sidecar.rs`) and owns its lifecycle:
 
 - **Default port `9562`** (`DEFAULT_WEB_SERVICE_PORT`, defined in `src-tauri/src/lib.rs`).
-- **Skip if the port is taken**: before starting, it probes `http://127.0.0.1:9562/api/v1/health`; if a backend is already running (e.g. you manually started a standalone bamboo server), it skips the embedded startup, making it easy to debug frontend and backend independently.
-- **Health check**: after starting, it polls `/api/v1/health`, with up to 10 retries before it is considered ready.
-- **Self-managed static assets**: prefers Bamboo's bundled frontend directory, falling back to `.lotus-dist` and other candidate paths; when no frontend is found it starts in **API-only mode**.
-- **Configurable bind address**: read from `server.bind` in `config.json` (default `127.0.0.1`).
+- **Reuse if the port is taken**: before spawning, it probes `http://127.0.0.1:9562/api/v1/health`; if a backend is already running (e.g. you manually started a standalone bamboo server), it **reuses it** instead of spawning its own, making it easy to debug frontend and backend independently.
+- **Health check**: after spawning, it polls `/api/v1/health` via `wait_for_health` (up to 60 seconds) before navigating the webview to the sidecar.
+- **Crash-safe orphan guard**: the sidecar is spawned with `--parent-pid <shell_pid>`, so if the app dies *without* running cleanup (SIGKILL, force-quit, panic), the backend self-exits. On the clean path, `RunEvent::Exit` / `ExitRequested` kills the recorded child.
+- **No `bamboo-agent` crate dependency**: the shell links no Bamboo crate. `bamboo` is declared as an `externalBin` in `tauri.conf.json` (`"externalBin": ["binaries/bamboo"]`).
 
 > Why it matters: a user opens one app and the engine comes up with it; a developer can still run the backend externally for debugging. Best of both.
 
@@ -91,10 +90,8 @@ The following Tauri commands are registered in `src-tauri/src/lib.rs` (`invoke_h
 |---|---|---|
 | `copy_to_clipboard` | `command/copy.rs` | Native clipboard write (falls back to the Web API on Linux) |
 | `show_desktop_notification` | `command/notification.rs` | System desktop notification |
-| `get_proxy_config` / `set_proxy_config` | `command/proxy.rs` | Read/write proxy config + auth, persisted to `config.json` |
 | `set_window_theme` | `command/window.rs` | Set window theme (light/dark/system) |
 | `is_main_window_focused` | `command/window.rs` | Query whether the main window is focused |
-| `mark_setup_incomplete` | `command/setup.rs` | Mark initialization as incomplete (reset onboarding) |
 
 Enabled Tauri plugins: `dialog`, `fs`, `global-shortcut`, `shell`, `process`, `notification`.
 
@@ -160,7 +157,7 @@ npm run web:source:info       # print the current Lotus source (local/package + 
 
 ### Run frontend & backend separately
 
-Because the embedded service skips startup when the port is busy, you can run a standalone backend for debugging. The Bamboo backend entry point is the `serve` subcommand of the `bamboo` binary (in the `bamboo/` directory):
+Because the sidecar reuses an existing backend if the port is already in use, you can run a standalone backend for debugging. The Bamboo backend entry point is the `serve` subcommand of the `bamboo` binary (in the `bamboo/` directory):
 
 ```bash
 # Terminal 1: backend (in bamboo/)
@@ -181,9 +178,8 @@ npm run dev
 | `BODHI_OPEN_DEVTOOLS` | Open devtools on launch when truthy |
 | `BODHI_WEBVIEW_DIAG` | Inject a diagnostics overlay if the frontend fails to mount, when truthy |
 | `BODHI_INTERNAL_BUILD` | Enable the internal-build startup confirmation dialog when truthy |
-| `BODHI_FRONTEND_DIST` | Explicit static frontend dir for the embedded service |
-
-Proxy auth also honors `PROXY_USERNAME` / `PROXY_PASSWORD` (see `command/proxy.rs`).
+| `BODHI_BACKEND_PORT` | Override the sidecar backend port (default `9562`) |
+| `BODHI_SIDECAR_FRONTEND` | Force the webview to use the sidecar frontend in debug/dev builds |
 
 > Note: this module does NOT define `type-check` / `test:run` / `test:e2e` — those belong to **Lotus**. Bodhi's `package.json` only contains the web/rebrand/tauri scripts listed above.
 
