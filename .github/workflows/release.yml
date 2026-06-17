@@ -11,6 +11,10 @@ on:
         description: "bamboo-agent crate version to embed (default: latest)"
         required: false
         default: "latest"
+      bamboo_ref:
+        description: "Git ref of bigduu/Bamboo-agent to build the sidecar from (default: main)"
+        required: false
+        default: "main"
       lotus_version:
         description: "Lotus npm version to bundle (default: latest)"
         required: false
@@ -62,6 +66,19 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
+
+      # The bamboo sidecar is built from source (not the crates.io crate): the
+      # published bamboo-agent crate does NOT ship frontend_package/, so a
+      # `cargo install` would yield a backend with no embedded lotus UI. Building
+      # the source tree lets scripts/build-sidecar.cjs embed lotus and produce a
+      # self-contained `bamboo serve` binary. Without this the bundle ships the
+      # build.rs placeholder (`exit 1`) and the app hangs on "Starting Bodhi…".
+      - name: Checkout Bamboo source (sidecar backend)
+        uses: actions/checkout@v6
+        with:
+          repository: bigduu/Bamboo-agent
+          ref: ${{ github.event.inputs.bamboo_ref || 'main' }}
+          path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -145,7 +162,9 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: |
+            ./src-tauri -> target
+            ./bamboo-src -> target
           shared-key: "bodhi-release-${{ matrix.target }}"
           cache-on-failure: true
 
@@ -191,6 +210,20 @@ jobs:
           echo "Using @bigduu/lotus@${LOTUS_VERSION}"
           npm install --no-save "@bigduu/lotus@${LOTUS_VERSION}"
 
+      - name: Install Lotus into Bamboo source (sidecar frontend embed)
+        # build-sidecar.cjs runs bamboo's frontend-package.cjs in LOTUS_SOURCE=package
+        # mode, which resolves @bigduu/lotus from the bamboo checkout's node_modules
+        # and embeds its prebuilt dist into the `bamboo` binary.
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
+            LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
+          else
+            LOTUS_VERSION="latest"
+          fi
+          echo "Installing @bigduu/lotus@${LOTUS_VERSION} into bamboo-src"
+          npm install --no-save --prefix bamboo-src "@bigduu/lotus@${LOTUS_VERSION}"
+
       - name: Stage Lotus dist for bundling
         shell: bash
         run: |
@@ -204,6 +237,14 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Build the bamboo sidecar from the checked-out source for THIS matrix
+          # target. build-sidecar.cjs (the configured beforeBuildCommand) reads
+          # these: it embeds lotus (LOTUS_SOURCE=package, job env) and cross-builds
+          # the binary to the app's triple so externalBin resolves to a real
+          # backend instead of the build.rs `exit 1` placeholder.
+          BAMBOO_SIDECAR_SOURCE: local
+          BAMBOO_LOCAL_PATH: ${{ github.workspace }}/bamboo-src
+          BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
           # Ad-hoc macOS signing: the runner keychain has no "Zenith Nova Code
           # Signing" cert (no Apple secrets configured), so the real identity in
           # tauri.conf can't be used and the build fails at codesign. "-" signs

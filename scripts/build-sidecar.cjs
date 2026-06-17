@@ -43,7 +43,14 @@ const bambooExists = () => {
 const SOURCE = (
   process.env.BAMBOO_SIDECAR_SOURCE || (bambooExists() ? "local" : "none")
 ).toLowerCase();
-const triple = hostTriple();
+// Target triple for the sidecar. Defaults to the build host, but CI cross-builds
+// (e.g. an x86_64 app on an arm64 macOS runner) set BAMBOO_SIDECAR_TARGET to the
+// matrix target so the sidecar's architecture matches the app and Tauri's
+// `externalBin` lookup (`bamboo-<target-triple>`) resolves to a real binary
+// instead of falling back to the build.rs placeholder.
+const host = hostTriple();
+const triple = (process.env.BAMBOO_SIDECAR_TARGET || "").trim() || host;
+const isCross = triple !== host;
 const isWin = triple.includes("windows");
 const ext = isWin ? ".exe" : "";
 const binDir = path.join(BODHI, "src-tauri", "binaries");
@@ -67,10 +74,16 @@ if (!isDebug) {
   sh("node scripts/frontend-package.cjs", BAMBOO);
 }
 
-console.log(`🔧 Building bamboo sidecar (${profile}) from ${BAMBOO} …`);
-sh(`cargo build --bin bamboo${isDebug ? "" : " --release"}`, BAMBOO);
+const targetFlag = isCross ? ` --target ${triple}` : "";
+console.log(
+  `🔧 Building bamboo sidecar (${profile}${isCross ? `, cross → ${triple}` : ""}) from ${BAMBOO} …`,
+);
+sh(`cargo build --bin bamboo${isDebug ? "" : " --release"}${targetFlag}`, BAMBOO);
 
-const built = path.join(BAMBOO, "target", profile, `bamboo${ext}`);
+// Cross builds land under target/<triple>/<profile>; host builds under target/<profile>.
+const built = isCross
+  ? path.join(BAMBOO, "target", triple, profile, `bamboo${ext}`)
+  : path.join(BAMBOO, "target", profile, `bamboo${ext}`);
 fs.copyFileSync(built, dest);
 if (!isWin) fs.chmodSync(dest, 0o755);
 

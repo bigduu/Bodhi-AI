@@ -227,6 +227,28 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             }
         } else {
             log::error!("bamboo backend never became healthy on port {port}");
+            // The webview is still on the boot splash (bodhi-splash/index.html).
+            // Replace its "Starting Bodhi…" spinner with an error so the user sees
+            // a failure instead of an indefinite spinner. Logs live under the
+            // bamboo sidecar data dir.
+            if let Some(win) = sidecar_app.get_webview_window("main") {
+                let js = format!(
+                    r#"
+                    (function () {{
+                      var wrap = document.querySelector('.wrap');
+                      if (!wrap) {{ wrap = document.body; }}
+                      wrap.innerHTML =
+                        "<div style='max-width:420px;text-align:center;font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e0918a;'>" +
+                        "<div style='font-size:15px;margin-bottom:10px;'>Bodhi failed to start</div>" +
+                        "<div style='color:#9aa0a6;line-height:1.5;'>The local engine did not become ready on port {port} within 60s.<br/>Try restarting the app; if it persists, check the engine logs and report this.</div>" +
+                        "</div>";
+                    }})();
+                    "#
+                );
+                if let Err(e) = win.eval(&js) {
+                    log::warn!("failed to render startup-failure splash: {e}");
+                }
+            }
         }
     });
 
