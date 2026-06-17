@@ -72,6 +72,26 @@ if (!bambooExists()) {
 if (!isDebug) {
   console.log("🔧 Building the embedded lotus frontend for the sidecar (production)…");
   sh("node scripts/frontend-package.cjs", BAMBOO);
+
+  // frontend-package.cjs stages the package at the bamboo workspace ROOT
+  // (frontend_package/), but bamboo-server's build.rs embeds it from ITS OWN
+  // crate dir (CARGO_MANIFEST_DIR/frontend_package) via include_bytes!. Since the
+  // crates were reorganized under crates/app/, those paths no longer line up, so
+  // the embed silently resolves to None and the sidecar compiles as an API-only
+  // server with no UI — the webview then navigates to a 404 and the app hangs on
+  // the "Starting Bodhi…" splash. Mirror the staged package into the crate dir so
+  // the compile-time embed actually picks it up.
+  const stagedPkg = path.join(BAMBOO, "frontend_package");
+  const serverPkg = path.join(BAMBOO, "crates", "app", "bamboo-server", "frontend_package");
+  if (fs.existsSync(path.join(stagedPkg, "lotus-frontend.zip"))) {
+    fs.rmSync(serverPkg, { recursive: true, force: true });
+    fs.cpSync(stagedPkg, serverPkg, { recursive: true });
+    console.log(`✅ mirrored frontend package → ${path.relative(BAMBOO, serverPkg)}`);
+  } else {
+    console.warn(
+      `⚠️  no staged frontend package at ${stagedPkg}; sidecar will be API-only (no UI)`,
+    );
+  }
 }
 
 const targetFlag = isCross ? ` --target ${triple}` : "";
