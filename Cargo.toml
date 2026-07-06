@@ -1,12 +1,5 @@
 [workspace]
-# e2e-backend is `exclude`d from the build workspace: it links the full local
-# `bamboo-agent` (via the [patch.crates-io] override), whose dep tree (toml 1.1,
-# russh pre-releases) conflicts with tauri-build's toml 0.9 in a SHARED lockfile
-# — serde_spanned can't unify. The Bodhi shell (src-tauri) links ZERO bamboo, so
-# excluding the e2e harness lets the app build resolve cleanly. Re-add to
-# `members` only when running the e2e suite (separate lock resolution).
 members = ["src-tauri"]
-exclude = ["e2e-backend"]
 resolver = "2"
 default-members = ["src-tauri"]
 
@@ -83,18 +76,6 @@ tauri-plugin-shell = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 
-# Bamboo engine — used only by e2e-backend now (the Bodhi shell runs bamboo as a
-# sidecar binary, not a linked crate).
-#
-# PLACEHOLDER: 0.0.0 is never a real published version, so it can't ship as-is —
-# that's the point (you can tell at a glance it must be replaced). Local dev
-# resolves it through the [patch.crates-io] override below (../bamboo also ships
-# the 0.0.0 placeholder). Every crates.io build — plain CI and release — runs
-# scripts/prepare-crates-io-build.cjs, which strips the patch and rewrites this
-# one line to a resolvable requirement: the pinned release version, or "*"
-# (latest published) in plain CI.
-bamboo-agent = "0.0.0"
-
 # Development
 tempfile = "3"
 wiremock = "0.5"
@@ -112,8 +93,3 @@ zstd = "0.13"
 webbrowser = "1"
 portable-pty = "0.8"
 toml = "0.8"
-
-[patch.crates-io]
-# Local development override: use the bamboo workspace checkout instead of crates.io.
-# CI/release workflows remove this section to pull from crates.io.
-bamboo-agent = { path = "../bamboo" }
