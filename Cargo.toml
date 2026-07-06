@@ -1,5 +1,12 @@
 [workspace]
-members = ["src-tauri", "e2e-backend"]
+# e2e-backend is `exclude`d from the build workspace: it links the full local
+# `bamboo-agent` (via the [patch.crates-io] override), whose dep tree (toml 1.1,
+# russh pre-releases) conflicts with tauri-build's toml 0.9 in a SHARED lockfile
+# — serde_spanned can't unify. The Bodhi shell (src-tauri) links ZERO bamboo, so
+# excluding the e2e harness lets the app build resolve cleanly. Re-add to
+# `members` only when running the e2e suite (separate lock resolution).
+members = ["src-tauri"]
+exclude = ["e2e-backend"]
 resolver = "2"
 default-members = ["src-tauri"]
 
