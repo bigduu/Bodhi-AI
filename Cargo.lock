@@ -6511,7 +6511,3 @@ dependencies = [
  "syn 2.0.117",
  "winnow 1.0.2",
 ]
-
-[[patch.unused]]
-name = "bamboo-agent"
-version = "0.0.0"
