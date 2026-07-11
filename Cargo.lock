@@ -407,6 +407,8 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uuid",
+ "windows-sys 0.59.0",
+ "winreg 0.55.0",
  "zstd",
 ]
 
