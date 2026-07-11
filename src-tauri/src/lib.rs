@@ -2,6 +2,7 @@ use crate::command::copy::copy_to_clipboard;
 use crate::command::notification::show_desktop_notification;
 use crate::command::window::{is_main_window_focused, set_window_theme};
 use std::time::Duration;
+use tauri::menu::{Menu, MenuItem, Submenu, HELP_SUBMENU_ID};
 use tauri::Manager;
 use tauri::{App, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -9,6 +10,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut}
 use tokio::time::sleep;
 
 pub mod app_settings;
+pub mod cli_install;
 pub mod command;
 pub mod sidecar;
 
@@ -256,7 +258,46 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     maybe_open_devtools(app);
     schedule_webview_diag(app);
 
+    // One-time first-launch offer to put `bamboo` on PATH (also reachable any
+    // time via Help → 安装 bamboo 命令行工具…). Skipped in internal-build mode
+    // so it never stacks on top of the startup confirmation dialog.
+    if !is_internal_build_mode() {
+        cli_install::maybe_offer_on_startup(app.handle());
+    }
+
     Ok(())
+}
+
+/// Build the app menu: the platform default menu (keeps the standard Edit
+/// clipboard roles — macOS needs them for Cmd+C/V in the webview) with the
+/// CLI-install item appended under Help.
+fn build_app_menu<R: Runtime>(
+    handle: &tauri::AppHandle<R>,
+) -> std::result::Result<Menu<R>, tauri::Error> {
+    let menu = Menu::default(handle)?;
+    let install_item = MenuItem::with_id(
+        handle,
+        cli_install::MENU_ID,
+        cli_install::MENU_LABEL,
+        true,
+        None::<&str>,
+    )?;
+
+    let mut appended = false;
+    if let Some(kind) = menu.get(HELP_SUBMENU_ID) {
+        if let Some(help) = kind.as_submenu() {
+            help.append(&install_item)?;
+            appended = true;
+        }
+    }
+    if !appended {
+        // No Help submenu in this platform's default menu — add one so the
+        // item is still reachable.
+        let help = Submenu::with_items(handle, "Help", true, &[&install_item])?;
+        menu.append(&help)?;
+    }
+
+    Ok(menu)
 }
 
 /// Toggle main window visibility - show if hidden, hide if visible
@@ -294,6 +335,12 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .menu(build_app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == cli_install::MENU_ID {
+                cli_install::run_from_menu(app);
+            }
+        })
         .setup(|app| {
             // Register global shortcut: Cmd+Shift+Space (or Ctrl+Shift+Space on Windows/Linux)
             #[cfg(target_os = "macos")]

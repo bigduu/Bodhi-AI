@@ -23,6 +23,7 @@ Bodhi AI 把 AI 从一个"聊天框"变成一台**会干活的桌面工作台**�
 | 🖥️ 桌面原生外壳 | 真正的桌面应用窗口（Tauri 2），跨平台打包 (`bundle.targets: all`) |
 | ⌨️ 全局唤起 | `Cmd/Ctrl + Shift + Space` 随时显示/隐藏主窗口 |
 | 🔌 托管 sidecar 引擎 | 将独立的 `bamboo serve` 二进制作为托管 Tauri sidecar 拉起（默认端口 `9562`），应用退出时自动终止 |
+| 🧰 安装命令行工具 | 菜单（Help → 安装 bamboo 命令行工具…）把内置的 `bamboo` 加入 PATH，任意终端可运行 `bamboo --help` / `bamboo tui` |
 | 🔔 系统通知 | 通过系统通知中心推送桌面提醒 |
 | 📋 系统剪贴板 | 原生剪贴板写入（macOS / Windows） |
 | 🎨 主题同步 | 跟随前端切换浅色/深色/系统主题 |
@@ -96,6 +97,18 @@ graph TD
 启用的 Tauri 插件：`dialog`、`fs`、`global-shortcut`、`shell`、`process`、`notification`。
 
 全局快捷键：**macOS** `Cmd+Shift+Space`，**Windows/Linux** `Ctrl+Shift+Space` — 切换主窗口显示/隐藏。
+
+### 安装 bamboo 命令行工具
+
+内置的 `bamboo` 引擎二进制位于应用包内部（macOS 上是 `Bodhi.app/Contents/MacOS/bamboo`），终端找不到它。菜单 **Help → 安装 bamboo 命令行工具…**（`src-tauri/src/cli_install.rs`）会把它暴露到 PATH —— 之后任意终端都能运行 `bamboo --help`、`bamboo tui`（待内置 bamboo 带上 TUI）。首次启动也会弹一次性的安装询问。
+
+各平台行为：
+
+- **macOS** — 创建软链接 `/usr/local/bin/bamboo` → 内置二进制；权限不足时弹一次管理员授权（`osascript … with administrator privileges`）。
+- **Windows** — 把安装目录（`bamboo.exe` 与 `bodhi.exe` 同目录）追加到**用户** `PATH`（`HKCU\Environment`，保持 `REG_EXPAND_SZ` 类型、自动去重）并广播 `WM_SETTINGCHANGE`；打开新终端即可生效,无需管理员。
+- **Linux** — 创建软链接 `~/.local/bin/bamboo`；若该目录不在 `$PATH`,成功对话框会给出要添加的 `export PATH=…` 行。
+
+安全规则：绝不覆盖普通文件或不属于 Bodhi 的软链接（只会刷新指向 Bodhi 安装内 bamboo 的旧链接）;冲突时中止并在对话框中指明冲突路径。已安装时重复执行只提示「已安装,指向当前版本」。
 
 ### Lotus 前端来源选择
 

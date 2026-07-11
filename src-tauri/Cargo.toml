@@ -64,6 +64,16 @@ arboard = "3"
 
 once_cell = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+# CLI install (cli_install.rs): user-PATH edit must be REG_EXPAND_SZ-safe, so
+# it goes through the registry API instead of `[Environment]::Set…` (which
+# silently downgrades the value type), plus WM_SETTINGCHANGE broadcast.
+winreg = "0.55"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [features]
 default = []
 # Enable the Tauri Web Inspector (devtools). Intended for development/debug
