@@ -553,10 +553,11 @@ fn read_user_path() -> Result<(String, winreg::enums::RegType), String> {
         .map_err(|e| format!("读取 HKCU\\Environment 失败:{e}"))?;
     match env.get_raw_value("Path") {
         Ok(raw) => {
-            let vtype = raw.vtype;
             let value =
                 String::from_reg_value(&raw).map_err(|e| format!("解析用户 PATH 失败:{e}"))?;
-            Ok((value, vtype))
+            // NOTE: moves `vtype` out of `raw`, so it must come after the
+            // decode above borrows `raw` (RegType is Clone, not Copy).
+            Ok((value, raw.vtype))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok((String::new(), winreg::enums::RegType::REG_EXPAND_SZ))
