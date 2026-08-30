@@ -27,23 +27,24 @@ Bodhi AI 把 AI 从一个"聊天框"变成一台**会干活的桌面工作台**�
 | 🔔 系统通知 | 通过系统通知中心推送桌面提醒 |
 | 📋 系统剪贴板 | 原生剪贴板写入（macOS / Windows） |
 | 🎨 主题同步 | 跟随前端切换浅色/深色/系统主题 |
-| 📦 Lotus 资产装配 | 通过 `LOTUS_SOURCE` 在本地源码或 npm 包之间选择前端来源 |
+| 📦 Splash 到 Lotus 启动链 | 先显示内置启动页，等待托管 Bamboo sidecar 健康，再加载由 sidecar 提供的 Lotus UI |
 | 🏢 内部/公开构建 | 内部构建启动时弹出确认对话框，公开构建直接进入 |
 
 ---
 
 ## 架构
 
-Bodhi 只负责"外壳"和"产品门面"：它拥有桌面窗口、原生集成（剪贴板、通知、全局快捷键）、打包与发布；前端 UI 由 **Lotus** 提供；真正的执行引擎是 **Bamboo**（Rust 本地优先 agent 运行时）。关键点：Bodhi **将独立的 `bamboo serve` 二进制作为托管的 Tauri sidecar 进程拉起**，并管理其生命周期。外壳**不**以 crate 依赖的形式链接 `bamboo-agent`——`bamboo` 在 `tauri.conf.json` 中声明为 `externalBin`。Lotus 前端通过 HTTP 与这个本地服务通信。
+Bodhi 只负责“外壳”和“产品门面”：它拥有桌面窗口、原生集成（剪贴板、通知、全局快捷键）、打包与发布；前端 UI 由 **Lotus** 提供；真正的执行引擎是 **Bamboo**（Rust 本地优先 agent 运行时）。Bodhi 内置一个很小的 `bodhi-splash` 启动页，将独立的 `bamboo serve` 二进制作为托管 Tauri sidecar 拉起，等待服务健康后，再让 release webview 导航到由 Bamboo 提供的 Lotus UI。外壳**不**以 crate 依赖的形式链接 `bamboo-agent`——`bamboo` 在 `tauri.conf.json` 中声明为 `externalBin`。
 
 ```mermaid
 graph TD
   subgraph Desktop["Bodhi AI desktop app (Tauri 2)"]
-    L["Lotus UI<br/>React + Vite assets<br/>(WebView)"]
+    W["WebView<br/>先显示内置 bodhi-splash"]
     E["Managed sidecar<br/>bamboo serve externalBin<br/>127.0.0.1:9562"]
     N["Native commands<br/>clipboard · notifications<br/>window theme"]
-    L -- "HTTP /api/v1/*" --> E
-    L -- "Tauri IPC invoke" --> N
+    E -- "健康后提供内嵌 Lotus" --> W
+    W -- "HTTP /api/v1/*" --> E
+    W -- "Tauri IPC invoke" --> N
   end
   E -. "LLM proxy / auth / quota (optional)" .-> S["bodhi-server (Go)"]
 ```
@@ -75,9 +76,10 @@ graph TD
 
 外壳不再把 Bamboo HTTP 服务以进程内方式链接运行，而是将独立的 `bamboo serve` 二进制作为 **Tauri sidecar** 拉起（`src-tauri/src/sidecar.rs`），并管理其生命周期：
 
+- **内置启动页**：Tauri 的 `frontendDist` 是 `../bodhi-splash`，不是 `.lotus-dist`。后端启动期间，webview 保持在这个本地 splash。
 - **默认端口 `9562`**（`DEFAULT_WEB_SERVICE_PORT`，定义在 `src-tauri/src/lib.rs`）。
 - **端口已占用则复用**：拉起前先探测 `http://127.0.0.1:9562/api/v1/health`；若已有后端在跑（例如你手动起了独立 bamboo server），则**直接复用**而不重复拉起，方便前后端独立调试。
-- **健康检查**：拉起后通过 `wait_for_health` 轮询 `/api/v1/health`（最长 60 秒），就绪后才把 webview 导航到 sidecar。
+- **健康检查与导航**：拉起后通过 `wait_for_health` 轮询 `/api/v1/health`，最长 60 秒。release 构建随后把 webview 导航到 sidecar 根地址，由 Bamboo 提供内嵌的 Lotus 前端；debug 构建默认保留 Lotus HMR 的 `devUrl`，除非设置 `BODHI_SIDECAR_FRONTEND`。
 - **崩溃安全的孤儿守护**：sidecar 拉起时带 `--parent-pid <shell_pid>`，若应用异常死亡（SIGKILL、强制退出、panic），后端会自行退出。正常退出路径中，`RunEvent::Exit` / `ExitRequested` 会 kill 已记录的子进程。
 - **无 `bamboo-agent` crate 依赖**：外壳不链接任何 Bamboo crate。`bamboo` 在 `tauri.conf.json` 中声明为 `externalBin`（`"externalBin": ["binaries/bamboo"]`）。
 
@@ -100,7 +102,7 @@ graph TD
 
 ### 安装 bamboo 命令行工具
 
-内置的 `bamboo` 引擎二进制位于应用包内部（macOS 上是 `Bodhi.app/Contents/MacOS/bamboo`），终端找不到它。菜单 **Help → 安装 bamboo 命令行工具…**（`src-tauri/src/cli_install.rs`）会把它暴露到 PATH —— 之后任意终端都能运行 `bamboo --help`、`bamboo tui`（待内置 bamboo 带上 TUI）。首次启动也会弹一次性的安装询问。
+内置的 `bamboo` 引擎二进制位于应用包内部（macOS 上是 `Bodhi.app/Contents/MacOS/bamboo`），终端找不到它。菜单 **Help → 安装 bamboo 命令行工具…**（`src-tauri/src/cli_install.rs`）会把它暴露到 PATH —— 之后任意终端都能运行 `bamboo --help`、`bamboo tui`。首次启动也会弹一次性的安装询问。
 
 各平台行为：
 
@@ -110,9 +112,11 @@ graph TD
 
 安全规则：绝不覆盖普通文件或不属于 Bodhi 的软链接（只会刷新指向 Bodhi 安装内 bamboo 的旧链接）;冲突时中止并在对话框中指明冲突路径。已安装时重复执行只提示「已安装,指向当前版本」。
 
-### Lotus 前端来源选择
+### Lotus 如何进入打包应用
 
-Bodhi 不自带前端源码——它在构建/开发时从 Lotus **装配**前端资产（`scripts/lotus-dist.cjs`，输出到 `.lotus-dist/`）。通过环境变量控制来源：
+Bodhi 只包含启动 splash，不维护第二份产品前端。生产 sidecar 构建时，`scripts/build-sidecar.cjs` 会调用 Bamboo 的前端打包步骤，把 Lotus 嵌入 `bamboo` 二进制。release workflow 会检出指定的 Bamboo ref，把指定版本的 `@bigduu/lotus` 安装到该检出中，再以 package 模式构建 sidecar。
+
+`npm run web:build` 仍会把 Lotus dist 装配到 `.lotus-dist/`，用于 CI 与来源校验；该目录**不是** Tauri 的 `frontendDist`，也不是生产 webview 的入口。资产校验与 sidecar 打包通过以下变量选择来源：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -133,7 +137,8 @@ Bodhi 不自带前端源码——它在构建/开发时从 Lotus **装配**前�
 ### 前置
 - Node.js + npm（前端工具链）
 - Rust toolchain（Tauri 后端）
-- 同级 `../lotus` 检出，或已安装的 `@bigduu/lotus` 包
+- 同级 `../bamboo` 检出，用于构建真实的开发 sidecar
+- 同级 `../lotus` 检出，用于 HMR 开发前端
 
 ### 开发
 
@@ -142,7 +147,7 @@ Bodhi 不自带前端源码——它在构建/开发时从 Lotus **装配**前�
 npm run tauri:dev
 ```
 
-`tauri:dev` 会先运行 `web:dev`（即 `cd ../lotus && npm run dev`），再启动 Tauri 开发窗口（`devUrl: http://localhost:1420`）。
+`tauri:dev` 按 `beforeDevCommand` 依次从同级 `../bamboo` 构建 debug sidecar、用 Vite HMR 启动同级 `../lotus`，再在 `devUrl: http://localhost:1420` 打开 Tauri 窗口。开发模式不会把 `.lotus-dist` 作为 webview 来源。
 
 带品牌模式的开发：
 
@@ -159,14 +164,16 @@ npm run tauri:build:public    # 公开模式打包
 npm run tauri:build:internal  # 内部模式打包
 ```
 
-`tauri:build` 的 `beforeBuildCommand` 会先构建 Lotus 并把产物装配到 `.lotus-dist/`（`frontendDist: ../.lotus-dist`）。
+`tauri:build` 通过 `beforeBuildCommand` 运行 `scripts/build-sidecar.cjs`。存在同级 Bamboo 检出时，该脚本会把 Lotus 打包进 release 模式的 Bamboo sidecar；Tauri 自身仍以 `bodhi-splash` 作为 `frontendDist`。release workflow 则针对每个目标平台，从明确的 Bamboo ref 与 Lotus package 版本完成同样的装配。
 
-### 仅装配前端资产
+### 装配 Lotus 资产用于校验
 
 ```bash
-npm run web:build             # 构建 Lotus 并装配到 .lotus-dist
+npm run web:build             # 构建/装配 Lotus 到 .lotus-dist，用于校验
 npm run web:source:info       # 打印当前 Lotus 来源（local/package + LOTUS_SOURCE）
 ```
+
+这些命令不会改变 Tauri 的 `frontendDist`；打包应用仍从 `bodhi-splash` 启动，并在 sidecar 健康后从 sidecar 获取 Lotus。
 
 ### 前后端独立调试
 
@@ -180,7 +187,7 @@ cargo run --bin bamboo -- serve --port 9562
 npm run dev
 ```
 
-`serve` 支持的参数：`--port`、`--bind`、`--data-dir`、`--static-dir`、`--workers`。
+当前服务参数以 `bamboo serve --help` 为准。
 
 ### 运行时诊断环境变量
 
@@ -202,12 +209,12 @@ npm run dev
 
 | 模块 | 角色 | 链接 |
 |---|---|---|
-| **lotus** | React + Vite 前端 UI 层 | [`../lotus`](../lotus) |
-| **bamboo** | 本地优先 Rust agent 运行时（执行引擎） | [`../bamboo`](../bamboo) |
-| **bodhi-server** | Go 后端：认证 / 持久化 / 计费配额 / LLM 代理 | [`../bodhi-server`](../bodhi-server) |
-| **pavilion** | 官网与文档 | [`../pavilion`](../pavilion) |
-| **Zenith (root)** | 单仓入口 + 子模块指针 + 发布列车 | [`../`](../) |
+| **lotus** | React + Vite 前端 UI 层 | [bigduu/Lotus](https://github.com/bigduu/Lotus) |
+| **bamboo** | 本地优先 Rust agent 运行时（执行引擎） | [bigduu/Bamboo-agent](https://github.com/bigduu/Bamboo-agent) |
+| **bodhi-server** | Go 后端：认证 / 持久化 / 计费配额 / LLM 代理 | [bigduu/bodhi-server](https://github.com/bigduu/bodhi-server) |
+| **pavilion** | 官网与文档 | [bigduu/Pavilion](https://github.com/bigduu/Pavilion) |
+| **Zenith (root)** | 单仓入口 + 子模块指针 + 发布列车 | [bigduu/Zenith](https://github.com/bigduu/Zenith) |
 
 ---
 
-<sub>版本: `2026.4.24`（见 `package.json` / `tauri.conf.json` / `Cargo.toml`） · Identifier: `com.bodhi.app` · 此文档随代码核实，请以源码为准。</sub>
+<sub>发布版本由 release workflow 提供；源码 manifest 有意保留 placeholder。应用标识：`com.bodhi.app`。</sub>

@@ -4,7 +4,7 @@
 
 > The desktop AI workbench
 >
-> This module is the **desktop shell (Tauri) and product surface** within the Zenith monorepo.
+> This module is the **desktop shell (Tauri) and product surface** within the [Zenith](https://github.com/bigduu/Zenith) monorepo.
 
 ---
 
@@ -27,23 +27,24 @@ It installs and runs as a real desktop app (Windows / macOS / Linux), with a glo
 | 🔔 Native notifications | Pushes desktop alerts through the system notification center |
 | 📋 Clipboard | Native clipboard writes (macOS / Windows) |
 | 🎨 Window theme | Follows the frontend to switch light/dark/system theme |
-| 📦 Lotus asset staging | Chooses the frontend source between local source or npm package via `LOTUS_SOURCE` |
+| 📦 Splash-to-Lotus startup | Opens a bundled startup splash, waits for the managed Bamboo sidecar to become healthy, then loads the Lotus UI served by that sidecar |
 | 🏢 Build modes | Internal builds show a confirmation dialog at startup; public builds boot straight in |
 
 ---
 
 ## Architecture
 
-Bodhi owns only the shell and the product surface — the desktop window, native integrations (clipboard, notifications, global shortcut), packaging and release. The UI comes from **Lotus**; the real execution engine is **Bamboo** (a local-first Rust agent runtime). The key detail: Bodhi **spawns the standalone `bamboo serve` binary as a managed Tauri sidecar process** and owns its lifecycle. The shell does *not* link `bamboo-agent` as a crate dependency — `bamboo` is declared as an `externalBin` in `tauri.conf.json`. The Lotus frontend then talks to that local service over HTTP — the same boundary you'd get with a standalone backend.
+Bodhi owns only the shell and the product surface — the desktop window, native integrations (clipboard, notifications, global shortcut), packaging and release. The UI comes from **Lotus**; the real execution engine is **Bamboo** (a local-first Rust agent runtime). Bodhi bundles a small `bodhi-splash` startup page, spawns the standalone `bamboo serve` binary as a managed Tauri sidecar, waits for that service to become healthy, and then navigates the release webview to the Lotus UI served by Bamboo. The shell does *not* link `bamboo-agent` as a crate dependency — `bamboo` is declared as an `externalBin` in `tauri.conf.json`.
 
 ```mermaid
 graph TD
   subgraph Desktop["Bodhi AI desktop app (Tauri 2)"]
-    L["Lotus UI<br/>React + Vite assets<br/>(WebView)"]
+    W["WebView<br/>starts on bundled bodhi-splash"]
     E["Managed sidecar<br/>bamboo serve externalBin<br/>127.0.0.1:9562"]
     N["Native commands<br/>clipboard · notifications<br/>window theme"]
-    L -- "HTTP /api/v1/*" --> E
-    L -- "Tauri IPC invoke" --> N
+    E -- "after health: serve embedded Lotus" --> W
+    W -- "HTTP /api/v1/*" --> E
+    W -- "Tauri IPC invoke" --> N
   end
   E -. "LLM proxy / auth / quota (optional)" .-> S["bodhi-server (Go)"]
 ```
@@ -75,9 +76,10 @@ This is the product pitch. Ordinary AI hands you text and stops; Bodhi advances 
 
 Instead of linking and running the Bamboo HTTP server in-process, the shell spawns the standalone `bamboo serve` binary as a **Tauri sidecar** (`src-tauri/src/sidecar.rs`) and owns its lifecycle:
 
+- **Bundled startup page**: Tauri's `frontendDist` is `../bodhi-splash`, not `.lotus-dist`. The webview stays on that local splash while the backend starts.
 - **Default port `9562`** (`DEFAULT_WEB_SERVICE_PORT`, defined in `src-tauri/src/lib.rs`).
 - **Reuse if the port is taken**: before spawning, it probes `http://127.0.0.1:9562/api/v1/health`; if a backend is already running (e.g. you manually started a standalone bamboo server), it **reuses it** instead of spawning its own, making it easy to debug frontend and backend independently.
-- **Health check**: after spawning, it polls `/api/v1/health` via `wait_for_health` (up to 60 seconds) before navigating the webview to the sidecar.
+- **Health check and navigation**: after spawning, it polls `/api/v1/health` via `wait_for_health` for up to 60 seconds. Release builds then navigate the webview to the sidecar root, where Bamboo serves its embedded Lotus frontend. Debug builds keep Lotus's HMR `devUrl` unless `BODHI_SIDECAR_FRONTEND` is set.
 - **Crash-safe orphan guard**: the sidecar is spawned with `--parent-pid <shell_pid>`, so if the app dies *without* running cleanup (SIGKILL, force-quit, panic), the backend self-exits. On the clean path, `RunEvent::Exit` / `ExitRequested` kills the recorded child.
 - **No `bamboo-agent` crate dependency**: the shell links no Bamboo crate. `bamboo` is declared as an `externalBin` in `tauri.conf.json` (`"externalBin": ["binaries/bamboo"]`).
 
@@ -100,7 +102,7 @@ Global shortcut: **macOS** `Cmd+Shift+Space`, **Windows/Linux** `Ctrl+Shift+Spac
 
 ### Install the bamboo command-line tools
 
-The bundled `bamboo` engine binary lives inside the app bundle (e.g. `Bodhi.app/Contents/MacOS/bamboo` on macOS), so a terminal can't find it. The **Help → 安装 bamboo 命令行工具…** menu item (`src-tauri/src/cli_install.rs`) exposes it on your PATH — after that, `bamboo --help` and `bamboo tui` (once the bundled bamboo ships the TUI) work from any terminal. A one-time dialog also offers this on first launch.
+The bundled `bamboo` engine binary lives inside the app bundle (e.g. `Bodhi.app/Contents/MacOS/bamboo` on macOS), so a terminal can't find it. The **Help → 安装 bamboo 命令行工具…** menu item (`src-tauri/src/cli_install.rs`) exposes it on your PATH — after that, `bamboo --help` and `bamboo tui` work from any terminal. A one-time dialog also offers this on first launch.
 
 Per OS:
 
@@ -110,9 +112,11 @@ Per OS:
 
 Safety: the installer never overwrites a real file or a symlink it doesn't own (only links pointing at a bamboo inside a Bodhi install are refreshed); conflicts abort with a dialog naming the offending path. Re-running when already installed just reports "已安装,指向当前版本".
 
-### Choosing the Lotus frontend source
+### How Lotus reaches the packaged app
 
-Bodhi has no frontend source of its own — it **stages** Lotus assets at build/dev time (`scripts/lotus-dist.cjs`, output to `.lotus-dist/`). The source is controlled by env vars:
+Bodhi contains only the startup splash; it does not carry a second copy of the product frontend. For a production sidecar build, `scripts/build-sidecar.cjs` runs Bamboo's frontend packaging step and embeds Lotus into the `bamboo` binary. The release workflow checks out the selected Bamboo ref, installs the selected `@bigduu/lotus` package into that checkout, and builds the sidecar in package mode.
+
+`npm run web:build` still stages a Lotus dist in `.lotus-dist/` for CI/source verification. That directory is **not** Tauri's `frontendDist` and is not the production webview entrypoint. Source selection for staging and sidecar packaging uses:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -133,7 +137,8 @@ Bodhi has no frontend source of its own — it **stages** Lotus assets at build/
 ### Prerequisites
 - Node.js + npm (frontend toolchain)
 - Rust toolchain (Tauri backend)
-- a sibling `../lotus` checkout or the installed `@bigduu/lotus` package
+- a sibling `../bamboo` checkout for the real development sidecar
+- a sibling `../lotus` checkout for the HMR development frontend
 
 ### Develop
 
@@ -142,7 +147,7 @@ Bodhi has no frontend source of its own — it **stages** Lotus assets at build/
 npm run tauri:dev
 ```
 
-`tauri:dev` first runs `web:dev` (`cd ../lotus && npm run dev`), then launches the Tauri dev window (`devUrl: http://localhost:1420`).
+`tauri:dev` follows `beforeDevCommand`: it builds a debug sidecar from sibling `../bamboo`, starts sibling `../lotus` with Vite HMR, and then launches the Tauri window at `devUrl: http://localhost:1420`. Development does not use `.lotus-dist` as the webview source.
 
 Branded dev variants:
 
@@ -159,14 +164,16 @@ npm run tauri:build:public    # public-mode bundle
 npm run tauri:build:internal  # internal-mode bundle
 ```
 
-`tauri:build`'s `beforeBuildCommand` builds Lotus and stages its output into `.lotus-dist/` (`frontendDist: ../.lotus-dist`).
+`tauri:build` runs `scripts/build-sidecar.cjs` through `beforeBuildCommand`. With a sibling Bamboo checkout, that script packages Lotus into a release-mode Bamboo sidecar; Tauri itself still bundles `bodhi-splash` as `frontendDist`. The release workflow performs the same assembly from an explicit Bamboo ref and Lotus package version for each target platform.
 
-### Stage frontend assets only
+### Stage Lotus assets for verification
 
 ```bash
-npm run web:build             # build Lotus and stage into .lotus-dist
+npm run web:build             # build/stage Lotus into .lotus-dist for verification
 npm run web:source:info       # print the current Lotus source (local/package + LOTUS_SOURCE)
 ```
+
+These commands do not change Tauri's `frontendDist`; the packaged app still starts from `bodhi-splash` and receives Lotus from the healthy sidecar.
 
 ### Run frontend & backend separately
 
@@ -180,7 +187,7 @@ cargo run --bin bamboo -- serve --port 9562
 npm run dev
 ```
 
-`serve` accepts: `--port`, `--bind`, `--data-dir`, `--static-dir`, `--workers`.
+Run `bamboo serve --help` for the current server options.
 
 ### Runtime diagnostic env vars
 
@@ -202,12 +209,12 @@ npm run dev
 
 | Module | Role | Link |
 |---|---|---|
-| **lotus** | React + Vite UI layer | [`../lotus`](../lotus) |
-| **bamboo** | local-first Rust agent runtime | [`../bamboo`](../bamboo) |
-| **bodhi-server** | Go backend: auth / persistence / billing+quota / LLM proxy | [`../bodhi-server`](../bodhi-server) |
-| **pavilion** | official website & docs | [`../pavilion`](../pavilion) |
-| **Zenith (root)** | monorepo entry & release train | [`../`](../) |
+| **lotus** | React + Vite UI layer | [bigduu/Lotus](https://github.com/bigduu/Lotus) |
+| **bamboo** | local-first Rust agent runtime | [bigduu/Bamboo-agent](https://github.com/bigduu/Bamboo-agent) |
+| **bodhi-server** | Go backend: auth / persistence / billing+quota / LLM proxy | [bigduu/bodhi-server](https://github.com/bigduu/bodhi-server) |
+| **pavilion** | official website & docs | [bigduu/Pavilion](https://github.com/bigduu/Pavilion) |
+| **Zenith (root)** | monorepo entry & release train | [bigduu/Zenith](https://github.com/bigduu/Zenith) |
 
 ---
 
-<sub>Version: `2026.4.24` (see `package.json` / `tauri.conf.json` / `Cargo.toml`) · Identifier: `com.bodhi.app` · verified against source; source is the source of truth.</sub>
+<sub>Release versions are supplied by the release workflow; source manifests intentionally use a placeholder. App identifier: `com.bodhi.app`.</sub>
