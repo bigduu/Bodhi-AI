@@ -1,35 +1,40 @@
 #!/usr/bin/env node
-/**
- * Frontend build entry point for Bodhi.
- *
- * Respects the `LOTUS_SOURCE` environment variable:
- * - `package`  → skip local build, stage dist from the installed npm package
- * - `local`    → build from the local `../lotus` checkout, then stage
- * - `auto`     → build locally if `../lotus` exists, otherwise fall back to package
- */
-const { execSync } = require("child_process");
-const path = require("path");
+const { spawnSync } = require("node:child_process");
+const { ROOT, resolveSource, sourceIdentity, localBuildEnvironment, stageDist } = require("./lotus-dist.cjs");
 
-const ROOT = path.resolve(__dirname, "..");
-const SOURCE = (process.env.LOTUS_SOURCE || "auto").toLowerCase();
+function runNpm(source, args, env) {
+  const result = spawnSync("npm", args, { cwd: source.sourceRoot, env, stdio: "inherit", shell: process.platform === "win32" });
+  if (result.error || result.status !== 0) throw new Error(`Frontend npm ${args.join(" ")} failed (${result.error?.message || result.status}).`);
+}
 
-function lotusLocalExists() {
-  const fs = require("fs");
-  const lotusDir = path.resolve(ROOT, process.env.LOTUS_LOCAL_PATH || "../lotus");
+function buildFrontend(source = resolveSource()) {
+  const identity = sourceIdentity(source);
+  if (source.mode === "local") {
+    runNpm(source, ["run", "build"], localBuildEnvironment(source, process.env, identity));
+    // Preserve Lotus Next's package, startup-budget and chunk-ownership gates.
+    runNpm(source, ["run", "package:contents"], process.env);
+    const after = sourceIdentity(source);
+    if (identity.sourceRevision !== after.sourceRevision || identity.sourceDirty !== after.sourceDirty) {
+      throw new Error("Lotus Next source revision or dirty status changed during the build. Rebuild from a stable checkout; no new artifact was staged.");
+    }
+  }
+  return stageDist(source, ROOT, identity);
+}
+
+module.exports = { buildFrontend };
+
+if (require.main === module) {
   try {
-    return fs.statSync(path.join(lotusDir, "package.json")).isFile();
-  } catch {
-    return false;
+    const command = process.argv[2] || "build";
+    const source = resolveSource();
+    if (command === "build") buildFrontend(source);
+    else if (["dev", "preview"].includes(command)) {
+      if (source.mode !== "local") throw new Error(`${command} requires a local Lotus Next checkout; published release packages contain dist only.`);
+      if (command === "preview") buildFrontend(source);
+      runNpm(source, ["run", command, "--", "--host", "127.0.0.1", "--port", "1420", "--strictPort", ...process.argv.slice(3)], localBuildEnvironment(source));
+    } else throw new Error(`Unknown command ${command}; use build, dev or preview.`);
+  } catch (error) {
+    console.error(`Frontend: ${error.message}`);
+    process.exitCode = 1;
   }
 }
-
-if (SOURCE !== "package" && lotusLocalExists()) {
-  const lotusDir = path.resolve(ROOT, process.env.LOTUS_LOCAL_PATH || "../lotus");
-  console.log(`\uD83D\uDD27 Building Lotus from local source at ${lotusDir}...`);
-  execSync("npm run build", { cwd: lotusDir, stdio: "inherit" });
-} else {
-  console.log(`\uD83D\uDCE6 LOTUS_SOURCE=${SOURCE}: skipping local build, staging from package`);
-}
-
-// Stage the dist directory (from local or package, as determined by LOTUS_SOURCE).
-execSync("node scripts/lotus-dist.cjs stage", { cwd: ROOT, stdio: "inherit" });

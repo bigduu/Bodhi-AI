@@ -10,8 +10,12 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut}
 use tokio::time::sleep;
 
 pub mod app_settings;
+#[cfg(test)]
+#[path = "../build_support.rs"]
+mod build_support;
 pub mod cli_install;
 pub mod command;
+pub mod frontend;
 pub mod sidecar;
 
 /// Default port for the bamboo sidecar backend.
@@ -177,7 +181,45 @@ fn show_internal_startup_confirmation<R: Runtime>(app: &App<R>) {
         });
 }
 
+fn show_startup_failure<R: Runtime>(app: &tauri::AppHandle<R>, message: &str) {
+    log::error!("Bodhi failed to start: {message}");
+    if let Some(window) = app.get_webview_window("main") {
+        let encoded = serde_json::to_string(message).unwrap_or_default();
+        let _ = window.eval(format!(
+            "document.body.textContent = 'Bodhi failed to start\\n\\n' + {encoded}; document.body.style.cssText = 'white-space:pre-wrap;padding:32px;font:15px system-ui;color:#e0918a;background:#121416';"
+        ));
+    }
+    // This also remains visible if the splash hasn't finished loading yet.
+    app.dialog()
+        .message(message)
+        .title("Bodhi failed to start")
+        .kind(MessageDialogKind::Error)
+        .show(|_| {});
+}
+
+fn local_backend_initialization(port: u16) -> String {
+    // Installed before page modules evaluate, including after navigation. The
+    // existing Lotus Next runtime gives this trusted numeric port priority over
+    // a persisted browser endpoint; no machine address enters the built dist.
+    format!("window.__BAMBOO_BACKEND_PORT__ = {port};")
+}
+
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let frontend = match frontend::resolve(app.handle()) {
+        Ok(frontend) => frontend,
+        Err(error) => {
+            show_startup_failure(app.handle(), &error);
+            return Ok(());
+        }
+    };
+    let local = frontend.static_dir.is_some();
+    let port = web_service_port();
+    if local {
+        if let Err(error) = sidecar::require_available_port(port) {
+            show_startup_failure(app.handle(), &error);
+            return Ok(());
+        }
+    }
     let app_data_dir = app_settings::bamboo_dir();
     std::fs::create_dir_all(&app_data_dir)?;
     log::info!("App data dir: {:?}", app_data_dir);
@@ -186,69 +228,62 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     // WebService). The child is held in SidecarState and killed on app exit; it also
     // self-exits if this process dies uncleanly — see `sidecar` and the
     // `--parent-pid` orphan guard on `bamboo serve`.
-    let port = web_service_port();
     let data_dir = app_data_dir.clone();
-    app.manage(sidecar::SidecarState(std::sync::Mutex::new(None)));
+    app.manage(sidecar::SidecarState::default());
 
     let sidecar_app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        // If a backend is already serving on the port (e.g. a dev `bamboo serve`),
-        // reuse it; otherwise spawn our own managed sidecar.
-        if sidecar::backend_already_running(port).await {
+        // Only the explicitly assembled legacy package retains external-server
+        // reuse until the formal release cutover. Local source builds always own
+        // the backend serving their verified resource directory.
+        let owned = if !local && sidecar::backend_already_running(port).await {
             log::info!("Backend already running on port {port}; reusing it");
+            None
         } else {
-            match sidecar::spawn(&sidecar_app, port, &data_dir) {
-                Ok(child) => {
-                    if let Some(state) = sidecar_app.try_state::<sidecar::SidecarState>() {
-                        *state.0.lock().unwrap() = Some(child);
-                    }
+            match sidecar::spawn(
+                &sidecar_app,
+                port,
+                &data_dir,
+                frontend.static_dir.as_deref(),
+            ) {
+                Ok(status) => {
                     log::info!("bamboo sidecar spawned on port {port}");
+                    Some(status)
                 }
-                Err(e) => log::error!("Failed to spawn bamboo sidecar: {}", e),
+                Err(error) => {
+                    show_startup_failure(&sidecar_app, &error);
+                    return;
+                }
             }
-        }
+        };
 
         // Once the backend is healthy, point the webview at it (the sidecar serves
         // lotus). Release always navigates; in dev (debug) we keep the dev server
         // unless BODHI_SIDECAR_FRONTEND forces the sidecar frontend (used in tests).
-        if sidecar::wait_for_health(port, 60).await {
-            let use_sidecar_frontend =
-                !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
-            if use_sidecar_frontend {
-                if let Some(win) = sidecar_app.get_webview_window("main") {
-                    match format!("http://127.0.0.1:{port}").parse::<tauri::Url>() {
-                        Ok(url) => match win.navigate(url) {
-                            Ok(()) => {
-                                log::info!("webview navigated to sidecar http://127.0.0.1:{port}")
-                            }
-                            Err(e) => log::error!("navigate to sidecar failed: {e}"),
-                        },
-                        Err(e) => log::error!("bad sidecar url: {e}"),
-                    }
-                }
-            }
-        } else {
-            log::error!("bamboo backend never became healthy on port {port}");
-            // The webview is still on the boot splash (bodhi-splash/index.html).
-            // Replace its "Starting Bodhi…" spinner with an error so the user sees
-            // a failure instead of an indefinite spinner. Logs live under the
-            // bamboo sidecar data dir.
+        if let Err(error) = sidecar::wait_for_health(
+            port,
+            60,
+            if local { owned.as_ref() } else { None },
+            frontend.index_hash.as_deref(),
+        )
+        .await
+        {
+            sidecar::kill(&sidecar_app);
+            show_startup_failure(&sidecar_app, &error);
+            return;
+        }
+        let use_sidecar_frontend =
+            !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
+        if use_sidecar_frontend {
             if let Some(win) = sidecar_app.get_webview_window("main") {
-                let js = format!(
-                    r#"
-                    (function () {{
-                      var wrap = document.querySelector('.wrap');
-                      if (!wrap) {{ wrap = document.body; }}
-                      wrap.innerHTML =
-                        "<div style='max-width:420px;text-align:center;font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e0918a;'>" +
-                        "<div style='font-size:15px;margin-bottom:10px;'>Bodhi failed to start</div>" +
-                        "<div style='color:#9aa0a6;line-height:1.5;'>The local engine did not become ready on port {port} within 60s.<br/>Try restarting the app; if it persists, check the engine logs and report this.</div>" +
-                        "</div>";
-                    }})();
-                    "#
-                );
-                if let Err(e) = win.eval(&js) {
-                    log::warn!("failed to render startup-failure splash: {e}");
+                match format!("http://127.0.0.1:{port}").parse::<tauri::Url>() {
+                    Ok(url) => match win.navigate(url) {
+                        Ok(()) => {
+                            log::info!("webview navigated to sidecar http://127.0.0.1:{port}")
+                        }
+                        Err(e) => log::error!("navigate to sidecar failed: {e}"),
+                    },
+                    Err(e) => log::error!("bad sidecar url: {e}"),
                 }
             }
         }
@@ -329,6 +364,11 @@ pub fn run() {
     let fs_plugin = tauri_plugin_fs::init();
 
     tauri::Builder::default()
+        .append_invoke_initialization_script(if frontend::is_local_build() {
+            local_backend_initialization(web_service_port())
+        } else {
+            String::new()
+        })
         .plugin(fs_plugin)
         .plugin(dialog_plugin)
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -394,6 +434,14 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn local_runtime_gets_only_its_numeric_managed_port() {
+        assert_eq!(
+            super::local_backend_initialization(19562),
+            "window.__BAMBOO_BACKEND_PORT__ = 19562;"
+        );
+    }
+
     #[test]
     fn should_exit_when_main_window_requests_close() {
         assert!(super::should_exit_on_main_window_close("main", true));

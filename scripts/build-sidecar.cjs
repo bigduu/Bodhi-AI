@@ -6,29 +6,36 @@
  *   profile: --release (default) | --debug
  *   source : BAMBOO_SIDECAR_SOURCE = local (default when ../bamboo exists) | none
  *
- * For a release build it first (re)builds the embedded lotus frontend via bamboo's
- * own `frontend-package.cjs` (which honors LOTUS_SOURCE) so the sidecar serves a
- * fresh production lotus; a debug build reuses the existing embed, since `tauri dev`
- * uses lotus's own HMR dev server for the UI.
+ * Local source builds stage verified Lotus Next resources and compile an API-only
+ * sidecar. Explicit package releases retain Bamboo's existing embedded frontend
+ * until Zenith #187 completes the formal release consumer cutover.
  *
  * NOTE: `cargo build` on its own does NOT run this — Tauri's `build.rs` writes a
  * placeholder so the `externalBin` reference resolves (keeps a bare shell-compile,
  * e.g. CI, green). This script produces the *real* binary for `tauri build` / dev
  * and the zenith superproject release.
  */
-const { execSync } = require("child_process");
+const { execFileSync } = require("node:child_process");
 const fs = require("fs");
 const path = require("path");
+const { resolveSource } = require("./lotus-dist.cjs");
+const { buildFrontend } = require("./web-build.cjs");
 
 const BODHI = path.resolve(__dirname, "..");
 const BAMBOO = path.resolve(BODHI, process.env.BAMBOO_LOCAL_PATH || "../bamboo");
 const isDebug = process.argv.includes("--debug");
 const profile = isDebug ? "debug" : "release";
 
-const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: "inherit" });
+const frontend = resolveSource();
+buildFrontend(frontend);
+const buildEnv = {
+  ...process.env,
+  BAMBOO_FRONTEND_BUILD_MODE: frontend.mode === "local" ? "api-only" : "embedded",
+};
+const run = (command, args, cwd) => execFileSync(command, args, { cwd, env: buildEnv, stdio: "inherit" });
 
 function hostTriple() {
-  const m = execSync("rustc -vV", { encoding: "utf8" }).match(/host:\s*(\S+)/);
+  const m = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/host:\s*(\S+)/);
   if (!m) throw new Error("cannot determine host target triple from `rustc -vV`");
   return m[1];
 }
@@ -58,6 +65,9 @@ fs.mkdirSync(binDir, { recursive: true });
 const dest = path.join(binDir, `bamboo-${triple}${ext}`);
 
 if (SOURCE !== "local") {
+  if (frontend.mode === "local") {
+    throw new Error(`Local Bodhi needs a real Bamboo checkout at ${BAMBOO}. Set BAMBOO_LOCAL_PATH and rerun; a placeholder cannot serve Lotus Next.`);
+  }
   console.log(
     `ℹ️  BAMBOO_SIDECAR_SOURCE=${SOURCE}: no local ../bamboo checkout; keeping the build.rs ` +
       `placeholder (the real sidecar is assembled in the zenith superproject).`,
@@ -69,41 +79,56 @@ if (!bambooExists()) {
   process.exit(1);
 }
 
-if (!isDebug) {
+if (frontend.mode === "package" && !isDebug) {
   console.log("🔧 Building the embedded lotus frontend for the sidecar (production)…");
-  sh("node scripts/frontend-package.cjs", BAMBOO);
-
-  // frontend-package.cjs stages the package at the bamboo workspace ROOT
-  // (frontend_package/), but bamboo-server's build.rs embeds it from ITS OWN
-  // crate dir (CARGO_MANIFEST_DIR/frontend_package) via include_bytes!. Since the
-  // crates were reorganized under crates/app/, those paths no longer line up, so
-  // the embed silently resolves to None and the sidecar compiles as an API-only
-  // server with no UI — the webview then navigates to a 404 and the app hangs on
-  // the "Starting Bodhi…" splash. Mirror the staged package into the crate dir so
-  // the compile-time embed actually picks it up.
-  const stagedPkg = path.join(BAMBOO, "frontend_package");
+  // Published Bamboo main and dev currently use these two producer layouts.
+  // Observe which complete pair was actually regenerated, without deleting
+  // existing files or letting stale root output overwrite a fresh crate output.
+  const names = ["lotus-frontend.zip", "frontend-manifest.json"];
+  const rootPkg = path.join(BAMBOO, "frontend_package");
   const serverPkg = path.join(BAMBOO, "crates", "app", "bamboo-server", "frontend_package");
-  if (fs.existsSync(path.join(stagedPkg, "lotus-frontend.zip"))) {
-    fs.rmSync(serverPkg, { recursive: true, force: true });
-    fs.cpSync(stagedPkg, serverPkg, { recursive: true });
-    console.log(`✅ mirrored frontend package → ${path.relative(BAMBOO, serverPkg)}`);
-  } else {
-    console.warn(
-      `⚠️  no staged frontend package at ${stagedPkg}; sidecar will be API-only (no UI)`,
-    );
+  const layouts = [rootPkg, serverPkg];
+  const stamps = (dir) => {
+    try {
+      if (fs.lstatSync(dir).isSymbolicLink()) throw new Error(`Frontend package directory is a symlink: ${dir}. Set BAMBOO_LOCAL_PATH to a clean checkout; the existing link was left untouched.`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    return names.map((name) => {
+    try {
+      const stat = fs.lstatSync(path.join(dir, name), { bigint: true });
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`Invalid frontend package file: ${path.join(dir, name)}`);
+      return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+    } catch (error) {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    }
+    });
+  };
+  const before = layouts.map(stamps);
+  run(process.execPath, ["scripts/frontend-package.cjs"], BAMBOO);
+  const after = layouts.map(stamps);
+  const changed = layouts.map((_, index) => index).filter((index) => after[index].some((stamp, file) => stamp !== before[index][file]));
+  if (changed.length !== 1 || after[changed[0]].some((stamp, file) => stamp === null || stamp === before[changed[0]][file])) {
+    throw new Error("Explicit package assembly must generate one fresh, complete zip/manifest pair; stale, partial or ambiguous outputs are refused.");
+  }
+  if (changed[0] === 0) {
+    fs.mkdirSync(serverPkg, { recursive: true });
+    for (const name of names) fs.copyFileSync(path.join(rootPkg, name), path.join(serverPkg, name));
+    console.log("✅ Mirrored fresh workspace-root frontend pair into bamboo-server");
   }
 }
 
-const targetFlag = isCross ? ` --target ${triple}` : "";
 console.log(
   `🔧 Building bamboo sidecar (${profile}${isCross ? `, cross → ${triple}` : ""}) from ${BAMBOO} …`,
 );
-sh(`cargo build --bin bamboo${isDebug ? "" : " --release"}${targetFlag}`, BAMBOO);
+run("cargo", ["build", "--locked", "--bin", "bamboo", ...(isDebug ? [] : ["--release"]), ...(isCross ? ["--target", triple] : [])], BAMBOO);
 
 // Cross builds land under target/<triple>/<profile>; host builds under target/<profile>.
+const targetDir = path.resolve(BAMBOO, process.env.CARGO_TARGET_DIR || "target");
 const built = isCross
-  ? path.join(BAMBOO, "target", triple, profile, `bamboo${ext}`)
-  : path.join(BAMBOO, "target", profile, `bamboo${ext}`);
+  ? path.join(targetDir, triple, profile, `bamboo${ext}`)
+  : path.join(targetDir, profile, `bamboo${ext}`);
 fs.copyFileSync(built, dest);
 if (!isWin) fs.chmodSync(dest, 0o755);
 

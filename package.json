@@ -7,10 +7,11 @@
   "scripts": {
     "dev": "npm run web:dev",
     "build": "npm run web:build",
-    "preview": "cd ../lotus && npm run preview",
-    "web:dev": "cd ../lotus && npm run dev",
+    "preview": "node scripts/web-build.cjs preview",
+    "web:dev": "node scripts/web-build.cjs dev",
     "web:build": "node scripts/web-build.cjs",
     "web:source:info": "node scripts/lotus-dist.cjs info",
+    "test:build": "node --test scripts/frontend.test.cjs",
     "build:sidecar": "node scripts/build-sidecar.cjs",
     "build:sidecar:dev": "node scripts/build-sidecar.cjs --debug",
     "rebrand:public": "cd ../lotus && npm run rebrand:public",
@@ -20,11 +21,11 @@
     "shell:rebrand:internal": "node scripts/rebrand-shell.cjs --target=internal",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:dev:public": "npm run rebrand:public && node scripts/tauri-mode.cjs --mode=public --target=dev",
-    "tauri:dev:internal": "npm run rebrand:internal && node scripts/tauri-mode.cjs --mode=internal --target=dev",
+    "tauri:dev:public": "node scripts/tauri-mode.cjs --mode=public --target=dev",
+    "tauri:dev:internal": "node scripts/tauri-mode.cjs --mode=internal --target=dev",
     "tauri:build": "tauri build",
-    "tauri:build:public": "npm run rebrand:public && node scripts/tauri-mode.cjs --mode=public --target=build",
-    "tauri:build:internal": "npm run rebrand:internal && node scripts/tauri-mode.cjs --mode=internal --target=build"
+    "tauri:build:public": "node scripts/tauri-mode.cjs --mode=public --target=build",
+    "tauri:build:internal": "node scripts/tauri-mode.cjs --mode=internal --target=build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
