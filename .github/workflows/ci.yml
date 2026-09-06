@@ -35,6 +35,9 @@ jobs:
       - name: Verify docs boundary
         run: node scripts/verify-boundaries.cjs docs-boundary
 
+      - name: Test local frontend and explicit package assembly boundaries
+        run: npm run test:build
+
       - name: Cache node_modules
         id: cache-node-modules-frontend
         uses: actions/cache@v5

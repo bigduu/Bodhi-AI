@@ -27,14 +27,14 @@ It installs and runs as a real desktop app (Windows / macOS / Linux), with a glo
 | 🔔 Native notifications | Pushes desktop alerts through the system notification center |
 | 📋 Clipboard | Native clipboard writes (macOS / Windows) |
 | 🎨 Window theme | Follows the frontend to switch light/dark/system theme |
-| 📦 Splash-to-Lotus startup | Opens a bundled startup splash, waits for the managed Bamboo sidecar to become healthy, then loads the Lotus UI served by that sidecar |
+| 📦 Splash-to-Lotus Next startup | Opens a bundled splash, verifies the local frontend and managed Bamboo startup, then loads the packaged Lotus Next UI |
 | 🏢 Build modes | Internal builds show a confirmation dialog at startup; public builds boot straight in |
 
 ---
 
 ## Architecture
 
-Bodhi owns only the shell and the product surface — the desktop window, native integrations (clipboard, notifications, global shortcut), packaging and release. The UI comes from **Lotus**; the real execution engine is **Bamboo** (a local-first Rust agent runtime). Bodhi bundles a small `bodhi-splash` startup page, spawns the standalone `bamboo serve` binary as a managed Tauri sidecar, waits for that service to become healthy, and then navigates the release webview to the Lotus UI served by Bamboo. The shell does *not* link `bamboo-agent` as a crate dependency — `bamboo` is declared as an `externalBin` in `tauri.conf.json`.
+Bodhi owns the desktop window, native integrations (clipboard, notifications, global shortcut), packaging and release. Normal local builds use **Lotus Next** for the UI and **Bamboo** for the execution engine. Bodhi bundles a small `bodhi-splash` startup page, verifies the packaged frontend, and starts `bamboo serve --static-dir <owned-resource-directory>` as a managed Tauri sidecar. Once the owned backend is ready and serves the expected production index, the release webview navigates to it. The shell links no Bamboo crate; `bamboo` is declared as an `externalBin` in `tauri.conf.json`. The explicit published-package release path remains temporary legacy Lotus assembly as described below.
 
 ```mermaid
 graph TD
@@ -42,7 +42,7 @@ graph TD
     W["WebView<br/>starts on bundled bodhi-splash"]
     E["Managed sidecar<br/>bamboo serve externalBin<br/>127.0.0.1:9562"]
     N["Native commands<br/>clipboard · notifications<br/>window theme"]
-    E -- "after health: serve embedded Lotus" --> W
+    E -- "after owned startup: serve verified Lotus Next resources" --> W
     W -- "HTTP /api/v1/*" --> E
     W -- "Tauri IPC invoke" --> N
   end
@@ -52,7 +52,7 @@ graph TD
 **Where this sits in Zenith:**
 
 - **`bodhi`** — desktop AI product surface (this module)
-- **`lotus`** — the React + Vite UI layer
+- **`lotus-next`** — the canonical React + Vite UI layer for local builds
 - **`bamboo`** — the local-first Rust agent runtime (execution engine)
 - **`bodhi-server`** — Go backend: auth, persistence, billing+quota, LLM proxy
 - **`pavilion`** — official website & docs
@@ -78,12 +78,13 @@ Instead of linking and running the Bamboo HTTP server in-process, the shell spaw
 
 - **Bundled startup page**: Tauri's `frontendDist` is `../bodhi-splash`, not `.lotus-dist`. The webview stays on that local splash while the backend starts.
 - **Default port `9562`** (`DEFAULT_WEB_SERVICE_PORT`, defined in `src-tauri/src/lib.rs`).
-- **Reuse if the port is taken**: before spawning, it probes `http://127.0.0.1:9562/api/v1/health`; if a backend is already running (e.g. you manually started a standalone bamboo server), it **reuses it** instead of spawning its own, making it easy to debug frontend and backend independently.
-- **Health check and navigation**: after spawning, it polls `/api/v1/health` via `wait_for_health` for up to 60 seconds. Release builds then navigate the webview to the sidecar root, where Bamboo serves its embedded Lotus frontend. Debug builds keep Lotus's HMR `devUrl` unless `BODHI_SIDECAR_FRONTEND` is set.
+- **Owned local backend**: local source builds reject an occupied port before spawning. They neither reuse nor kill another listener; the error recommends a different `BODHI_BACKEND_PORT`.
+- **Health check and navigation**: local builds require the managed child's `Unified server running on http://127.0.0.1:<port>` output, emitted after Bamboo binds, then health and the expected index hash. Errors or termination stop startup. This existing producer signal is also checked during real desktop acceptance when updating Bamboo. Debug builds keep Lotus Next's HMR `devUrl` unless `BODHI_SIDECAR_FRONTEND` is set.
+- **Runtime endpoint**: the shell injects its numeric `__BAMBOO_BACKEND_PORT__` before any frontend module evaluates. Lotus Next's existing runtime uses it ahead of persisted browser endpoints; no machine-specific backend URL is compiled into the artifact.
 - **Crash-safe orphan guard**: the sidecar is spawned with `--parent-pid <shell_pid>`, so if the app dies *without* running cleanup (SIGKILL, force-quit, panic), the backend self-exits. On the clean path, `RunEvent::Exit` / `ExitRequested` kills the recorded child.
 - **No `bamboo-agent` crate dependency**: the shell links no Bamboo crate. `bamboo` is declared as an `externalBin` in `tauri.conf.json` (`"externalBin": ["binaries/bamboo"]`).
 
-> Why it matters: a user opens one app and the engine comes up with it; a developer can still run the backend externally for debugging. Best of both.
+The temporary explicit legacy package assembly retains its existing external-backend reuse behavior. Local source assembly always uses the owned-process checks above.
 
 ### Native desktop integrations
 
@@ -112,21 +113,34 @@ Per OS:
 
 Safety: the installer never overwrites a real file or a symlink it doesn't own (only links pointing at a bamboo inside a Bodhi install are refreshed); conflicts abort with a dialog naming the offending path. Re-running when already installed just reports "已安装,指向当前版本".
 
-### How Lotus reaches the packaged app
+### How Lotus Next reaches a local packaged app
 
-Bodhi contains only the startup splash; it does not carry a second copy of the product frontend. For a production sidecar build, `scripts/build-sidecar.cjs` runs Bamboo's frontend packaging step and embeds Lotus into the `bamboo` binary. The release workflow checks out the selected Bamboo ref, installs the selected `@bigduu/lotus` package into that checkout, and builds the sidecar in package mode.
+Bodhi consumes sibling `../lotus-next` and requires its package identity to be `@bigduu/lotus-next`. Every local production build runs Lotus Next's build and package-content checks, verifies the production index and asset-manifest references, and hashes every resource. `.bodhi-frontend/receipt.json` records the package name/version, Git revision, dirty-source flag, per-file SHA-256 hashes and a deterministic combined hash. A source revision or dirty-status change during the build aborts staging. Dirty checkouts remain usable and are labeled as dirty; the content hashes identify the actual artifact.
 
-`npm run web:build` still stages a Lotus dist in `.lotus-dist/` for CI/source verification. That directory is **not** Tauri's `frontendDist` and is not the production webview entrypoint. Source selection for staging and sidecar packaging uses:
+The verified dist is staged in `.lotus-dist/` for inspection and `.bodhi-frontend/dist/` for Tauri resources. Only the latter is bundled at `frontend/dist`; `frontendDist` remains the small splash. The executable pins the exact receipt at compilation and checks resource identity and all file hashes on startup. Missing files, changed bytes, unexpected files and symlinks fail visibly. The resolved resource directory is passed to Bamboo through its existing `--static-dir` option, so moving the app away from the checkout preserves startup. Local sidecars are compiled with `BAMBOO_FRONTEND_BUILD_MODE=api-only`, avoiding an additional legacy embedded UI.
+
+Before Tauri copies resources, the build script replaces only the generated `<Cargo profile>/frontend` directory, after validating its Cargo output ancestry. This prevents deleted hashed assets from surviving a later dev/build copy and falsely failing startup verification. Other build resources and any symlink targets are preserved.
+
+Local production artifacts explicitly clear `VITE_BACKEND_BASE_URL`, including values from frontend `.env` files. A nonempty value supplied by the caller is rejected. Lotus Next's own public-variable schema, bundle budgets and chunk-ownership checks remain authoritative.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LOTUS_SOURCE` | `auto` | `auto` \| `local` \| `package`. `auto` prefers the local `../lotus`, otherwise uses the npm package |
-| `LOTUS_LOCAL_PATH` | `../lotus` | Local Lotus checkout path |
-| `LOTUS_PACKAGE_NAME` | `@bigduu/lotus` | Published Lotus npm package name |
+| `LOTUS_SOURCE` | `local` | Local Lotus Next source; `package` is an explicit temporary release-only path. `auto` is rejected |
+| `LOTUS_LOCAL_PATH` | `../lotus-next` | Lotus Next Git checkout root; missing or mismatched source fails without fallback |
+| `LOTUS_PACKAGE_NAME` | `@bigduu/lotus-next` for local builds | Package assembly requires the explicit value `@bigduu/lotus` |
+| `BAMBOO_LOCAL_PATH` | `../bamboo` | Source of the managed sidecar; required for local Tauri builds |
+
+### Temporary published-package release boundary
+
+CI/release jobs still explicitly select `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus`. They install the chosen legacy Lotus package into Bodhi and Bamboo, stage and verify its dist, and run Bamboo's existing frontend packager with `BAMBOO_FRONTEND_BUILD_MODE=embedded`. Current Bamboo main produces a workspace-root `frontend_package`, while dev produces `crates/app/bamboo-server/frontend_package`. Bodhi requires both zip and manifest to be newly generated in exactly one layout, mirrors only a fresh root pair into the server crate, and rejects stale, partial or ambiguous output. The app bundles the assembly receipt only and keeps the existing embedded frontend behavior. A receipt for this path must match the one compiled into the executable; missing local resources can never select it.
+
+This distinction is removed when [Zenith #187](https://github.com/bigduu/Zenith/issues/187) completes the formal consumer/publication/release-train cutover. Local-default work does not publish Lotus Next, dispatch a release, archive legacy Lotus, or certify the broader root/child Jiandu persistence gate.
+
+Historical or manual Bamboo checkouts with either generated output directory as a symlink fail closed. Set `BAMBOO_LOCAL_PATH` to a clean checkout for package assembly; the existing link and its target are left untouched.
 
 ### Internal vs public build mode
 
-`is_internal_build_mode()` reads the compile-time `option_env!("BODHI_INTERNAL_BUILD")` or runtime `BODHI_INTERNAL_BUILD`. Internal builds show a startup confirmation dialog; public builds boot straight in. Frontend rebranding is driven by Lotus's rebrand scripts (`npm run rebrand:public` / `rebrand:internal`, proxied from `bodhi/package.json`).
+`is_internal_build_mode()` reads the compile-time `option_env!("BODHI_INTERNAL_BUILD")` or runtime `BODHI_INTERNAL_BUILD`. Internal builds show a startup confirmation dialog; public builds boot straight in. The normal public/internal Tauri variants select this shell mode without invoking legacy frontend rebranding. Existing `rebrand:*` utilities are legacy Lotus maintenance commands and are not part of local Lotus Next assembly.
 
 ---
 
@@ -138,7 +152,7 @@ Bodhi contains only the startup splash; it does not carry a second copy of the p
 - Node.js + npm (frontend toolchain)
 - Rust toolchain (Tauri backend)
 - a sibling `../bamboo` checkout for the real development sidecar
-- a sibling `../lotus` checkout for the HMR development frontend
+- a sibling `../lotus-next` checkout with dependencies installed (`npm ci` there)
 
 ### Develop
 
@@ -147,7 +161,7 @@ Bodhi contains only the startup splash; it does not carry a second copy of the p
 npm run tauri:dev
 ```
 
-`tauri:dev` follows `beforeDevCommand`: it builds a debug sidecar from sibling `../bamboo`, starts sibling `../lotus` with Vite HMR, and then launches the Tauri window at `devUrl: http://localhost:1420`. Development does not use `.lotus-dist` as the webview source.
+`tauri:dev` follows `beforeDevCommand`: it builds and verifies Lotus Next, stages its resources, builds an API-only debug sidecar from sibling `../bamboo`, and starts Lotus Next's Vite server on loopback port `1420` with strict-port behavior. The window uses `devUrl: http://localhost:1420` for HMR. The same verified resources are available when `BODHI_SIDECAR_FRONTEND` is set to exercise sidecar-served assets in a debug shell.
 
 Branded dev variants:
 
@@ -164,30 +178,35 @@ npm run tauri:build:public    # public-mode bundle
 npm run tauri:build:internal  # internal-mode bundle
 ```
 
-`tauri:build` runs `scripts/build-sidecar.cjs` through `beforeBuildCommand`. With a sibling Bamboo checkout, that script packages Lotus into a release-mode Bamboo sidecar; Tauri itself still bundles `bodhi-splash` as `frontendDist`. The release workflow performs the same assembly from an explicit Bamboo ref and Lotus package version for each target platform.
+`tauri:build` runs `scripts/build-sidecar.cjs` through `beforeBuildCommand`: verified Lotus Next resources plus a release-mode API-only Bamboo sidecar. Tauri bundles the splash, resources and executable. Bare `cargo build` still supports CI shell compilation with inert placeholders; those are not runnable local app assembly.
 
-### Stage Lotus assets for verification
+### Build or preview the selected frontend
 
 ```bash
-npm run web:build             # build/stage Lotus into .lotus-dist for verification
-npm run web:source:info       # print the current Lotus source (local/package + LOTUS_SOURCE)
+npm run web:build             # build, verify and stage Lotus Next
+npm run web:source:info       # report the selected source, or fail with guidance
+npm run dev                  # Lotus Next HMR on loopback :1420
+npm run preview              # build/verify, then preview Lotus Next on :1420
+npm run test:build            # focused source/artifact/assembly fixtures, no Cargo
 ```
 
-These commands do not change Tauri's `frontendDist`; the packaged app still starts from `bodhi-splash` and receives Lotus from the healthy sidecar.
+These commands keep Tauri's splash entrypoint unchanged. Preview and HMR commands require a local source checkout; dist-only release packages do not provide a development server.
 
 ### Run frontend & backend separately
 
-Because the sidecar reuses an existing backend if the port is already in use, you can run a standalone backend for debugging. The Bamboo backend entry point is the `serve` subcommand of the `bamboo` binary (in the `bamboo/` directory):
+For browser-only debugging, run the backend and Lotus Next directly. Do not launch local Bodhi against this occupied backend port; the desktop app owns its own engine and will report the collision.
 
 ```bash
 # Terminal 1: backend (in bamboo/)
 cargo run --bin bamboo -- serve --port 9562
 
-# Terminal 2: frontend (in lotus/)
+# Terminal 2: frontend (in lotus-next/)
 npm run dev
 ```
 
 Run `bamboo serve --help` for the current server options.
+
+For automated desktop acceptance, use a disposable `BAMBOO_DATA_DIR`, configuration and workspace, a separate WebView/app identifier and an unused `BODHI_BACKEND_PORT`. Enforce denial of access to the user's real `.bamboo` and `.jiandu` stores. Move the test bundle away from source checkouts, launch its actual WebView and managed Bamboo twice, verify the same artifact and local setting/session, and verify the child exits after each complete app exit. Do not install over the user's app or treat a browser mock as this acceptance test.
 
 ### Runtime diagnostic env vars
 
@@ -201,7 +220,7 @@ Run `bamboo serve --help` for the current server options.
 | `BODHI_BACKEND_PORT` | Override the sidecar backend port (default `9562`) |
 | `BODHI_SIDECAR_FRONTEND` | Force the webview to use the sidecar frontend in debug/dev builds |
 
-> Note: this module does NOT define `type-check` / `test:run` / `test:e2e` — those belong to **Lotus**. Bodhi's `package.json` only contains the web/rebrand/tauri scripts listed above.
+Frontend `type-check` / `test:run` / `test:e2e` belong to **Lotus Next**. Bodhi runs its focused `test:build` fixtures and the Rust shell tests.
 
 ---
 
@@ -209,7 +228,7 @@ Run `bamboo serve --help` for the current server options.
 
 | Module | Role | Link |
 |---|---|---|
-| **lotus** | React + Vite UI layer | [bigduu/Lotus](https://github.com/bigduu/Lotus) |
+| **lotus-next** | Canonical React + Vite UI for local builds | [bigduu/lotus-next](https://github.com/bigduu/lotus-next) |
 | **bamboo** | local-first Rust agent runtime | [bigduu/Bamboo-agent](https://github.com/bigduu/Bamboo-agent) |
 | **bodhi-server** | Go backend: auth / persistence / billing+quota / LLM proxy | [bigduu/bodhi-server](https://github.com/bigduu/bodhi-server) |
 | **pavilion** | official website & docs | [bigduu/Pavilion](https://github.com/bigduu/Pavilion) |

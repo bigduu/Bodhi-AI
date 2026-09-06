@@ -44,6 +44,9 @@
     "externalBin": [
       "binaries/bamboo"
     ],
+    "resources": {
+      "../.bodhi-frontend/": "frontend/"
+    },
     "macOS": {
       "signingIdentity": "Zenith Nova Code Signing"
     },

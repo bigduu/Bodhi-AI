@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 .lotus-dist
+.bodhi-frontend
 .frontend-package
 dist-ssr
 *.local
