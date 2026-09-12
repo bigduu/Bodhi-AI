@@ -28,6 +28,14 @@ on:
           - "@bigduu/lotus-next"
           - "@bigduu/lotus"
 
+# A release version has one durable public tag. Serialize dispatches targeting
+# that version, while each run writes only to its own draft tag below. Keeping
+# cancel-in-progress false ensures an active release assembly is never cut off
+# by a duplicate dispatch.
+concurrency:
+  group: bodhi-release-${{ github.event.inputs.bodhi_version || 'latest' }}
+  cancel-in-progress: false
+
 jobs:
   publish-tauri:
     env:
@@ -254,7 +262,9 @@ jobs:
           # here, and drop this override so the real identity is used.
           APPLE_SIGNING_IDENTITY: "-"
         with:
-          tagName: app-v${{ steps.release_version.outputs.version }}
+          # Draft tags are run-scoped, so no other dispatch can add or replace
+          # assets in this run's unverified release.
+          tagName: bodhi-draft-v${{ steps.release_version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
           releaseName: "App v${{ steps.release_version.outputs.version }}"
           releaseBody: "See the assets to download this version and install."
           # Matrix jobs may upload only to a draft. The final job publishes it
@@ -304,10 +314,19 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRAFT_TAG: bodhi-draft-v${{ steps.release_version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
           RELEASE_TAG: app-v${{ steps.release_version.outputs.version }}
         run: |
-          if [ "$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)" != "true" ]; then
-            echo "::error::Expected ${RELEASE_TAG} to remain a draft until all assembly gates passed."
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::Refusing to replace existing release ${RELEASE_TAG}."
             exit 1
           fi
-          gh release edit "${RELEASE_TAG}" --draft=false --latest
+          if [ "$(gh release view "${DRAFT_TAG}" --json isDraft --jq .isDraft)" != "true" ]; then
+            echo "::error::Expected isolated ${DRAFT_TAG} to remain a draft until all assembly gates passed."
+            exit 1
+          fi
+          gh release edit "${DRAFT_TAG}" \
+            --tag "${RELEASE_TAG}" \
+            --title "App v${{ steps.release_version.outputs.version }}" \
+            --draft=false \
+            --latest
