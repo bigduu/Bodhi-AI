@@ -197,7 +197,7 @@ fn show_startup_failure<R: Runtime>(app: &tauri::AppHandle<R>, message: &str) {
         .show(|_| {});
 }
 
-fn local_backend_initialization(port: u16) -> String {
+fn managed_backend_initialization(port: u16) -> String {
     // Installed before page modules evaluate, including after navigation. The
     // existing Lotus Next runtime gives this trusted numeric port priority over
     // a persisted browser endpoint; no machine address enters the built dist.
@@ -212,9 +212,9 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             return Ok(());
         }
     };
-    let local = frontend.static_dir.is_some();
+    let owns_frontend = frontend.static_dir.is_some();
     let port = web_service_port();
-    if local {
+    if owns_frontend {
         if let Err(error) = sidecar::require_available_port(port) {
             show_startup_failure(app.handle(), &error);
             return Ok(());
@@ -233,10 +233,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
 
     let sidecar_app = app.handle().clone();
     tauri::async_runtime::spawn(async move {
-        // Only the explicitly assembled legacy package retains external-server
-        // reuse until the formal release cutover. Local source builds always own
+        // Only the explicitly selected legacy rollback package retains
+        // external-server reuse. Lotus Next source and package builds always own
         // the backend serving their verified resource directory.
-        let owned = if !local && sidecar::backend_already_running(port).await {
+        let owned = if !owns_frontend && sidecar::backend_already_running(port).await {
             log::info!("Backend already running on port {port}; reusing it");
             None
         } else {
@@ -263,7 +263,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
         if let Err(error) = sidecar::wait_for_health(
             port,
             60,
-            if local { owned.as_ref() } else { None },
+            if owns_frontend { owned.as_ref() } else { None },
             frontend.index_hash.as_deref(),
         )
         .await
@@ -364,8 +364,8 @@ pub fn run() {
     let fs_plugin = tauri_plugin_fs::init();
 
     tauri::Builder::default()
-        .append_invoke_initialization_script(if frontend::is_local_build() {
-            local_backend_initialization(web_service_port())
+        .append_invoke_initialization_script(if frontend::uses_managed_frontend() {
+            managed_backend_initialization(web_service_port())
         } else {
             String::new()
         })
@@ -435,9 +435,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn local_runtime_gets_only_its_numeric_managed_port() {
+    fn lotus_next_runtime_gets_only_its_numeric_managed_port() {
         assert_eq!(
-            super::local_backend_initialization(19562),
+            super::managed_backend_initialization(19562),
             "window.__BAMBOO_BACKEND_PORT__ = 19562;"
         );
     }

@@ -1,19 +1,29 @@
 #!/usr/bin/env node
-// Bodhi's local source boundary. Published-package assembly stays explicit until
-// Zenith #187 completes the formal consumer cutover.
+// Bodhi's verified local and published-package frontend boundary.
 const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
+const {
+  ARTIFACT_MANIFEST_FILE,
+  readArtifactLock,
+  verifyLotusNextArtifact,
+} = require("./lotus-next-artifact.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const NEXT_PACKAGE = "@bigduu/lotus-next";
 const LEGACY_PACKAGE = "@bigduu/lotus";
 const RECEIPT = "receipt.json";
+const RECEIPT_SCHEMA_VERSION = 2;
+const ARTIFACT_LOCK = "frontend-package-lock.json";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function readJson(file) {
   try {
+    const metadata = fs.lstatSync(file);
+    if (metadata.isSymbolicLink() || !metadata.isFile()) {
+      throw new Error("expected a regular file, not a symbolic link");
+    }
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (error) {
     throw new Error(`Cannot read ${file}: ${error.message}`);
@@ -37,31 +47,70 @@ function resolveSource(env = process.env, root = ROOT) {
       throw new Error(`Lotus Next is missing at ${sourceRoot}. Check out sibling ../lotus-next or set LOTUS_LOCAL_PATH to its checkout.`);
     }
   } else {
-    packageName = env.LOTUS_PACKAGE_NAME;
-    if (packageName !== LEGACY_PACKAGE) {
-      throw new Error(`The temporary release path requires explicit LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=${LEGACY_PACKAGE}. Lotus Next package cutover belongs to Zenith #187.`);
+    packageName = env.LOTUS_PACKAGE_NAME || NEXT_PACKAGE;
+    if (![NEXT_PACKAGE, LEGACY_PACKAGE].includes(packageName)) {
+      throw new Error(
+        `Package builds require ${NEXT_PACKAGE} (default) or the explicit rollback ${LEGACY_PACKAGE}; received ${packageName}.`,
+      );
     }
     try {
       sourceRoot = path.dirname(require.resolve(`${packageName}/package.json`, { paths: [root] }));
     } catch {
-      throw new Error(`Explicit release package ${packageName} is not installed. Install the selected release version in Bodhi.`);
+      throw new Error(`Frontend package ${packageName} is not installed. Install the selected exact version in Bodhi.`);
     }
   }
   const pkg = readJson(path.join(sourceRoot, "package.json"));
   if (pkg.name !== packageName || typeof pkg.version !== "string" || !pkg.version) {
     throw new Error(`Frontend identity mismatch at ${sourceRoot}: expected ${packageName} with a version.`);
   }
-  return { mode, sourceRoot, packageName, version: pkg.version };
+  const artifactLock = mode === "package" && packageName === NEXT_PACKAGE
+    ? readArtifactLock(path.join(root, "scripts", ARTIFACT_LOCK))
+    : null;
+  if (artifactLock && pkg.version !== artifactLock.packageVersion) {
+    throw new Error(
+      `Installed ${packageName}@${pkg.version} does not match the locked ${artifactLock.packageVersion}.`,
+    );
+  }
+  return { mode, sourceRoot, packageName, version: pkg.version, artifactLock };
 }
 
 function sourceIdentity(source) {
-  if (source.mode === "package") return { sourceRevision: null, sourceDirty: false };
+  if (source.mode === "package") {
+    if (source.packageName === NEXT_PACKAGE) {
+      const { manifest, manifestSha256 } = verifyLotusNextArtifact({
+        distDirectory: path.join(source.sourceRoot, "dist"),
+        expectedIdentity: source.artifactLock,
+      });
+      if (source.version !== manifest.packageVersion) {
+        throw new Error(
+          `Package metadata ${source.version} does not match universal manifest ${manifest.packageVersion}.`,
+        );
+      }
+      return {
+        sourceRevision: manifest.sourceRevision,
+        sourceDirty: manifest.sourceDirty,
+        artifactManifestSha256: manifestSha256,
+        artifactResourcesSha256: manifest.resourcesSha256,
+      };
+    }
+    return {
+      sourceRevision: null,
+      sourceDirty: false,
+      artifactManifestSha256: null,
+      artifactResourcesSha256: null,
+    };
+  }
   const git = (...args) => execFileSync("git", ["-C", source.sourceRoot, ...args], { encoding: "utf8" }).trim();
   const sourceRevision = git("rev-parse", "HEAD");
   if (!/^[a-f0-9]{40}$/.test(sourceRevision) || fs.realpathSync(git("rev-parse", "--show-toplevel")) !== fs.realpathSync(source.sourceRoot)) {
     throw new Error("LOTUS_LOCAL_PATH must identify the Lotus Next Git checkout root.");
   }
-  return { sourceRevision, sourceDirty: git("status", "--porcelain", "--untracked-files=normal") !== "" };
+  return {
+    sourceRevision,
+    sourceDirty: git("status", "--porcelain", "--untracked-files=normal") !== "",
+    artifactManifestSha256: null,
+    artifactResourcesSha256: null,
+  };
 }
 
 function localBuildEnvironment(source, env = process.env, identity = sourceIdentity(source)) {
@@ -169,15 +218,102 @@ function verifyDist(source, dist = path.join(source.sourceRoot, "dist")) {
         }
       }
     }
+  } else if (source.packageName === NEXT_PACKAGE) {
+    verifyLotusNextArtifact({
+      distDirectory: dist,
+      expectedIdentity: source.artifactLock,
+    });
   }
   return files;
 }
 
 function stageDist(source, root = ROOT, identity = sourceIdentity(source)) {
   const dist = path.join(source.sourceRoot, "dist");
-  const files = verifyDist(source, dist);
-  const receipt = {
-    schemaVersion: 1,
+  verifyDist(source, dist);
+  const output = path.join(root, ".lotus-dist");
+  const resource = path.join(root, ".bodhi-frontend");
+  const stagingParent = path.join(root, "tmp");
+  fs.mkdirSync(stagingParent, { recursive: true });
+  const stagingParentMetadata = fs.lstatSync(stagingParent);
+  if (stagingParentMetadata.isSymbolicLink() || !stagingParentMetadata.isDirectory()) {
+    throw new Error("Bodhi staging parent must be a real directory.");
+  }
+  const staging = fs.mkdtempSync(
+    path.join(stagingParent, "bodhi-frontend-stage-"),
+  );
+  const stagedOutput = path.join(staging, "lotus-dist");
+  const stagedResource = path.join(staging, "bodhi-frontend");
+  try {
+    fs.cpSync(dist, stagedOutput, { recursive: true });
+    const files = verifyDist(source, stagedOutput);
+    const after = sourceIdentity(source);
+    if (JSON.stringify(identity) !== JSON.stringify(after)) {
+      throw new Error(
+        "Frontend source identity changed during staging; no generated output was replaced.",
+      );
+    }
+    const receipt = {
+      schemaVersion: RECEIPT_SCHEMA_VERSION,
+      mode: source.mode,
+      packageName: source.packageName,
+      version: source.version,
+      ...after,
+      contentHash: contentHash(files),
+      files,
+    };
+    fs.mkdirSync(stagedResource, { recursive: true });
+    if (source.packageName === NEXT_PACKAGE) {
+      fs.cpSync(stagedOutput, path.join(stagedResource, "dist"), {
+        recursive: true,
+      });
+      const resourceFiles = verifyDist(
+        source,
+        path.join(stagedResource, "dist"),
+      );
+      if (JSON.stringify(files) !== JSON.stringify(resourceFiles)) {
+        throw new Error(
+          "Copied frontend resources changed during staging; no generated output was replaced.",
+        );
+      }
+    }
+    fs.writeFileSync(
+      path.join(stagedResource, RECEIPT),
+      `${JSON.stringify(receipt)}\n`,
+    );
+
+    // Only generated outputs are replaced, and only after the staged copies
+    // have independently passed verification.
+    for (const [target, staged] of [
+      [output, stagedOutput],
+      [resource, stagedResource],
+    ]) {
+      fs.rmSync(target, { recursive: true, force: true });
+      fs.renameSync(staged, target);
+    }
+    console.log(
+      `Verified ${source.packageName} ${receipt.sourceRevision || source.version}${receipt.sourceDirty ? " (dirty source)" : ""}: sha256 ${receipt.contentHash}`,
+    );
+    return receipt;
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+function verifyStaged(source = resolveSource(), root = ROOT) {
+  const output = path.join(root, ".lotus-dist");
+  const resource = path.join(root, ".bodhi-frontend");
+  const files = verifyDist(source, output);
+  if (source.packageName === NEXT_PACKAGE) {
+    const resourceFiles = verifyDist(source, path.join(resource, "dist"));
+    if (JSON.stringify(resourceFiles) !== JSON.stringify(files)) {
+      throw new Error("Bodhi frontend resource does not match .lotus-dist.");
+    }
+  } else if (fs.existsSync(path.join(resource, "dist"))) {
+    throw new Error("The legacy rollback receipt must not carry a second Tauri frontend.");
+  }
+  const identity = sourceIdentity(source);
+  const expected = {
+    schemaVersion: RECEIPT_SCHEMA_VERSION,
     mode: source.mode,
     packageName: source.packageName,
     version: source.version,
@@ -185,29 +321,51 @@ function stageDist(source, root = ROOT, identity = sourceIdentity(source)) {
     contentHash: contentHash(files),
     files,
   };
-  const output = path.join(root, ".lotus-dist");
-  const resource = path.join(root, ".bodhi-frontend");
-  // Only generated outputs are replaced. Verification failure exits the build
-  // before Tauri packaging, without minting a new receipt.
-  for (const target of [output, resource]) {
-    fs.rmSync(target, { recursive: true, force: true });
-    fs.mkdirSync(target, { recursive: true });
+  const receipt = readJson(path.join(resource, RECEIPT));
+  if (JSON.stringify(receipt) !== JSON.stringify(expected)) {
+    throw new Error("Staged frontend receipt does not match the selected artifact.");
   }
-  fs.cpSync(dist, output, { recursive: true });
-  if (source.mode === "local") fs.cpSync(dist, path.join(resource, "dist"), { recursive: true });
-  fs.writeFileSync(path.join(resource, RECEIPT), `${JSON.stringify(receipt)}\n`);
-  console.log(`Verified ${source.packageName} ${receipt.sourceRevision || source.version}${receipt.sourceDirty ? " (dirty source)" : ""}: sha256 ${receipt.contentHash}`);
   return receipt;
 }
 
-module.exports = { ROOT, NEXT_PACKAGE, LEGACY_PACKAGE, RECEIPT, resolveSource, sourceIdentity, localBuildEnvironment, safeRelative, inventory, contentHash, verifyDist, stageDist };
+module.exports = {
+  ROOT,
+  NEXT_PACKAGE,
+  LEGACY_PACKAGE,
+  RECEIPT,
+  RECEIPT_SCHEMA_VERSION,
+  ARTIFACT_MANIFEST_FILE,
+  resolveSource,
+  sourceIdentity,
+  localBuildEnvironment,
+  safeRelative,
+  inventory,
+  contentHash,
+  verifyDist,
+  stageDist,
+  verifyStaged,
+};
 
 if (require.main === module) {
   try {
     const command = process.argv[2] || "stage";
-    if (command === "info") console.log(JSON.stringify(resolveSource(), null, 2));
+    if (command === "info") {
+      const source = resolveSource();
+      console.log(JSON.stringify({
+        mode: source.mode,
+        packageName: source.packageName,
+        version: source.version,
+        sourceRoot: source.sourceRoot,
+        artifactLock: source.artifactLock,
+      }, null, 2));
+    }
     else if (command === "stage") require("./web-build.cjs").buildFrontend();
-    else throw new Error(`Unknown command ${command}; use stage or info.`);
+    else if (command === "verify-staged") {
+      const receipt = verifyStaged();
+      console.log(
+        `Staged ${receipt.packageName}@${receipt.version} matches receipt ${receipt.contentHash}.`,
+      );
+    } else throw new Error(`Unknown command ${command}; use stage, verify-staged or info.`);
   } catch (error) {
     console.error(`Frontend: ${error.message}`);
     process.exitCode = 1;

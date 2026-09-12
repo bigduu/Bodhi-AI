@@ -12,20 +12,29 @@ on:
         required: false
         default: "latest"
       bamboo_ref:
-        description: "Git ref of bigduu/Bamboo-agent to build the sidecar from (default: main)"
+        description: "Exact bigduu/Bamboo-agent ref used to build the managed sidecar"
         required: false
-        default: "main"
+        default: "d050b02ede8239ed01f5b2d1ab5f6715d9267304"
       lotus_version:
-        description: "Lotus npm version to bundle (default: latest)"
+        description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
-        default: "latest"
+        default: "2026.9.14"
+      frontend_package:
+        description: "Frontend package; legacy Lotus is the explicit rollback path"
+        required: true
+        type: choice
+        default: "@bigduu/lotus-next"
+        options:
+          - "@bigduu/lotus-next"
+          - "@bigduu/lotus"
 
 jobs:
   publish-tauri:
     env:
       BAMBOO_CRATE_NAME: "bamboo-agent"
       LOTUS_SOURCE: package
-      LOTUS_PACKAGE_NAME: "@bigduu/lotus"
+      LOTUS_PACKAGE_NAME: ${{ github.event.inputs.frontend_package || '@bigduu/lotus-next' }}
+      LEGACY_LOTUS_VERSION: "2026.8.28"
       NPM_CONFIG_AUDIT: "false"
       NPM_CONFIG_FUND: "false"
       NPM_CONFIG_PROGRESS: "false"
@@ -67,17 +76,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # The bamboo sidecar is built from source (not the crates.io crate): the
-      # published bamboo-agent crate does NOT ship frontend_package/, so a
-      # `cargo install` would yield a backend with no embedded lotus UI. Building
-      # the source tree lets scripts/build-sidecar.cjs embed lotus and produce a
-      # self-contained `bamboo serve` binary. Without this the bundle ships the
-      # build.rs placeholder (`exit 1`) and the app hangs on "Starting Bodhi…".
+      # The managed sidecar is built from source rather than accepting the inert
+      # shell-build placeholder. Lotus Next is supplied once as an owned Tauri
+      # resource; only the explicit legacy rollback selection is embedded.
       - name: Checkout Bamboo source (sidecar backend)
         uses: actions/checkout@v6
         with:
           repository: bigduu/Bamboo-agent
-          ref: ${{ github.event.inputs.bamboo_ref || 'main' }}
+          ref: ${{ github.event.inputs.bamboo_ref || 'd050b02ede8239ed01f5b2d1ab5f6715d9267304' }}
           path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
@@ -202,34 +208,31 @@ jobs:
       - name: Install Lotus package
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
+          if [ "${LOTUS_PACKAGE_NAME}" = "@bigduu/lotus" ]; then
+            LOTUS_VERSION="${LEGACY_LOTUS_VERSION}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
             LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
           else
-            LOTUS_VERSION="latest"
+            LOTUS_VERSION="2026.9.14"
           fi
-          echo "Using @bigduu/lotus@${LOTUS_VERSION}"
-          npm install --no-save "@bigduu/lotus@${LOTUS_VERSION}"
+          echo "Using ${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
+          npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
 
-      - name: Install Lotus into Bamboo source (sidecar frontend embed)
-        # build-sidecar.cjs runs bamboo's frontend-package.cjs in LOTUS_SOURCE=package
-        # mode, which resolves @bigduu/lotus from the bamboo checkout's node_modules
-        # and embeds its prebuilt dist into the `bamboo` binary.
+      - name: Install explicit legacy rollback into Bamboo source
+        if: env.LOTUS_PACKAGE_NAME == '@bigduu/lotus'
+        # Only the rollback path asks Bamboo to embed the legacy package. Normal
+        # Lotus Next release assembly carries one verified Tauri resource and
+        # compiles the managed sidecar in API-only mode.
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
-            LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
-          else
-            LOTUS_VERSION="latest"
-          fi
-          echo "Installing @bigduu/lotus@${LOTUS_VERSION} into bamboo-src"
-          npm install --no-save --prefix bamboo-src "@bigduu/lotus@${LOTUS_VERSION}"
+          echo "Installing explicit rollback @bigduu/lotus@${LEGACY_LOTUS_VERSION} into bamboo-src"
+          npm install --no-save --ignore-scripts --package-lock=false --prefix bamboo-src "@bigduu/lotus@${LEGACY_LOTUS_VERSION}"
 
       - name: Stage Lotus dist for bundling
         shell: bash
         run: |
           npm run web:build
-          test -f .lotus-dist/index.html
-          echo "Lotus dist staged in .lotus-dist"
+          node scripts/lotus-dist.cjs verify-staged
 
       - name: Print Lotus source resolution
         run: npm run web:source:info
@@ -237,11 +240,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Build the bamboo sidecar from the checked-out source for THIS matrix
-          # target. build-sidecar.cjs (the configured beforeBuildCommand) reads
-          # these: it embeds lotus (LOTUS_SOURCE=package, job env) and cross-builds
-          # the binary to the app's triple so externalBin resolves to a real
-          # backend instead of the build.rs `exit 1` placeholder.
+          # Build the managed Bamboo sidecar from the selected exact source for
+          # this matrix target. Lotus Next uses API-only plus the verified Tauri
+          # resource; the explicit legacy selection alone uses the old embed.
           BAMBOO_SIDECAR_SOURCE: local
           BAMBOO_LOCAL_PATH: ${{ github.workspace }}/bamboo-src
           BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
@@ -260,9 +261,13 @@ jobs:
           prerelease: false
           args: ${{ matrix.args }}
 
+      - name: Verify exact frontend and real target sidecar
+        shell: bash
+        run: npm run verify:assembly -- "${{ matrix.target }}"
+
       - name: Upload Build Artifacts to Workflow
         uses: actions/upload-artifact@v7
         with:
           name: app-build-${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_paths }}
-          if-no-files-found: warn
+          if-no-files-found: error

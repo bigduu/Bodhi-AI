@@ -1,4 +1,4 @@
-//! Verified local frontend resources, owned by the installed application.
+//! Verified frontend resources, owned by the installed application.
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -16,6 +16,8 @@ struct Receipt {
     version: String,
     source_revision: Option<String>,
     source_dirty: bool,
+    artifact_manifest_sha256: Option<String>,
+    artifact_resources_sha256: Option<String>,
     content_hash: String,
     files: BTreeMap<String, String>,
 }
@@ -25,9 +27,9 @@ pub struct VerifiedFrontend {
     pub index_hash: Option<String>,
 }
 
-pub fn is_local_build() -> bool {
+pub fn uses_managed_frontend() -> bool {
     serde_json::from_slice::<Receipt>(COMPILED_RECEIPT)
-        .map(|receipt| receipt.mode == "local")
+        .map(|receipt| receipt.package_name == "@bigduu/lotus-next")
         .unwrap_or(false)
 }
 
@@ -97,6 +99,20 @@ fn content_hash(files: &BTreeMap<String, String>) -> String {
     format!("{:x}", digest.finalize())
 }
 
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn valid_revision(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn owned_directory(path: &Path) -> Result<PathBuf, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -123,7 +139,7 @@ fn verify_resource(resources: &Path, expected: &[u8]) -> Result<VerifiedFrontend
         return Err("frontend identity does not match this executable".into());
     }
     let receipt: Receipt = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if receipt.schema_version != 1
+    if receipt.schema_version != 2
         || receipt.version.is_empty()
         || content_hash(&receipt.files) != receipt.content_hash
     {
@@ -138,22 +154,50 @@ fn verify_resource(resources: &Path, expected: &[u8]) -> Result<VerifiedFrontend
         && receipt.package_name == "@bigduu/lotus"
         && receipt.source_revision.is_none()
         && !receipt.source_dirty
+        && receipt.artifact_manifest_sha256.is_none()
+        && receipt.artifact_resources_sha256.is_none()
     {
-        // Explicit release assembly retains the existing Bamboo embed. This
-        // exception is pinned at compilation, never inferred from missing files.
+        // The explicit rollback assembly retains the existing Bamboo embed.
+        // This exception is pinned at compilation, never inferred from files.
         return Ok(VerifiedFrontend {
             static_dir: None,
             index_hash: None,
         });
     }
-    if receipt.mode != "local"
-        || receipt.package_name != "@bigduu/lotus-next"
-        || !receipt
-            .source_revision
-            .as_deref()
-            .is_some_and(|sha| sha.len() == 40 && sha.bytes().all(|c| c.is_ascii_hexdigit()))
+    let revision = receipt
+        .source_revision
+        .as_deref()
+        .filter(|revision| valid_revision(revision))
+        .ok_or("expected a Lotus Next source revision")?;
+    if receipt.package_name != "@bigduu/lotus-next"
+        || !matches!(receipt.mode.as_str(), "local" | "package")
     {
-        return Err("expected a local @bigduu/lotus-next artifact with a source revision".into());
+        return Err("expected an owned @bigduu/lotus-next artifact".into());
+    }
+    if receipt.mode == "package" {
+        if receipt.source_dirty {
+            return Err("published Lotus Next artifacts must come from clean source".into());
+        }
+        let manifest_hash = receipt
+            .artifact_manifest_sha256
+            .as_deref()
+            .filter(|value| valid_sha256(value))
+            .ok_or("missing Lotus Next universal manifest hash")?;
+        if !receipt
+            .artifact_resources_sha256
+            .as_deref()
+            .is_some_and(valid_sha256)
+            || receipt
+                .files
+                .get("lotus-next-manifest.json")
+                .is_none_or(|actual| actual != manifest_hash)
+        {
+            return Err("invalid Lotus Next universal artifact identity".into());
+        }
+    } else if receipt.artifact_manifest_sha256.is_some()
+        || receipt.artifact_resources_sha256.is_some()
+    {
+        return Err("local source receipts cannot claim a published artifact lock".into());
     }
     let dist = owned_directory(&root.join("dist"))?;
     let mut files = BTreeMap::new();
@@ -164,7 +208,7 @@ fn verify_resource(resources: &Path, expected: &[u8]) -> Result<VerifiedFrontend
     log::info!(
         "Verified frontend {} revision {} dirty={} content_sha256={} static_dir={}",
         receipt.package_name,
-        receipt.source_revision.unwrap_or_default(),
+        revision,
         receipt.source_dirty,
         receipt.content_hash,
         dist.display()
@@ -205,11 +249,13 @@ mod tests {
             "console.log('Lotus Next')",
         )
         .unwrap();
+        std::fs::write(frontend.join("dist/lotus-next-manifest.json"), "{}\n").unwrap();
         let mut files = BTreeMap::new();
         file_inventory(&frontend.join("dist"), &frontend.join("dist"), &mut files).unwrap();
         let receipt = serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 1, "mode": "local", "packageName": "@bigduu/lotus-next", "version": "0.0.0",
+            "schemaVersion": 2, "mode": "local", "packageName": "@bigduu/lotus-next", "version": "0.0.0",
             "sourceRevision": "d8a77943ce9ef7486d0d141ec8ad313ac74bb610", "sourceDirty": false,
+            "artifactManifestSha256": null, "artifactResourcesSha256": null,
             "contentHash": content_hash(&files), "files": files
         })).unwrap();
         std::fs::write(frontend.join("receipt.json"), &receipt).unwrap();
@@ -258,7 +304,46 @@ mod tests {
     }
 
     #[test]
-    fn explicit_compiled_package_assembly_remains_embedded() {
+    fn exact_published_package_resources_remain_valid_after_a_move() {
+        let (original, receipt) = fixture();
+        let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
+        value["mode"] = "package".into();
+        value["version"] = "2026.9.14".into();
+        value["sourceDirty"] = false.into();
+        value["artifactManifestSha256"] = hash_bytes(b"{}\n").into();
+        value["artifactResourcesSha256"] = "a".repeat(64).into();
+        let package = serde_json::to_vec(&value).unwrap();
+        std::fs::write(original.path().join("frontend/receipt.json"), &package).unwrap();
+        let moved = tempfile::tempdir().unwrap();
+        std::fs::rename(
+            original.path().join("frontend"),
+            moved.path().join("frontend"),
+        )
+        .unwrap();
+        assert_eq!(
+            verify_resource(moved.path(), &package)
+                .unwrap()
+                .static_dir
+                .unwrap(),
+            moved.path().join("frontend/dist").canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn published_package_rejects_a_false_universal_manifest_hash() {
+        let (temp, receipt) = fixture();
+        let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
+        value["mode"] = "package".into();
+        value["version"] = "2026.9.14".into();
+        value["artifactManifestSha256"] = "0".repeat(64).into();
+        value["artifactResourcesSha256"] = "a".repeat(64).into();
+        let package = serde_json::to_vec(&value).unwrap();
+        std::fs::write(temp.path().join("frontend/receipt.json"), &package).unwrap();
+        assert!(verify_resource(temp.path(), &package).is_err());
+    }
+
+    #[test]
+    fn explicit_legacy_rollback_assembly_remains_embedded() {
         let (temp, receipt) = fixture();
         let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
         value["mode"] = "package".into();

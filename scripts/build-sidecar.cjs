@@ -6,9 +6,8 @@
  *   profile: --release (default) | --debug
  *   source : BAMBOO_SIDECAR_SOURCE = local (default when ../bamboo exists) | none
  *
- * Local source builds stage verified Lotus Next resources and compile an API-only
- * sidecar. Explicit package releases retain Bamboo's existing embedded frontend
- * until Zenith #187 completes the formal release consumer cutover.
+ * Local and locked-package Lotus Next builds stage verified resources and compile
+ * an API-only sidecar. The legacy package remains an explicit rollback selection.
  *
  * NOTE: `cargo build` on its own does NOT run this — Tauri's `build.rs` writes a
  * placeholder so the `externalBin` reference resolves (keeps a bare shell-compile,
@@ -18,7 +17,11 @@
 const { execFileSync } = require("node:child_process");
 const fs = require("fs");
 const path = require("path");
-const { resolveSource } = require("./lotus-dist.cjs");
+const {
+  LEGACY_PACKAGE,
+  NEXT_PACKAGE,
+  resolveSource,
+} = require("./lotus-dist.cjs");
 const { buildFrontend } = require("./web-build.cjs");
 
 const BODHI = path.resolve(__dirname, "..");
@@ -28,9 +31,10 @@ const profile = isDebug ? "debug" : "release";
 
 const frontend = resolveSource();
 buildFrontend(frontend);
+const ownsFrontend = frontend.packageName === NEXT_PACKAGE;
 const buildEnv = {
   ...process.env,
-  BAMBOO_FRONTEND_BUILD_MODE: frontend.mode === "local" ? "api-only" : "embedded",
+  BAMBOO_FRONTEND_BUILD_MODE: ownsFrontend ? "api-only" : "embedded",
 };
 const run = (command, args, cwd) => execFileSync(command, args, { cwd, env: buildEnv, stdio: "inherit" });
 
@@ -65,8 +69,10 @@ fs.mkdirSync(binDir, { recursive: true });
 const dest = path.join(binDir, `bamboo-${triple}${ext}`);
 
 if (SOURCE !== "local") {
-  if (frontend.mode === "local") {
-    throw new Error(`Local Bodhi needs a real Bamboo checkout at ${BAMBOO}. Set BAMBOO_LOCAL_PATH and rerun; a placeholder cannot serve Lotus Next.`);
+  if (ownsFrontend) {
+    throw new Error(
+      `Bodhi with ${NEXT_PACKAGE} needs a real Bamboo checkout at ${BAMBOO}. Set BAMBOO_LOCAL_PATH and rerun; a placeholder cannot serve the verified frontend.`,
+    );
   }
   console.log(
     `ℹ️  BAMBOO_SIDECAR_SOURCE=${SOURCE}: no local ../bamboo checkout; keeping the build.rs ` +
@@ -79,8 +85,8 @@ if (!bambooExists()) {
   process.exit(1);
 }
 
-if (frontend.mode === "package" && !isDebug) {
-  console.log("🔧 Building the embedded lotus frontend for the sidecar (production)…");
+if (frontend.packageName === LEGACY_PACKAGE && !isDebug) {
+  console.log("🔧 Building the explicit legacy rollback frontend into the sidecar…");
   // Published Bamboo main and dev currently use these two producer layouts.
   // Observe which complete pair was actually regenerated, without deleting
   // existing files or letting stale root output overwrite a fresh crate output.
