@@ -458,19 +458,64 @@ test("assembly verification rejects placeholders and validates target binaries",
   const { root } = fixture(t);
   const binaryRoot = path.join(root, "src-tauri/binaries");
   fs.mkdirSync(binaryRoot, { recursive: true });
+
+  const elf = (machine) => {
+    const contents = Buffer.alloc(65536);
+    Buffer.from([0x7f, 0x45, 0x4c, 0x46]).copy(contents);
+    contents[4] = 2;
+    contents[5] = 1;
+    contents.writeUInt16LE(machine, 18);
+    return contents;
+  };
+  const mach = (cpuType) => {
+    const contents = Buffer.alloc(65536);
+    contents.writeUInt32LE(0xfeedfacf, 0);
+    contents.writeUInt32LE(cpuType, 4);
+    return contents;
+  };
+  const universalMach = (...cpuTypes) => {
+    const contents = Buffer.alloc(65536);
+    contents.writeUInt32BE(0xcafebabe, 0);
+    contents.writeUInt32BE(cpuTypes.length, 4);
+    cpuTypes.forEach((cpuType, index) => {
+      contents.writeUInt32BE(cpuType, 8 + index * 20);
+    });
+    return contents;
+  };
+  const pe = (machine) => {
+    const contents = Buffer.alloc(65536);
+    contents.write("MZ", 0, "ascii");
+    contents.writeUInt32LE(128, 0x3c);
+    contents.write("PE\0\0", 128, "binary");
+    contents.writeUInt16LE(machine, 132);
+    return contents;
+  };
   const cases = [
-    ["x86_64-unknown-linux-gnu", Buffer.from([0x7f, 0x45, 0x4c, 0x46]), ""],
-    ["aarch64-apple-darwin", Buffer.from([0xcf, 0xfa, 0xed, 0xfe]), ""],
-    ["x86_64-pc-windows-msvc", Buffer.from("MZ\0\0", "binary"), ".exe"],
+    ["x86_64-unknown-linux-gnu", elf(0x3e), elf(0xb7), "", "x86_64"],
+    ["aarch64-apple-darwin", mach(0x0100000c), mach(0x01000007), "", "aarch64"],
+    ["x86_64-pc-windows-msvc", pe(0x8664), pe(0xaa64), ".exe", "x86_64"],
   ];
-  for (const [target, magic, extension] of cases) {
+  for (const [target, valid, wrongCpu, extension, architecture] of cases) {
     const file = path.join(binaryRoot, `bamboo-${target}${extension}`);
     fs.writeFileSync(file, "placeholder");
     assert.throws(() => verifySidecar(root, target), /placeholder/);
-    const contents = Buffer.alloc(65536);
-    magic.copy(contents);
-    fs.writeFileSync(file, contents);
-    assert.equal(verifySidecar(root, target).size, contents.length);
+    fs.writeFileSync(file, wrongCpu);
+    assert.throws(() => verifySidecar(root, target), /CPU architecture/);
+    fs.writeFileSync(file, valid);
+    assert.deepEqual(verifySidecar(root, target), {
+      binary: file,
+      size: valid.length,
+      architecture,
+    });
   }
+  const universalTarget = "aarch64-apple-darwin";
+  const universalFile = path.join(binaryRoot, `bamboo-${universalTarget}`);
+  const universal = universalMach(0x01000007, 0x0100000c);
+  fs.writeFileSync(universalFile, universal);
+  assert.deepEqual(verifySidecar(root, universalTarget), {
+    binary: universalFile,
+    size: universal.length,
+    architecture: "aarch64",
+  });
   assert.throws(() => verifySidecar(root, "../outside"), /Invalid sidecar/);
 });

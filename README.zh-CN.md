@@ -134,7 +134,7 @@ Tauri 复制资源前，构建脚本先验证 Cargo 输出路径层级，再只�
 
 ### 已发布包与回滚边界
 
-CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` 并使用提交锁中的精确版本。它们只携带一份经过校验的 dist，为每个声明目标构建真实的 API-only Bamboo sidecar，并拒绝占位二进制。包名或版本不匹配、manifest 异常、文件损坏和 bundle 输出不完整都会关闭式失败。
+CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` 并使用提交锁中的精确版本。它们只携带一份经过校验的 dist，为每个声明目标构建真实的 API-only Bamboo sidecar，并拒绝占位或 CPU 架构错误的二进制。包名或版本不匹配、manifest 异常、文件损坏和 bundle 输出不完整都会关闭式失败。release 矩阵只上传到 draft；待所有目标与构建后组装门禁都通过，最后的 job 才公开发布。
 
 release workflow 在回滚窗口内暴露唯一的 `frontend_package` 选择。只有显式选择 `@bigduu/lotus` 才会把锁定的回滚版本 `2026.8.28` 安装到 Bodhi 与 Bamboo，并保留原有 embedded 组装检查；旧产物、半成品、歧义输出或符号链接都会被拒绝。它不是自动回退，只会在 [Zenith #187](https://github.com/bigduu/Zenith/issues/187) 的回滚窗口完成后移除。
 

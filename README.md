@@ -134,7 +134,7 @@ Local production artifacts explicitly clear `VITE_BACKEND_BASE_URL`, including v
 
 ### Published-package and rollback boundary
 
-CI and release jobs default to `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` and the exact version in the committed lock. They carry the verified dist as the sole frontend, build a real API-only Bamboo sidecar for each declared target, and reject placeholder binaries. Package/version mismatch, malformed manifests, corrupt bytes and incomplete bundle output fail closed.
+CI and release jobs default to `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` and the exact version in the committed lock. They carry the verified dist as the sole frontend, build a real API-only Bamboo sidecar for each declared target, and reject placeholder or wrong-architecture binaries. Package/version mismatch, malformed manifests, corrupt bytes and incomplete bundle output fail closed. Release matrix jobs upload only to a draft; a final job publishes it after every target and post-build assembly gate succeeds.
 
 The release workflow exposes one `frontend_package` choice for the rollback window. Selecting `@bigduu/lotus` explicitly installs the pinned rollback version `2026.8.28` into Bodhi and Bamboo and retains the prior embedded assembly checks; stale, partial, ambiguous or symlinked producer output is rejected. This path is not an automatic fallback and will be removed only after [Zenith #187](https://github.com/bigduu/Zenith/issues/187) completes its rollback window.
 

@@ -257,7 +257,9 @@ jobs:
           tagName: app-v${{ steps.release_version.outputs.version }}
           releaseName: "App v${{ steps.release_version.outputs.version }}"
           releaseBody: "See the assets to download this version and install."
-          releaseDraft: false # Release directly (was true for draft)
+          # Matrix jobs may upload only to a draft. The final job publishes it
+          # after every target and post-build assembly gate has succeeded.
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
@@ -271,3 +273,41 @@ jobs:
           name: app-build-${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
+
+  finalize-release:
+    name: Publish fully verified release
+    needs: publish-tauri
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve verified release version
+        id: release_version
+        shell: bash
+        env:
+          REQUESTED_BODHI_VERSION: ${{ github.event.inputs.bodhi_version }}
+        run: |
+          if [ -n "${REQUESTED_BODHI_VERSION}" ] && [ "${REQUESTED_BODHI_VERSION}" != "latest" ]; then
+            VERSION="${REQUESTED_BODHI_VERSION}"
+          else
+            VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          fi
+          if [ "${VERSION}" = "0.0.0" ]; then
+            echo "::error::Refusing to publish the placeholder Bodhi version."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the completed draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: app-v${{ steps.release_version.outputs.version }}
+        run: |
+          if [ "$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)" != "true" ]; then
+            echo "::error::Expected ${RELEASE_TAG} to remain a draft until all assembly gates passed."
+            exit 1
+          fi
+          gh release edit "${RELEASE_TAG}" --draft=false --latest
