@@ -519,3 +519,32 @@ test("assembly verification rejects placeholders and validates target binaries",
   });
   assert.throws(() => verifySidecar(root, "../outside"), /Invalid sidecar/);
 });
+
+test("workflow artifact uploads follow the root Cargo workspace target", () => {
+  for (const workflowName of ["ci.yml", "release.yml"]) {
+    const workflow = fs.readFileSync(
+      path.join(__dirname, `../.github/workflows/${workflowName}`),
+      "utf8",
+    );
+    assert.doesNotMatch(workflow, /src-tauri\/target\/[^\n]+\/bundle\//);
+    assert.match(
+      workflow,
+      /target\/x86_64-unknown-linux-gnu\/release\/bundle\/appimage\/\*\.AppImage/,
+    );
+    assert.match(
+      workflow,
+      /target\/x86_64-pc-windows-msvc\/release\/bundle\/nsis\/\*\.exe/,
+    );
+    assert.match(workflow, /if-no-files-found: error/);
+  }
+  const release = fs.readFileSync(
+    path.join(__dirname, "../.github/workflows/release.yml"),
+    "utf8",
+  );
+  for (const target of ["x86_64-apple-darwin", "aarch64-apple-darwin"]) {
+    assert.match(
+      release,
+      new RegExp(`target/${target}/release/bundle/dmg/\\*\\.dmg`),
+    );
+  }
+});
