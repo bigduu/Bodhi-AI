@@ -51,7 +51,7 @@ function verifyMigrationGuard() {
       console.error(`   - ${entry.relativePath}`);
     }
     console.error(
-      "   Remove these paths. Bodhi must consume Lotus via ../lotus or @bigduu/lotus only.",
+      "   Remove these paths. Bodhi must consume Lotus Next via ../lotus-next or the locked @bigduu/lotus-next package.",
     );
     process.exit(1);
   }
@@ -72,7 +72,7 @@ function verifyDocsBoundaryGuard() {
     for (const entry of reintroducedDocs) {
       console.error(`   - ${entry.relativePath}`);
     }
-    console.error("   Move frontend docs to ../lotus/docs and keep bodhi/docs shell-focused.");
+    console.error("   Move frontend docs to ../lotus-next/docs and keep bodhi/docs shell-focused.");
     process.exit(1);
   }
 

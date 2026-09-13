@@ -12,20 +12,37 @@ on:
         required: false
         default: "latest"
       bamboo_ref:
-        description: "Git ref of bigduu/Bamboo-agent to build the sidecar from (default: main)"
+        description: "Exact bigduu/Bamboo-agent ref used to build the managed sidecar"
         required: false
-        default: "main"
+        default: "d050b02ede8239ed01f5b2d1ab5f6715d9267304"
       lotus_version:
-        description: "Lotus npm version to bundle (default: latest)"
+        description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
-        default: "latest"
+        default: "2026.9.14"
+      frontend_package:
+        description: "Frontend package; legacy Lotus is the explicit rollback path"
+        required: true
+        type: choice
+        default: "@bigduu/lotus-next"
+        options:
+          - "@bigduu/lotus-next"
+          - "@bigduu/lotus"
+
+# A release version has one durable public tag. Serialize dispatches targeting
+# that version, while each run writes only to its own draft tag below. Keeping
+# cancel-in-progress false ensures an active release assembly is never cut off
+# by a duplicate dispatch.
+concurrency:
+  group: bodhi-release-${{ github.event.inputs.bodhi_version || 'latest' }}
+  cancel-in-progress: false
 
 jobs:
   publish-tauri:
     env:
       BAMBOO_CRATE_NAME: "bamboo-agent"
       LOTUS_SOURCE: package
-      LOTUS_PACKAGE_NAME: "@bigduu/lotus"
+      LOTUS_PACKAGE_NAME: ${{ github.event.inputs.frontend_package || '@bigduu/lotus-next' }}
+      LEGACY_LOTUS_VERSION: "2026.8.28"
       NPM_CONFIG_AUDIT: "false"
       NPM_CONFIG_FUND: "false"
       NPM_CONFIG_PROGRESS: "false"
@@ -40,44 +57,41 @@ jobs:
             args: "--target x86_64-apple-darwin"
             artifact_name: "macos-x64"
             artifact_paths: |
-              src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-              src-tauri/target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+              target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
           - platform: "macos-latest"
             target: "aarch64-apple-darwin"
             args: "--target aarch64-apple-darwin"
             artifact_name: "macos-arm64"
             artifact_paths: |
-              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+              target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
           - platform: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
             args: "--target x86_64-unknown-linux-gnu"
             artifact_name: "linux-x64"
             artifact_paths: |
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
           - platform: "windows-latest"
             target: "x86_64-pc-windows-msvc"
             args: "--target x86_64-pc-windows-msvc --bundles nsis"
             artifact_name: "windows-x64"
             artifact_paths: |
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
 
-      # The bamboo sidecar is built from source (not the crates.io crate): the
-      # published bamboo-agent crate does NOT ship frontend_package/, so a
-      # `cargo install` would yield a backend with no embedded lotus UI. Building
-      # the source tree lets scripts/build-sidecar.cjs embed lotus and produce a
-      # self-contained `bamboo serve` binary. Without this the bundle ships the
-      # build.rs placeholder (`exit 1`) and the app hangs on "Starting Bodhi…".
+      # The managed sidecar is built from source rather than accepting the inert
+      # shell-build placeholder. Lotus Next is supplied once as an owned Tauri
+      # resource; only the explicit legacy rollback selection is embedded.
       - name: Checkout Bamboo source (sidecar backend)
         uses: actions/checkout@v6
         with:
           repository: bigduu/Bamboo-agent
-          ref: ${{ github.event.inputs.bamboo_ref || 'main' }}
+          ref: ${{ github.event.inputs.bamboo_ref || 'd050b02ede8239ed01f5b2d1ab5f6715d9267304' }}
           path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
@@ -202,34 +216,31 @@ jobs:
       - name: Install Lotus package
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
+          if [ "${LOTUS_PACKAGE_NAME}" = "@bigduu/lotus" ]; then
+            LOTUS_VERSION="${LEGACY_LOTUS_VERSION}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
             LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
           else
-            LOTUS_VERSION="latest"
+            LOTUS_VERSION="2026.9.14"
           fi
-          echo "Using @bigduu/lotus@${LOTUS_VERSION}"
-          npm install --no-save "@bigduu/lotus@${LOTUS_VERSION}"
+          echo "Using ${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
+          npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
 
-      - name: Install Lotus into Bamboo source (sidecar frontend embed)
-        # build-sidecar.cjs runs bamboo's frontend-package.cjs in LOTUS_SOURCE=package
-        # mode, which resolves @bigduu/lotus from the bamboo checkout's node_modules
-        # and embeds its prebuilt dist into the `bamboo` binary.
+      - name: Install explicit legacy rollback into Bamboo source
+        if: env.LOTUS_PACKAGE_NAME == '@bigduu/lotus'
+        # Only the rollback path asks Bamboo to embed the legacy package. Normal
+        # Lotus Next release assembly carries one verified Tauri resource and
+        # compiles the managed sidecar in API-only mode.
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
-            LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
-          else
-            LOTUS_VERSION="latest"
-          fi
-          echo "Installing @bigduu/lotus@${LOTUS_VERSION} into bamboo-src"
-          npm install --no-save --prefix bamboo-src "@bigduu/lotus@${LOTUS_VERSION}"
+          echo "Installing explicit rollback @bigduu/lotus@${LEGACY_LOTUS_VERSION} into bamboo-src"
+          npm install --no-save --ignore-scripts --package-lock=false --prefix bamboo-src "@bigduu/lotus@${LEGACY_LOTUS_VERSION}"
 
       - name: Stage Lotus dist for bundling
         shell: bash
         run: |
           npm run web:build
-          test -f .lotus-dist/index.html
-          echo "Lotus dist staged in .lotus-dist"
+          node scripts/lotus-dist.cjs verify-staged
 
       - name: Print Lotus source resolution
         run: npm run web:source:info
@@ -237,11 +248,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Build the bamboo sidecar from the checked-out source for THIS matrix
-          # target. build-sidecar.cjs (the configured beforeBuildCommand) reads
-          # these: it embeds lotus (LOTUS_SOURCE=package, job env) and cross-builds
-          # the binary to the app's triple so externalBin resolves to a real
-          # backend instead of the build.rs `exit 1` placeholder.
+          # Build the managed Bamboo sidecar from the selected exact source for
+          # this matrix target. Lotus Next uses API-only plus the verified Tauri
+          # resource; the explicit legacy selection alone uses the old embed.
           BAMBOO_SIDECAR_SOURCE: local
           BAMBOO_LOCAL_PATH: ${{ github.workspace }}/bamboo-src
           BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
@@ -253,16 +262,71 @@ jobs:
           # here, and drop this override so the real identity is used.
           APPLE_SIGNING_IDENTITY: "-"
         with:
-          tagName: app-v${{ steps.release_version.outputs.version }}
+          # Draft tags are run-scoped, so no other dispatch can add or replace
+          # assets in this run's unverified release.
+          tagName: bodhi-draft-v${{ steps.release_version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
           releaseName: "App v${{ steps.release_version.outputs.version }}"
           releaseBody: "See the assets to download this version and install."
-          releaseDraft: false # Release directly (was true for draft)
+          # Matrix jobs may upload only to a draft. The final job publishes it
+          # after every target and post-build assembly gate has succeeded.
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Verify exact frontend and real target sidecar
+        shell: bash
+        run: npm run verify:assembly -- "${{ matrix.target }}"
 
       - name: Upload Build Artifacts to Workflow
         uses: actions/upload-artifact@v7
         with:
           name: app-build-${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_paths }}
-          if-no-files-found: warn
+          if-no-files-found: error
+
+  finalize-release:
+    name: Publish fully verified release
+    needs: publish-tauri
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve verified release version
+        id: release_version
+        shell: bash
+        env:
+          REQUESTED_BODHI_VERSION: ${{ github.event.inputs.bodhi_version }}
+        run: |
+          if [ -n "${REQUESTED_BODHI_VERSION}" ] && [ "${REQUESTED_BODHI_VERSION}" != "latest" ]; then
+            VERSION="${REQUESTED_BODHI_VERSION}"
+          else
+            VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          fi
+          if [ "${VERSION}" = "0.0.0" ]; then
+            echo "::error::Refusing to publish the placeholder Bodhi version."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the completed draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRAFT_TAG: bodhi-draft-v${{ steps.release_version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          RELEASE_TAG: app-v${{ steps.release_version.outputs.version }}
+        run: |
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::error::Refusing to replace existing release ${RELEASE_TAG}."
+            exit 1
+          fi
+          if [ "$(gh release view "${DRAFT_TAG}" --json isDraft --jq .isDraft)" != "true" ]; then
+            echo "::error::Expected isolated ${DRAFT_TAG} to remain a draft until all assembly gates passed."
+            exit 1
+          fi
+          gh release edit "${DRAFT_TAG}" \
+            --tag "${RELEASE_TAG}" \
+            --title "App v${{ steps.release_version.outputs.version }}" \
+            --draft=false \
+            --latest

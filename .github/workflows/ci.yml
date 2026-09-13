@@ -9,8 +9,9 @@ on:
 
 env:
   LOTUS_SOURCE: package
-  LOTUS_PACKAGE_NAME: "@bigduu/lotus"
-  LOTUS_VERSION: latest
+  LOTUS_PACKAGE_NAME: "@bigduu/lotus-next"
+  LOTUS_VERSION: "2026.9.14"
+  BAMBOO_REF: "d050b02ede8239ed01f5b2d1ab5f6715d9267304"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PROGRESS: "false"
@@ -50,7 +51,7 @@ jobs:
         run: npm ci --prefer-offline --no-audit
 
       - name: Install Lotus package
-        run: npm install --no-save "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
+        run: npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
 
       - name: Print Lotus source resolution
         run: npm run web:source:info
@@ -58,8 +59,8 @@ jobs:
       - name: Build frontend
         run: npm run web:build
 
-      - name: Verify staged frontend assets
-        run: test -f .lotus-dist/index.html
+      - name: Verify staged exact frontend artifact
+        run: node scripts/lotus-dist.cjs verify-staged
 
   test-backend:
     name: Test Backend (${{ matrix.platform }})
@@ -112,24 +113,31 @@ jobs:
             args: "--target x86_64-unknown-linux-gnu"
             artifact_name: "linux-x64"
             artifact_paths: |
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+              target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
           - platform: macos-latest
             target: aarch64-apple-darwin
             args: "--target aarch64-apple-darwin"
             artifact_name: "macos-arm64"
             artifact_paths: |
-              src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-              src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+              target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: "--target x86_64-pc-windows-msvc --bundles nsis"
             artifact_name: "windows-x64"
             artifact_paths: |
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+              target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
+
+      - name: Checkout pinned Bamboo source for the real sidecar
+        uses: actions/checkout@v6
+        with:
+          repository: bigduu/Bamboo-agent
+          ref: ${{ env.BAMBOO_REF }}
+          path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
@@ -167,7 +175,9 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: |
+            ./src-tauri -> target
+            ./bamboo-src -> target
           shared-key: "bodhi-ci-${{ matrix.target }}"
           cache-on-failure: true
 
@@ -184,18 +194,21 @@ jobs:
 
       - name: Install Lotus package
         shell: bash
-        run: npm install --no-save "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
+        run: npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
 
       - name: Stage Lotus dist
         shell: bash
         run: |
           npm run web:build
-          test -f .lotus-dist/index.html
+          node scripts/lotus-dist.cjs verify-staged
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0.5.10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BAMBOO_SIDECAR_SOURCE: local
+          BAMBOO_LOCAL_PATH: ${{ github.workspace }}/bamboo-src
+          BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
           # CI bundles aren't distributed, so sign the macOS app ad-hoc instead of
           # requiring the "Zenith Nova Code Signing" cert (which isn't in the CI
           # keychain). This env overrides tauri.conf's signingIdentity; the real
@@ -204,9 +217,13 @@ jobs:
         with:
           args: ${{ matrix.args }}
 
+      - name: Verify exact frontend and real target sidecar
+        shell: bash
+        run: npm run verify:assembly -- "${{ matrix.target }}"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
           name: tauri-build-${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_paths }}
-          if-no-files-found: warn
+          if-no-files-found: error

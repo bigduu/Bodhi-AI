@@ -3,13 +3,68 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
+const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { test } = require("node:test");
 const frontend = require("./lotus-dist.cjs");
+const artifact = require("./lotus-next-artifact.cjs");
+const { verifySidecar } = require("./verify-assembly.cjs");
 
 function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
+}
+
+const sha256 = (value) =>
+  createHash("sha256").update(value).digest("hex");
+
+function installNextPackage(root, sourceDist) {
+  const packageRoot = path.join(root, "node_modules/@bigduu/lotus-next");
+  write(path.join(packageRoot, "package.json"), {
+    name: frontend.NEXT_PACKAGE,
+    version: "2026.9.14",
+  });
+  fs.cpSync(sourceDist, path.join(packageRoot, "dist"), { recursive: true });
+  const dist = path.join(packageRoot, "dist");
+  const resources = Object.keys(frontend.inventory(dist)).map((resourcePath) => {
+    const contents = fs.readFileSync(path.join(dist, resourcePath));
+    return {
+      path: resourcePath,
+      size: contents.byteLength,
+      sha256: sha256(contents),
+    };
+  });
+  const manifest = {
+    schemaVersion: 1,
+    packageName: frontend.NEXT_PACKAGE,
+    packageVersion: "2026.9.14",
+    sourceRevision: "a".repeat(40),
+    sourceDirty: false,
+    entrypoint: "index.html",
+    resourcesSha256: artifact.calculateResourcesSha256(resources),
+    resources,
+  };
+  const manifestSource = `${JSON.stringify(manifest, null, 2)}\n`;
+  fs.writeFileSync(
+    path.join(dist, frontend.ARTIFACT_MANIFEST_FILE),
+    manifestSource,
+  );
+  const lock = {
+    schemaVersion: 1,
+    packageName: manifest.packageName,
+    packageVersion: manifest.packageVersion,
+    sourceRevision: manifest.sourceRevision,
+    sourceDirty: false,
+    entrypoint: manifest.entrypoint,
+    resourcesSha256: manifest.resourcesSha256,
+    manifestSha256: sha256(manifestSource),
+  };
+  fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, "scripts/frontend-package-lock.json"),
+    `${JSON.stringify(lock, null, 2)}\n`,
+  );
+  return { packageRoot, manifest, lock };
 }
 
 function fixture(t) {
@@ -150,7 +205,13 @@ test("published inline diagnostics and comments do not become fake asset referen
     <link rel="stylesheet" href="./assets/app.css">
   `);
   assert.doesNotThrow(() => frontend.verifyDist(source));
-  assert.doesNotThrow(() => frontend.verifyDist({ ...source, mode: "package" }));
+  assert.doesNotThrow(() =>
+    frontend.verifyDist({
+      ...source,
+      mode: "package",
+      packageName: frontend.LEGACY_PACKAGE,
+    }),
+  );
   fs.rmSync(path.join(sourceRoot, "dist/assets/app.css"));
   assert.throws(() => frontend.verifyDist(source), /assets\/app.css/);
 });
@@ -176,7 +237,91 @@ test("symlinked frontend files are rejected", { skip: process.platform === "win3
   assert.throws(() => frontend.verifyDist(source), /Unsafe frontend path/);
 });
 
-test("explicit legacy package staging remains supported without bundling a second UI", (t) => {
+test("a symlinked staging parent is rejected without touching its target", { skip: process.platform === "win32" }, (t) => {
+  const { root, source } = fixture(t);
+  const outside = path.join(path.dirname(root), "outside");
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(root, "tmp"));
+  assert.throws(() => frontend.stageDist(source, root), /staging parent/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+  assert.equal(fs.existsSync(path.join(root, ".bodhi-frontend")), false);
+});
+
+test("a symlinked staged receipt is rejected", { skip: process.platform === "win32" }, (t) => {
+  const { root, source } = fixture(t);
+  frontend.stageDist(source, root);
+  const receipt = path.join(root, ".bodhi-frontend/receipt.json");
+  const outside = path.join(root, "outside-receipt.json");
+  fs.renameSync(receipt, outside);
+  fs.symlinkSync(outside, receipt);
+  assert.throws(
+    () => frontend.verifyStaged(source, root),
+    /expected a regular file, not a symbolic link/,
+  );
+});
+
+test("locked Lotus Next is the default package and stages an owned dist", (t) => {
+  const { root, sourceRoot } = fixture(t);
+  const { manifest, lock } = installNextPackage(
+    root,
+    path.join(sourceRoot, "dist"),
+  );
+  const source = frontend.resolveSource({ LOTUS_SOURCE: "package" }, root);
+  const receipt = frontend.stageDist(source, root);
+  assert.equal(source.packageName, frontend.NEXT_PACKAGE);
+  assert.equal(receipt.schemaVersion, 2);
+  assert.equal(receipt.mode, "package");
+  assert.equal(receipt.sourceRevision, manifest.sourceRevision);
+  assert.equal(receipt.sourceDirty, false);
+  assert.equal(receipt.artifactManifestSha256, lock.manifestSha256);
+  assert.equal(receipt.artifactResourcesSha256, lock.resourcesSha256);
+  assert.equal(
+    fs.existsSync(path.join(root, ".bodhi-frontend/dist/index.html")),
+    true,
+  );
+});
+
+test("rejected package bytes do not replace the last verified generated output", (t) => {
+  const { root, sourceRoot } = fixture(t);
+  const { packageRoot } = installNextPackage(
+    root,
+    path.join(sourceRoot, "dist"),
+  );
+  const source = frontend.resolveSource({ LOTUS_SOURCE: "package" }, root);
+  frontend.stageDist(source, root);
+  const receiptBefore = fs.readFileSync(
+    path.join(root, ".bodhi-frontend/receipt.json"),
+  );
+  const indexBefore = fs.readFileSync(path.join(root, ".lotus-dist/index.html"));
+  fs.appendFileSync(path.join(packageRoot, "dist/index.html"), "tampered\n");
+  assert.throws(() => frontend.stageDist(source, root), /does not match/);
+  assert.deepEqual(
+    fs.readFileSync(path.join(root, ".bodhi-frontend/receipt.json")),
+    receiptBefore,
+  );
+  assert.deepEqual(
+    fs.readFileSync(path.join(root, ".lotus-dist/index.html")),
+    indexBefore,
+  );
+});
+
+test("package metadata and the committed artifact lock must agree", (t) => {
+  const { root, sourceRoot } = fixture(t);
+  const { packageRoot } = installNextPackage(
+    root,
+    path.join(sourceRoot, "dist"),
+  );
+  write(path.join(packageRoot, "package.json"), {
+    name: frontend.NEXT_PACKAGE,
+    version: "2026.9.15",
+  });
+  assert.throws(
+    () => frontend.resolveSource({ LOTUS_SOURCE: "package" }, root),
+    /does not match the locked 2026\.9\.14/,
+  );
+});
+
+test("explicit legacy package staging remains the rollback embed path", (t) => {
   const { root, sourceRoot } = fixture(t);
   const packageRoot = path.join(root, "node_modules/@bigduu/lotus");
   write(path.join(packageRoot, "package.json"), { name: frontend.LEGACY_PACKAGE, version: "2026.9.0" });
@@ -185,9 +330,13 @@ test("explicit legacy package staging remains supported without bundling a secon
   const receipt = frontend.stageDist(source, root);
   assert.equal(receipt.mode, "package");
   assert.equal(receipt.sourceRevision, null);
+  assert.equal(receipt.artifactManifestSha256, null);
   assert.equal(fs.existsSync(path.join(root, ".lotus-dist/index.html")), true);
   assert.deepEqual(fs.readdirSync(path.join(root, ".bodhi-frontend")), ["receipt.json"]);
-  assert.throws(() => frontend.resolveSource({ LOTUS_SOURCE: "package" }, root), /requires explicit/);
+  assert.throws(
+    () => frontend.resolveSource({ LOTUS_SOURCE: "package" }, root),
+    /@bigduu\/lotus-next is not installed/,
+  );
 });
 
 // Execute the real assembly script with instrumented process launches. All
@@ -197,7 +346,7 @@ function assemble(f, mode, producerLayout = "crate") {
   write(path.join(bamboo, "Cargo.toml"), "[workspace]\n");
   const rootOutput = path.join(bamboo, "frontend_package");
   const crateOutput = path.join(bamboo, "crates/app/bamboo-server/frontend_package");
-  if (mode === "package") {
+  if (mode === "legacy-package") {
     for (const output of [rootOutput, crateOutput]) {
       write(path.join(output, "lotus-frontend.zip"), "stale zip");
       write(path.join(output, "frontend-manifest.json"), "stale manifest");
@@ -208,14 +357,30 @@ function assemble(f, mode, producerLayout = "crate") {
     }
   }
   const calls = [];
-  const source = mode === "local" ? f.source : { ...f.source, mode: "package", packageName: frontend.LEGACY_PACKAGE };
+  let source = f.source;
+  if (mode === "next-package") {
+    installNextPackage(f.root, path.join(f.sourceRoot, "dist"));
+    source = frontend.resolveSource({ LOTUS_SOURCE: "package" }, f.root);
+  } else if (mode === "legacy-package") {
+    source = {
+      ...f.source,
+      mode: "package",
+      packageName: frontend.LEGACY_PACKAGE,
+    };
+  }
   const env = { BAMBOO_LOCAL_PATH: bamboo, BAMBOO_FRONTEND_BUILD_MODE: producerLayout === "root" ? "api-only" : "auto" };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "build-sidecar.cjs"), "utf8"), {
     __dirname: path.join(f.root, "scripts"),
     console: { log() {}, warn() {}, error() {} },
     process: { env, argv: ["node", "build-sidecar.cjs"], execPath: process.execPath },
     require(name) {
-      if (name === "./lotus-dist.cjs") return { resolveSource: () => source };
+      if (name === "./lotus-dist.cjs") {
+        return {
+          LEGACY_PACKAGE: frontend.LEGACY_PACKAGE,
+          NEXT_PACKAGE: frontend.NEXT_PACKAGE,
+          resolveSource: () => source,
+        };
+      }
       if (name === "./web-build.cjs") return { buildFrontend: () => frontend.stageDist(source, f.root) };
       if (name === "node:child_process") return {
         execFileSync(command, args, options) {
@@ -249,10 +414,23 @@ test("local sidecar assembly forces API-only and never invokes the legacy embed 
   assert.equal(fs.readFileSync(path.join(f.root, "src-tauri/binaries/bamboo-x86_64-unknown-linux-gnu"), "utf8"), "fixture binary");
 });
 
-test("explicit package assembly accepts main/root and dev/crate producers without stale overwrites", (t) => {
+test("locked package sidecar assembly is API-only and carries no embedded UI", (t) => {
+  const f = fixture(t);
+  const { calls, bamboo } = assemble(f, "next-package");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "cargo");
+  assert.equal(calls[0].env.BAMBOO_FRONTEND_BUILD_MODE, "api-only");
+  assert.equal(fs.existsSync(path.join(bamboo, "frontend_package")), false);
+  assert.equal(
+    fs.existsSync(path.join(f.root, ".bodhi-frontend/dist/index.html")),
+    true,
+  );
+});
+
+test("explicit legacy rollback accepts main/root and dev/crate producers", (t) => {
   for (const layout of ["root", "crate"]) {
     const f = fixture(t);
-    const { calls, bamboo } = assemble(f, "package", layout);
+    const { calls, bamboo } = assemble(f, "legacy-package", layout);
     assert.deepEqual(calls[0].args, ["scripts/frontend-package.cjs"]);
     assert.equal(calls[1].command, "cargo");
     assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "embedded");
@@ -261,17 +439,112 @@ test("explicit package assembly accepts main/root and dev/crate producers withou
   }
 });
 
-test("explicit package assembly rejects stale-only, partial and ambiguous producer output", (t) => {
+test("explicit legacy rollback rejects stale-only, partial and ambiguous output", (t) => {
   for (const layout of ["none", "partial", "both"]) {
-    assert.throws(() => assemble(fixture(t), "package", layout), /one fresh, complete zip\/manifest pair/);
+    assert.throws(() => assemble(fixture(t), "legacy-package", layout), /one fresh, complete zip\/manifest pair/);
   }
 });
 
-test("package assembly leaves an existing producer symlink untouched with actionable guidance", { skip: process.platform === "win32" }, (t) => {
+test("legacy rollback leaves an existing producer symlink untouched", { skip: process.platform === "win32" }, (t) => {
   for (const layout of ["symlink", "root-alias"]) {
     const f = fixture(t);
-    assert.throws(() => assemble(f, "package", layout), /Set BAMBOO_LOCAL_PATH to a clean checkout/);
+    assert.throws(() => assemble(f, "legacy-package", layout), /Set BAMBOO_LOCAL_PATH to a clean checkout/);
     assert.equal(fs.lstatSync(path.join(f.temp, "bamboo/crates/app/bamboo-server/frontend_package")).isSymbolicLink(), true);
     assert.equal(fs.readFileSync(path.join(f.temp, "bamboo/frontend_package/lotus-frontend.zip"), "utf8"), "stale zip");
+  }
+});
+
+test("assembly verification rejects placeholders and validates target binaries", (t) => {
+  const { root } = fixture(t);
+  const binaryRoot = path.join(root, "src-tauri/binaries");
+  fs.mkdirSync(binaryRoot, { recursive: true });
+
+  const elf = (machine) => {
+    const contents = Buffer.alloc(65536);
+    Buffer.from([0x7f, 0x45, 0x4c, 0x46]).copy(contents);
+    contents[4] = 2;
+    contents[5] = 1;
+    contents.writeUInt16LE(machine, 18);
+    return contents;
+  };
+  const mach = (cpuType) => {
+    const contents = Buffer.alloc(65536);
+    contents.writeUInt32LE(0xfeedfacf, 0);
+    contents.writeUInt32LE(cpuType, 4);
+    return contents;
+  };
+  const universalMach = (...cpuTypes) => {
+    const contents = Buffer.alloc(65536);
+    contents.writeUInt32BE(0xcafebabe, 0);
+    contents.writeUInt32BE(cpuTypes.length, 4);
+    cpuTypes.forEach((cpuType, index) => {
+      contents.writeUInt32BE(cpuType, 8 + index * 20);
+    });
+    return contents;
+  };
+  const pe = (machine) => {
+    const contents = Buffer.alloc(65536);
+    contents.write("MZ", 0, "ascii");
+    contents.writeUInt32LE(128, 0x3c);
+    contents.write("PE\0\0", 128, "binary");
+    contents.writeUInt16LE(machine, 132);
+    return contents;
+  };
+  const cases = [
+    ["x86_64-unknown-linux-gnu", elf(0x3e), elf(0xb7), "", "x86_64"],
+    ["aarch64-apple-darwin", mach(0x0100000c), mach(0x01000007), "", "aarch64"],
+    ["x86_64-pc-windows-msvc", pe(0x8664), pe(0xaa64), ".exe", "x86_64"],
+  ];
+  for (const [target, valid, wrongCpu, extension, architecture] of cases) {
+    const file = path.join(binaryRoot, `bamboo-${target}${extension}`);
+    fs.writeFileSync(file, "placeholder");
+    assert.throws(() => verifySidecar(root, target), /placeholder/);
+    fs.writeFileSync(file, wrongCpu);
+    assert.throws(() => verifySidecar(root, target), /CPU architecture/);
+    fs.writeFileSync(file, valid);
+    assert.deepEqual(verifySidecar(root, target), {
+      binary: file,
+      size: valid.length,
+      architecture,
+    });
+  }
+  const universalTarget = "aarch64-apple-darwin";
+  const universalFile = path.join(binaryRoot, `bamboo-${universalTarget}`);
+  const universal = universalMach(0x01000007, 0x0100000c);
+  fs.writeFileSync(universalFile, universal);
+  assert.deepEqual(verifySidecar(root, universalTarget), {
+    binary: universalFile,
+    size: universal.length,
+    architecture: "aarch64",
+  });
+  assert.throws(() => verifySidecar(root, "../outside"), /Invalid sidecar/);
+});
+
+test("workflow artifact uploads follow the root Cargo workspace target", () => {
+  for (const workflowName of ["ci.yml", "release.yml"]) {
+    const workflow = fs.readFileSync(
+      path.join(__dirname, `../.github/workflows/${workflowName}`),
+      "utf8",
+    );
+    assert.doesNotMatch(workflow, /src-tauri\/target\/[^\n]+\/bundle\//);
+    assert.match(
+      workflow,
+      /target\/x86_64-unknown-linux-gnu\/release\/bundle\/appimage\/\*\.AppImage/,
+    );
+    assert.match(
+      workflow,
+      /target\/x86_64-pc-windows-msvc\/release\/bundle\/nsis\/\*\.exe/,
+    );
+    assert.match(workflow, /if-no-files-found: error/);
+  }
+  const release = fs.readFileSync(
+    path.join(__dirname, "../.github/workflows/release.yml"),
+    "utf8",
+  );
+  for (const target of ["x86_64-apple-darwin", "aarch64-apple-darwin"]) {
+    assert.match(
+      release,
+      new RegExp(`target/${target}/release/bundle/dmg/\\*\\.dmg`),
+    );
   }
 });

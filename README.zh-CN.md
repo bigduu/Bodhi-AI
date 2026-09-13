@@ -34,7 +34,7 @@ Bodhi AI 把 AI 从一个"聊天框"变成一台**会干活的桌面工作台**�
 
 ## 架构
 
-Bodhi 负责桌面窗口、原生集成（剪贴板、通知、全局快捷键）、打包与发布。普通本地构建默认使用 **Lotus Next** 前端和 **Bamboo** 执行引擎。应用先显示 `bodhi-splash`，校验包内前端，再通过 `bamboo serve --static-dir <应用资源目录>` 启动托管 sidecar。确认本次启动的引擎已经就绪且提供预期的生产首页后，release WebView 才导航过去。外壳不链接 Bamboo crate；`bamboo` 在 `tauri.conf.json` 中声明为 `externalBin`。显式 npm 包发布流程暂时保留旧 Lotus 组装方式，见下文发布边界。
+Bodhi 负责桌面窗口、原生集成（剪贴板、通知、全局快捷键）、打包与发布。本地和已发布包构建都使用 **Lotus Next** 前端与 **Bamboo** 执行引擎。应用先显示 `bodhi-splash`，校验包内前端，再通过 `bamboo serve --static-dir <应用资源目录>` 启动托管 sidecar。确认本次启动的引擎已经就绪且提供预期的生产首页后，release WebView 才导航过去。外壳不链接 Bamboo crate；`bamboo` 在 `tauri.conf.json` 中声明为 `externalBin`。旧 Lotus 仅作为下文所述的显式回滚选择保留。
 
 ```mermaid
 graph TD
@@ -52,7 +52,7 @@ graph TD
 **Zenith 全栈定位：**
 
 - **`bodhi`** — 桌面产品门面（Tauri 外壳，即本模块）
-- **`lotus-next`** — 本地构建默认的 React + Vite 前端 UI 层
+- **`lotus-next`** — 规范的 React + Vite 前端 UI 层
 - **`bamboo`** — 本地优先 Rust agent 运行时（执行引擎）
 - **`bodhi-server`** — Go 后端：认证 / 持久化 / 计费配额 / LLM 代理
 - **`pavilion`** — 官网与文档
@@ -78,13 +78,13 @@ graph TD
 
 - **内置启动页**：Tauri 的 `frontendDist` 是 `../bodhi-splash`，不是 `.lotus-dist`。后端启动期间，webview 保持在这个本地 splash。
 - **默认端口 `9562`**（`DEFAULT_WEB_SERVICE_PORT`，定义在 `src-tauri/src/lib.rs`）。
-- **拥有自己的本地引擎**：本地源码构建会在启动前拒绝已占用端口，不复用或终止其他监听进程。错误提示会建议用 `BODHI_BACKEND_PORT` 选择其他端口。
-- **健康检查与导航**：本地构建先要求托管子进程输出 `Unified server running on http://127.0.0.1:<port>`；该日志在 Bamboo 成功绑定端口后才产生。然后检查健康状态与预期首页哈希。启动错误或子进程退出都会中止启动。升级 Bamboo 时，真实桌面验收也需要覆盖这个已有日志约定。debug 构建保留 Lotus Next HMR 的 `devUrl`，除非设置 `BODHI_SIDECAR_FRONTEND`。
+- **拥有自己的本地引擎**：Lotus Next 构建会在启动前拒绝已占用端口，不复用或终止其他监听进程。错误提示会建议用 `BODHI_BACKEND_PORT` 选择其他端口。
+- **健康检查与导航**：Lotus Next 构建先要求托管子进程输出 `Unified server running on http://127.0.0.1:<port>`；该日志在 Bamboo 成功绑定端口后才产生。然后检查健康状态与预期首页哈希。启动错误或子进程退出都会中止启动。升级 Bamboo 时，真实桌面验收也需要覆盖这个已有日志约定。debug 构建保留 Lotus Next HMR 的 `devUrl`，除非设置 `BODHI_SIDECAR_FRONTEND`。
 - **运行时地址**：外壳在任何前端模块执行前注入数字 `__BAMBOO_BACKEND_PORT__`。Lotus Next 的现有运行时优先使用它，避免浏览器曾保存的地址改变本次桌面后端；产物不编译机器专属后端地址。
 - **崩溃安全的孤儿守护**：sidecar 拉起时带 `--parent-pid <shell_pid>`，若应用异常死亡（SIGKILL、强制退出、panic），后端会自行退出。正常退出路径中，`RunEvent::Exit` / `ExitRequested` 会 kill 已记录的子进程。
 - **无 `bamboo-agent` crate 依赖**：外壳不链接任何 Bamboo crate。`bamboo` 在 `tauri.conf.json` 中声明为 `externalBin`（`"externalBin": ["binaries/bamboo"]`）。
 
-临时保留的显式旧 Lotus 包发布流程仍沿用原来的外部服务复用行为。本地源码构建始终使用上述进程归属检查。
+显式选择的旧 Lotus 回滚流程仍沿用原来的外部服务复用行为。所有 Lotus Next 组装始终使用上述进程归属检查。
 
 ### 桌面原生集成
 
@@ -113,11 +113,13 @@ graph TD
 
 安全规则：绝不覆盖普通文件或不属于 Bodhi 的软链接（只会刷新指向 Bodhi 安装内 bamboo 的旧链接）;冲突时中止并在对话框中指明冲突路径。已安装时重复执行只提示「已安装,指向当前版本」。
 
-### Lotus Next 如何进入本地打包应用
+### Lotus Next 如何进入打包应用
 
-Bodhi 默认读取同级 `../lotus-next`，并要求包名为 `@bigduu/lotus-next`。本地生产构建执行 Lotus Next 自身的 build 与 package-content 校验，再验证生产首页、asset-manifest 引用和所有文件哈希。`.bodhi-frontend/receipt.json` 记录包名、版本、Git 提交、源码是否有未提交改动、逐文件 SHA-256 和确定性的整体哈希。构建期间提交或脏状态变化会中止装配；允许从有改动的检出构建，但记录会明确标记 dirty，实际产物以文件哈希识别。
+Bodhi 在本地开发时读取同级 `../lotus-next`，在 package 组装时读取 `@bigduu/lotus-next`。本地生产构建执行 Lotus Next 自身的 build 与 package-content 校验，再验证生产首页、asset-manifest 引用和所有文件哈希。package 组装还会在替换任何生成输出前，对照 `scripts/frontend-package-lock.json` 校验规范化 universal manifest、干净源码提交、完整文件清单、逐文件大小与 SHA-256、组合摘要和 manifest 哈希。当前锁定 `@bigduu/lotus-next@2026.9.14`，源码为 `ae17b50574ccd86395cbc226b50c9fb2f0f51e0f`。
 
-校验后的 dist 同时装配到 `.lotus-dist/`（便于检查）和 `.bodhi-frontend/dist/`（Tauri 资源）。仅后者以 `frontend/dist` 打包；`frontendDist` 仍是小型启动页。外壳在编译时固定校验记录，启动时核对包内记录及所有文件；缺失、损坏、多余文件或符号链接都会产生可见失败。应用把自己解析出的资源目录通过现有 `--static-dir` 参数交给 Bamboo，因此应用移离源码目录后仍可启动。本地 sidecar 强制以 `BAMBOO_FRONTEND_BUILD_MODE=api-only` 编译，避免额外内嵌旧 UI。
+`.bodhi-frontend/receipt.json` 记录包名、版本、源码提交、dirty 标记、适用时的发布产物摘要、逐文件 SHA-256 和确定性的整体哈希。构建或装配期间身份变化会在替换已有生成输出前中止。本地有改动的检出仍可使用并明确标记 dirty；发布包必须来自干净源码且与提交锁完全一致。
+
+校验后的 dist 同时装配到 `.lotus-dist/`（便于检查）和 `.bodhi-frontend/dist/`（Tauri 资源）。仅后者以 `frontend/dist` 打包；`frontendDist` 仍是小型启动页。外壳在编译时固定校验记录，启动时核对包内记录及所有文件；缺失、损坏、多余文件或符号链接都会产生可见失败。应用把自己解析出的资源目录通过现有 `--static-dir` 参数交给 Bamboo，因此应用移离源码目录后仍可启动。所有 Lotus Next sidecar 都强制以 `BAMBOO_FRONTEND_BUILD_MODE=api-only` 编译，避免第二份内嵌 UI。
 
 Tauri 复制资源前，构建脚本先验证 Cargo 输出路径层级，再只替换生成的 `<Cargo profile>/frontend` 目录。这样连续 dev/build 不会保留上一次已经删除的哈希资源，避免正常重建被启动校验误判为损坏；其他构建资源和符号链接目标均保留。
 
@@ -125,18 +127,18 @@ Tauri 复制资源前，构建脚本先验证 Cargo 输出路径层级，再只�
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `LOTUS_SOURCE` | `local` | 默认使用本地 Lotus Next；`package` 是显式的临时发布流程，`auto` 被拒绝 |
+| `LOTUS_SOURCE` | `local` | 默认使用本地 Lotus Next；`package` 选择已发布包，`auto` 被拒绝 |
 | `LOTUS_LOCAL_PATH` | `../lotus-next` | Lotus Next Git 检出根目录；缺失或身份不符时停止，不自动回退 |
-| `LOTUS_PACKAGE_NAME` | 本地为 `@bigduu/lotus-next` | package 发布装配必须显式设置为 `@bigduu/lotus` |
-| `BAMBOO_LOCAL_PATH` | `../bamboo` | 托管 sidecar 源码路径；本地 Tauri 构建必须提供真实检出 |
+| `LOTUS_PACKAGE_NAME` | `@bigduu/lotus-next` | package 模式默认使用锁定的 Lotus Next；显式 `@bigduu/lotus` 选择回滚 embed |
+| `BAMBOO_LOCAL_PATH` | `../bamboo` | 托管 sidecar 源码路径；所有 Lotus Next Tauri 构建都必须提供真实检出 |
 
-### 临时的已发布包边界
+### 已发布包与回滚边界
 
-CI/release 仍显式设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus`，把选定的旧 Lotus 包安装到 Bodhi 和 Bamboo，校验 dist，再调用 Bamboo 现有打包脚本并强制 `BAMBOO_FRONTEND_BUILD_MODE=embedded`。当前 Bamboo main 输出根目录 `frontend_package`，dev 输出 `crates/app/bamboo-server/frontend_package`。Bodhi 要求恰好一个位置同时重新生成 zip 和 manifest；只有新生成的根目录文件对才会被复制到 server crate，旧产物、半成品和多个位置同时更新都会被拒绝。该模式只额外打包组装记录，保留旧 UI 内嵌行为。记录必须匹配编译时的内容，本地产物缺失不会切换到这个模式。
+CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` 并使用提交锁中的精确版本。它们只携带一份经过校验的 dist，为每个声明目标构建真实的 API-only Bamboo sidecar，并拒绝占位或 CPU 架构错误的二进制。包名或版本不匹配、manifest 异常、文件损坏和 bundle 输出不完整都会关闭式失败。同一版本的 dispatch 会串行执行，且不会取消正在组装的任务；每次运行只写入自己的独立 draft 标签。待所有目标与构建后组装门禁都通过，最后的 job 会拒绝覆盖已有公开版本，并且只提升本次运行的 draft。
 
-待 [Zenith #187](https://github.com/bigduu/Zenith/issues/187) 完成正式消费者、产物发布与 release-train 切换后，移除此临时区分。本地默认构建工作不发布 Lotus Next、不触发 release、不归档旧 Lotus，也不宣称完成更广泛的根/子 agent Jiandu 持久化验收。
+release workflow 在回滚窗口内暴露唯一的 `frontend_package` 选择。只有显式选择 `@bigduu/lotus` 才会把锁定的回滚版本 `2026.8.28` 安装到 Bodhi 与 Bamboo，并保留原有 embedded 组装检查；旧产物、半成品、歧义输出或符号链接都会被拒绝。它不是自动回退，只会在 [Zenith #187](https://github.com/bigduu/Zenith/issues/187) 的回滚窗口完成后移除。
 
-历史或手动 Bamboo 检出若把任一生成目录设为符号链接，package 组装会明确失败。请把 `BAMBOO_LOCAL_PATH` 指向干净检出；原有链接及其目标均保持不变。
+Zenith release-train 编排器仍需后续独立 PR 更新版本与所有权，才能调用这条新边界。本次 Bodhi 改动不发布 Lotus Next、不触发 release、不归档旧 Lotus，也不宣称完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
 
 ### 内部 / 公开构建模式
 
@@ -228,7 +230,7 @@ npm run dev
 
 | 模块 | 角色 | 链接 |
 |---|---|---|
-| **lotus-next** | 本地构建默认的 React + Vite 前端 | [bigduu/lotus-next](https://github.com/bigduu/lotus-next) |
+| **lotus-next** | 规范的 React + Vite 前端 | [bigduu/lotus-next](https://github.com/bigduu/lotus-next) |
 | **bamboo** | 本地优先 Rust agent 运行时（执行引擎） | [bigduu/Bamboo-agent](https://github.com/bigduu/Bamboo-agent) |
 | **bodhi-server** | Go 后端：认证 / 持久化 / 计费配额 / LLM 代理 | [bigduu/bodhi-server](https://github.com/bigduu/bodhi-server) |
 | **pavilion** | 官网与文档 | [bigduu/Pavilion](https://github.com/bigduu/Pavilion) |
