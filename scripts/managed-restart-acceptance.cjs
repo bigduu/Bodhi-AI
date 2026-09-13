@@ -125,16 +125,36 @@ function prepareApplication(bambooDirectory, artifactLock) {
     LOTUS_SOURCE: "package",
     VITE_BACKEND_BASE_URL: "",
   };
-  runVisible("npm", ["run", "tauri", "--", "build", "--debug", "--bundles", "app"], {
+  runVisible("node", ["scripts/build-sidecar.cjs", "--debug"], {
     cwd: ROOT,
     env: buildEnvironment,
   });
-
   const source = resolveSource(buildEnvironment, ROOT);
   const identity = sourceIdentity(source);
   const receipt = verifyStaged(source, ROOT);
   const triple = hostTriple();
   const sidecar = verifySidecar(ROOT, triple);
+
+  // The packaged frontend carries newer Tauri JavaScript APIs for its own
+  // browser bundle. Remove those transient dependencies before invoking the
+  // shell CLI so its normal JS/Rust version compatibility gate remains active.
+  runVisible("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: ROOT });
+  runVisible(
+    "npm",
+    [
+      "run",
+      "tauri",
+      "--",
+      "build",
+      "--debug",
+      "--bundles",
+      "app",
+      "--config",
+      JSON.stringify({ build: { beforeBuildCommand: "" } }),
+    ],
+    { cwd: ROOT, env: buildEnvironment },
+  );
+
   const bundleRoot = path.join(ROOT, "target", "debug", "bundle", "macos", "Bodhi AI.app");
   const executable = path.join(bundleRoot, "Contents", "MacOS", "bodhi");
   const bundledSidecar = path.join(bundleRoot, "Contents", "MacOS", "bamboo");
