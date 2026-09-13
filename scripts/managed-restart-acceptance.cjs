@@ -810,6 +810,7 @@ async function runProviderChat(baseUrl, sessionId, marker, assistantMarker, phas
       provider: PROVIDER,
       model_ref: { provider: PROVIDER, model: MODEL },
     }),
+    [201],
   );
   if (response.body?.session_id !== sessionId || response.body?.status !== "streaming") {
     throw new Error(`${phase} chat did not start on the expected root session.`);
