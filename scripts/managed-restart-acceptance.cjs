@@ -329,6 +329,7 @@ function createRuntime(expectedBodhi, expectedBamboo) {
   fs.copyFileSync(PROVIDER_SCRIPT, providerScript);
   fs.chmodSync(providerScript, 0o500);
   const runId = crypto.randomUUID();
+  const memoryTail = `project-memory-tail-${runId}`;
   return {
     app: null,
     expectedBamboo,
@@ -343,8 +344,13 @@ function createRuntime(expectedBodhi, expectedBamboo) {
     markers: {
       assistant: `assistant-${runId}`,
       child: `child-${runId}`,
-      memoryBody: `confirmed project memory body ${runId}`,
+      memoryBody: [
+        `confirmed project memory body ${runId}`,
+        "This synthetic persistence payload is deliberately longer than the compact query projection. ".repeat(18),
+        memoryTail,
+      ].join("\n"),
       memoryKeyword: `restart-memory-${runId}`,
+      memoryTail,
       restart: `restart-${runId}`,
       root: `root-${runId}`,
       sessionNote: `session-note-${runId}`,
@@ -837,12 +843,19 @@ async function runProviderChat(baseUrl, sessionId, marker, assistantMarker, phas
   await waitForHistoryMarker(baseUrl, sessionId, `${assistantMarker}:${phase}`);
 }
 
-function assertCompactQuery(query, memoryId, memoryBody) {
+function assertCompactQuery(query, memoryId, memoryBody, memoryTail) {
   const items = query?.data?.items;
   if (!Array.isArray(items)) throw new Error("Project memory query did not return a compact item list.");
   const selected = items.find((item) => item?.id === memoryId);
   if (!selected) throw new Error(`Project memory query did not return selected id ${memoryId}.`);
-  if (Object.hasOwn(selected, "body") || JSON.stringify(selected).includes(memoryBody)) {
+  const forbiddenFields = ["body", "path", "frontmatter", "keywords", "entities"];
+  if (
+    forbiddenFields.some((field) => Object.hasOwn(selected, field)) ||
+    typeof selected.summary !== "string" ||
+    selected.summary.length >= memoryBody.length ||
+    JSON.stringify(selected).includes(memoryBody) ||
+    JSON.stringify(selected).includes(memoryTail)
+  ) {
     throw new Error("Compact Project memory query unexpectedly returned the full body.");
   }
 }
@@ -916,7 +929,7 @@ async function exerciseFirstLaunch(baseUrl, state) {
     scope: "project",
     query: state.markers.memoryKeyword,
   });
-  assertCompactQuery(query, memoryId, state.markers.memoryBody);
+  assertCompactQuery(query, memoryId, state.markers.memoryBody, state.markers.memoryTail);
   const selected = await executeTool(baseUrl, identities.rootSessionId, "memory", {
     action: "get",
     id: memoryId,
@@ -964,7 +977,12 @@ async function exerciseSecondLaunch(baseUrl, state, identities) {
     scope: "project",
     query: state.markers.memoryKeyword,
   });
-  assertCompactQuery(query, identities.memoryId, state.markers.memoryBody);
+  assertCompactQuery(
+    query,
+    identities.memoryId,
+    state.markers.memoryBody,
+    state.markers.memoryTail,
+  );
   const selected = await executeTool(baseUrl, identities.rootSessionId, "memory", {
     action: "get",
     id: identities.memoryId,
