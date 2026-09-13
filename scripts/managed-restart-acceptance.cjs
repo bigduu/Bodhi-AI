@@ -815,6 +815,24 @@ async function runProviderChat(baseUrl, sessionId, marker, assistantMarker, phas
   if (response.body?.session_id !== sessionId || response.body?.status !== "streaming") {
     throw new Error(`${phase} chat did not start on the expected root session.`);
   }
+  const executeResponse = await fetchPayload(
+    `${baseUrl}/api/v1/execute/${encodeURIComponent(sessionId)}`,
+    jsonRequest("POST", {
+      model: MODEL,
+      provider: PROVIDER,
+      model_ref: { provider: PROVIDER, model: MODEL },
+    }),
+    [202],
+  );
+  if (
+    executeResponse.body?.session_id !== sessionId ||
+    executeResponse.body?.status !== "started" ||
+    typeof executeResponse.body?.run_id !== "string" ||
+    !executeResponse.body.run_id ||
+    executeResponse.body?.events_url !== `/api/v1/events/${sessionId}`
+  ) {
+    throw new Error(`${phase} execute did not start the expected root-session run.`);
+  }
   await waitForHistoryMarker(baseUrl, sessionId, marker);
   await waitForHistoryMarker(baseUrl, sessionId, `${assistantMarker}:${phase}`);
 }
