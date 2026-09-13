@@ -208,7 +208,15 @@ npm run dev
 
 当前服务参数以 `bamboo serve --help` 为准。
 
-真实桌面自动验收应使用一次性的 `BAMBOO_DATA_DIR`、配置、工作区、独立 WebView/app identifier 和未占用的 `BODHI_BACKEND_PORT`，并强制禁止读取用户真实 `.bamboo`、`.jiandu` 目录。把测试应用移离源码检出，通过真实 WebView 和托管 Bamboo 启动两次，验证相同产物、本地设置或 session 的保留，并在每次完整退出后确认托管子进程已经消失。不要覆盖用户已安装应用，也不要用浏览器 mock 代替这个验收。
+真实桌面自动验收应使用一次性的 Bamboo/Jiandu 数据、配置和工作区根目录、隔离的 Foundation/用户主目录，以及未占用的 `BODHI_BACKEND_PORT`，并强制禁止读取用户真实 `.bamboo`、`.jiandu` 目录。直接启动编译后的测试 bundle，不安装或覆盖用户应用；通过真实 WebView 和托管 Bamboo 启动两次，验证相同产物、本地设置或 session 的保留，并在每次完整退出后确认托管子进程已经消失。不要用浏览器 mock 代替这个验收。
+
+可选的托管重启门禁把这套约束封装为一个本地 macOS 命令：
+
+```bash
+npm run test:managed-restart -- --help
+```
+
+普通开发、构建、打包和 CI 入口都不会调用它。该命令要求 Bodhi 与 Bamboo 都是精确、干净的 Git 提交，校验仓库已提交的 Lotus Next 包锁，把所有可变的 Bamboo、Jiandu、Project、provider 数据放在同一个全新临时根目录中，真实启动编译后的 `.app` 两次，并在每次启动后暂停以采集视觉证据。重启前，确定性子代理必须通过 `session_note` 写入这个显式 Jiandu 根目录；重启后，Project memory 以及根/子 Session 身份必须仍可读取。门禁会拒绝脏源码和已占用端口，只记录合成且脱敏的 provider 元数据，并保留机器可读报告和截图供检查。
 
 ### 运行时诊断环境变量
 
