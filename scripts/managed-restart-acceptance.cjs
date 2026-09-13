@@ -102,9 +102,20 @@ function hostTriple() {
   return match[1];
 }
 
-function prepareApplication(bambooDirectory) {
+function prepareApplication(bambooDirectory, artifactLock) {
   console.log("Preparing the exact locked Lotus Next package and compiled Bodhi application…");
   runVisible("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: ROOT });
+  runVisible(
+    "npm",
+    [
+      "install",
+      "--no-save",
+      "--ignore-scripts",
+      "--package-lock=false",
+      `${artifactLock.packageName}@${artifactLock.packageVersion}`,
+    ],
+    { cwd: ROOT },
+  );
   const buildEnvironment = {
     ...process.env,
     BAMBOO_LOCAL_PATH: bambooDirectory,
@@ -930,7 +941,7 @@ async function main() {
   const artifactLock = readArtifactLock();
   const bodhiIdentity = repositoryIdentity(ROOT, expectedBodhi, "Bodhi");
   const bambooIdentity = repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo");
-  const build = prepareApplication(bambooDirectory);
+  const build = prepareApplication(bambooDirectory, artifactLock);
   repositoryIdentity(ROOT, expectedBodhi, "Bodhi after build");
   repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo after build");
   if (
