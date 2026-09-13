@@ -857,6 +857,19 @@ async function exerciseFirstLaunch(baseUrl, state) {
     "root",
   );
 
+  const initialized = await executeTool(baseUrl, identities.rootSessionId, "memory", {
+    action: "rebuild",
+    scope: "project",
+  });
+  if (
+    initialized?.action !== "rebuild" ||
+    initialized?.scope !== "project" ||
+    !Array.isArray(initialized?.data?.index_files) ||
+    !Array.isArray(initialized?.data?.state_files)
+  ) {
+    throw new Error("Fresh Project memory indexes were not initialized under the canonical scope.");
+  }
+
   const before = await executeTool(baseUrl, identities.rootSessionId, "memory", {
     action: "query",
     scope: "project",
