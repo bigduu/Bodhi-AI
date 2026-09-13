@@ -304,7 +304,6 @@ function createRuntime(expectedBodhi, expectedBamboo) {
       "evidence",
       "jianduData",
       "logs",
-      "project",
       "provider",
       "screenshots",
       "syntheticHome",
@@ -312,6 +311,11 @@ function createRuntime(expectedBodhi, expectedBamboo) {
     ].map(
       (name) => [name, assertOwnedAbsolutePath(runRoot, path.join(runRoot, name), name)],
     ),
+  );
+  directories.project = assertOwnedAbsolutePath(
+    runRoot,
+    path.join(directories.bambooWorkspaces, "project"),
+    "Project workspace",
   );
   for (const directory of Object.values(directories)) mkdirPrivate(directory);
   const defaultBamboo = path.join(directories.syntheticHome, ".bamboo");
