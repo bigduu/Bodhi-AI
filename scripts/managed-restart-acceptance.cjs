@@ -102,7 +102,91 @@ function hostTriple() {
   return match[1];
 }
 
-function prepareApplication(bambooDirectory, artifactLock) {
+function normalizeMachOLinkeditVirtualSize(bytes, label) {
+  if (bytes.length < 32 || bytes.subarray(0, 4).toString("hex") !== "cffaedfe") {
+    throw new Error(`${label} is not a thin little-endian 64-bit Mach-O executable.`);
+  }
+  const commandCount = bytes.readUInt32LE(16);
+  const commandsSize = bytes.readUInt32LE(20);
+  const commandsEnd = 32 + commandsSize;
+  if (commandCount === 0 || commandCount > 256 || commandsEnd > bytes.length) {
+    throw new Error(`${label} has an invalid Mach-O load-command table.`);
+  }
+  let offset = 32;
+  let linkeditCount = 0;
+  for (let index = 0; index < commandCount; index += 1) {
+    if (offset + 8 > commandsEnd) throw new Error(`${label} has a truncated Mach-O load command.`);
+    const command = bytes.readUInt32LE(offset);
+    const commandSize = bytes.readUInt32LE(offset + 4);
+    if (commandSize < 8 || offset + commandSize > commandsEnd) {
+      throw new Error(`${label} has an invalid Mach-O load-command size.`);
+    }
+    if (command === 0x19 && commandSize >= 72) {
+      const segmentName = bytes.subarray(offset + 8, offset + 24).toString("utf8").replace(/\0+$/u, "");
+      if (segmentName === "__LINKEDIT") {
+        // codesign may adjust only this virtual-size field while replacing the
+        // reserved signature. The signed bytes themselves are removed on a copy.
+        bytes.fill(0, offset + 32, offset + 40);
+        linkeditCount += 1;
+      }
+    }
+    offset += commandSize;
+  }
+  if (offset !== commandsEnd || linkeditCount !== 1) {
+    throw new Error(`${label} did not contain one canonical __LINKEDIT segment.`);
+  }
+}
+
+function unsignedMachOHash(binary, scratchDirectory, label) {
+  const copy = assertOwnedAbsolutePath(
+    scratchDirectory,
+    path.join(scratchDirectory, `${label}.unsigned`),
+    `${label} signature copy`,
+  );
+  fs.copyFileSync(binary, copy, fs.constants.COPYFILE_EXCL);
+  try {
+    execFileSync("codesign", ["--remove-signature", copy], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const bytes = fs.readFileSync(copy);
+    normalizeMachOLinkeditVirtualSize(bytes, label);
+    return sha256(bytes);
+  } finally {
+    fs.rmSync(copy, { force: true });
+  }
+}
+
+function verifyBundledSidecarIdentity(sourceBinary, bundledBinary, bundleRoot, scratchDirectory) {
+  execFileSync("codesign", ["--verify", "--strict", bundledBinary], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  execFileSync("codesign", ["--verify", "--deep", "--strict", bundleRoot], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const sourceUnsignedSha256 = unsignedMachOHash(
+    sourceBinary,
+    scratchDirectory,
+    "source-sidecar",
+  );
+  const bundledUnsignedSha256 = unsignedMachOHash(
+    bundledBinary,
+    scratchDirectory,
+    "bundled-sidecar",
+  );
+  if (sourceUnsignedSha256 !== bundledUnsignedSha256) {
+    throw new Error("The signed app bundle changed the Bamboo sidecar executable content.");
+  }
+  return {
+    bundledSignedSha256: sha256(fs.readFileSync(bundledBinary)),
+    signatureValid: true,
+    unsignedContentSha256: sourceUnsignedSha256,
+  };
+}
+
+function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
   console.log("Preparing the exact locked Lotus Next package and compiled Bodhi application…");
   runVisible("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: ROOT });
   runVisible(
@@ -163,14 +247,16 @@ function prepareApplication(bambooDirectory, artifactLock) {
     throw new Error(`Compiled Bodhi executable is missing or invalid at ${executable}.`);
   }
   const bundledSidecarMetadata = fs.lstatSync(bundledSidecar);
-  if (
-    bundledSidecarMetadata.isSymbolicLink() ||
-    !bundledSidecarMetadata.isFile() ||
-    sha256(fs.readFileSync(bundledSidecar)) !== sha256(fs.readFileSync(sidecar.binary))
-  ) {
-    throw new Error("The app bundle does not contain the exact verified Bamboo sidecar.");
+  if (bundledSidecarMetadata.isSymbolicLink() || !bundledSidecarMetadata.isFile()) {
+    throw new Error("The app bundle does not contain a regular Bamboo sidecar executable.");
   }
-  return { bundledSidecar, executable, identity, receipt, sidecar, triple };
+  const bundledSidecarIdentity = verifyBundledSidecarIdentity(
+    sidecar.binary,
+    bundledSidecar,
+    bundleRoot,
+    scratchDirectory,
+  );
+  return { bundledSidecar, bundledSidecarIdentity, executable, identity, receipt, sidecar, triple };
 }
 
 function mkdirPrivate(directory) {
@@ -961,7 +1047,8 @@ async function main() {
   const artifactLock = readArtifactLock();
   const bodhiIdentity = repositoryIdentity(ROOT, expectedBodhi, "Bodhi");
   const bambooIdentity = repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo");
-  const build = prepareApplication(bambooDirectory, artifactLock);
+  const state = createRuntime(expectedBodhi, expectedBamboo);
+  const build = prepareApplication(bambooDirectory, artifactLock, state.directories.tmp);
   repositoryIdentity(ROOT, expectedBodhi, "Bodhi after build");
   repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo after build");
   if (
@@ -975,7 +1062,6 @@ async function main() {
     throw new Error("Compiled Bodhi inputs do not match the committed Lotus Next artifact lock.");
   }
 
-  const state = createRuntime(expectedBodhi, expectedBamboo);
   console.log(`Run-owned root: ${state.runRoot}`);
   let providerTeardown = null;
   let firstStop = null;
@@ -1055,6 +1141,7 @@ async function main() {
         compiledExecutableSha256: sha256(fs.readFileSync(build.executable)),
         providerFixtureSha256: sha256(fs.readFileSync(state.providerScript)),
         sidecarSha256: sha256(fs.readFileSync(build.sidecar.binary)),
+        bundledSidecarIdentity: build.bundledSidecarIdentity,
         targetTriple: build.triple,
       },
       runOwnedPaths: {
