@@ -20,6 +20,7 @@ const {
   installInterruptHandlers,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
+  observeChildProcessErrors,
   pngEvidenceMetadata,
   redactText,
   runInterruptibleCommand,
@@ -415,6 +416,23 @@ test("abort stops signal-aware condition polling without a detached continuation
   assert.equal(checks, settledChecks);
 });
 
+test("spawn errors become signal failures instead of uncaught process events", async () => {
+  const child = spawn(path.join(os.tmpdir(), "bodhi-command-that-does-not-exist"), [], {
+    stdio: "ignore",
+  });
+  const observed = observeChildProcessErrors(child, "test child");
+  await assert.rejects(
+    waitForCondition(() => false, {
+      timeoutMs: 10_000,
+      intervalMs: 1_000,
+      label: "spawn failure",
+      signal: observed.signal,
+    }),
+    /test child process error/,
+  );
+  assert.match(observed.failure.message, /ENOENT/);
+});
+
 test("interruptible commands capture output and report nonzero exits", async () => {
   const result = await runInterruptibleCommand(process.execPath, ["-e", 'process.stdout.write("ready")']);
   assert.equal(result.stdout, "ready");
@@ -437,6 +455,10 @@ test("interruptible commands terminate their complete owned process group before
     'const { spawn } = require("node:child_process");',
     'const fs = require("node:fs");',
     'const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+    'process.on("SIGTERM", () => {',
+    '  if (child.exitCode !== null || child.signalCode !== null) process.exit(0);',
+    '  else child.once("exit", () => process.exit(0));',
+    '});',
     `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.pid, child.pid]));`,
     "setInterval(() => {}, 1000);",
   ].join("\n");

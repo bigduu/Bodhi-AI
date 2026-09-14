@@ -113,6 +113,40 @@ function delay(delayMs) {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
+function observeChildProcessErrors(child, label, parentSignal, onError = () => {}) {
+  if (
+    typeof child?.on !== "function" ||
+    typeof label !== "string" ||
+    !label ||
+    typeof onError !== "function"
+  ) {
+    throw new Error("Child process error observation requires a process and label.");
+  }
+  const controller = new AbortController();
+  let failure = null;
+  child.on("error", (error) => {
+    if (failure) return;
+    failure = new Error(
+      `${label} process error: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+    controller.abort(failure);
+    try {
+      onError(failure);
+    } catch {
+      // Reporting must never turn a captured process error back into an uncaught event.
+    }
+  });
+  return {
+    get failure() {
+      return failure;
+    },
+    signal: parentSignal
+      ? AbortSignal.any([parentSignal, controller.signal])
+      : controller.signal,
+  };
+}
+
 async function assertLoopbackPortAvailable(port, options = {}) {
   assertTcpPort(port);
   const signal = options.signal;
@@ -848,6 +882,7 @@ module.exports = {
   installInterruptHandlers,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
+  observeChildProcessErrors,
   pngEvidenceMetadata,
   redactText,
   runInterruptibleCommand,

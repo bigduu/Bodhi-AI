@@ -19,6 +19,7 @@ const {
   installInterruptHandlers,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
+  observeChildProcessErrors,
   pngEvidenceMetadata,
   redactText,
   runInterruptibleCommand,
@@ -471,21 +472,30 @@ async function startProvider(state, port, signal) {
     }),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdout.on("data", (chunk) => stdout.append(chunk));
-  child.stderr.on("data", (chunk) => stderr.append(chunk));
-  state.provider = { child, port, stdout, stderr };
+  child.stdout?.on("data", (chunk) => stdout.append(chunk));
+  child.stderr?.on("data", (chunk) => stderr.append(chunk));
+  const processErrors = observeChildProcessErrors(child, "deterministic provider", signal, (error) => {
+    stderr.append(`${error.message}\n`);
+  });
+  state.provider = { child, port, processErrors, stdout, stderr };
   await waitForCondition(
     async () => {
+      if (processErrors.failure) throw processErrors.failure;
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`provider exited early: ${stderr.value()}`);
       }
       const response = await fetch(`http://127.0.0.1:${port}/v1/models`, {
         headers: { Authorization: `Bearer ${state.providerKey}` },
-        signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]),
+        signal: AbortSignal.any([processErrors.signal, AbortSignal.timeout(1_000)]),
       });
       return response.status === 200 && fs.existsSync(state.providerObservations);
     },
-    { timeoutMs: 15_000, intervalMs: 100, label: "deterministic provider readiness", signal },
+    {
+      timeoutMs: 15_000,
+      intervalMs: 100,
+      label: "deterministic provider readiness",
+      signal: processErrors.signal,
+    },
   );
 }
 
@@ -779,8 +789,8 @@ async function startBodhi(state, build, port, launchNumber, signal) {
     }),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stdout.on("data", (chunk) => stdout.append(chunk));
-  child.stderr.on("data", (chunk) => stderr.append(chunk));
+  child.stdout?.on("data", (chunk) => stdout.append(chunk));
+  child.stderr?.on("data", (chunk) => stderr.append(chunk));
   const app = {
     child,
     launchedAtMs,
@@ -792,17 +802,27 @@ async function startBodhi(state, build, port, launchNumber, signal) {
     sidecarIdentity: null,
     sidecarPid: null,
   };
+  const processErrors = observeChildProcessErrors(child, `Bodhi launch ${launchNumber}`, signal, (error) => {
+    stderr.append(`${error.message}\n`);
+  });
+  app.processErrors = processErrors;
   state.app = app;
 
   await waitForCondition(
     () => {
+      if (processErrors.failure) throw processErrors.failure;
       retainManagedSidecarIdentity(app);
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Bodhi exited before spawning Bamboo: ${stderr.value()}\n${stdout.value()}`);
       }
       return /Managed bamboo pid=\d+ port=\d+/u.test(stripAnsi(`${stdout.value()}\n${stderr.value()}`));
     },
-    { timeoutMs: READY_TIMEOUT_MS, intervalMs: 100, label: "managed sidecar identity log", signal },
+    {
+      timeoutMs: READY_TIMEOUT_MS,
+      intervalMs: 100,
+      label: "managed sidecar identity log",
+      signal: processErrors.signal,
+    },
   );
   const sidecar = managedSidecarFromLog(`${stdout.value()}\n${stderr.value()}`, port);
   if (!retainManagedSidecarIdentity(app, sidecar.pid)) {
@@ -811,15 +831,21 @@ async function startBodhi(state, build, port, launchNumber, signal) {
 
   await waitForCondition(
     async () => {
+      if (processErrors.failure) throw processErrors.failure;
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Bodhi exited before readiness: ${stderr.value()}\n${stdout.value()}`);
       }
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
-        signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]),
+        signal: AbortSignal.any([processErrors.signal, AbortSignal.timeout(1_000)]),
       });
       return response.status === 200;
     },
-    { timeoutMs: READY_TIMEOUT_MS, intervalMs: 150, label: `Bodhi launch ${launchNumber}`, signal },
+    {
+      timeoutMs: READY_TIMEOUT_MS,
+      intervalMs: 150,
+      label: `Bodhi launch ${launchNumber}`,
+      signal: processErrors.signal,
+    },
   );
   const bambooChildren = directChildren(child.pid).filter((pid) => processCommandName(pid).toLowerCase().includes("bamboo"));
   if (bambooChildren.length !== 1 || bambooChildren[0] !== sidecar.pid) {
@@ -838,7 +864,12 @@ async function startBodhi(state, build, port, launchNumber, signal) {
         log.includes(`webview navigated to sidecar http://127.0.0.1:${port}`)
       );
     },
-    { timeoutMs: 5_000, intervalMs: 50, label: "Jiandu selection and WebView navigation logs", signal },
+    {
+      timeoutMs: 5_000,
+      intervalMs: 50,
+      label: "Jiandu selection and WebView navigation logs",
+      signal: processErrors.signal,
+    },
   );
   sidecar.normalizedLog = stripAnsi(`${stdout.value()}\n${stderr.value()}`);
   if (
@@ -851,7 +882,7 @@ async function startBodhi(state, build, port, launchNumber, signal) {
   }
 
   const indexResponse = await fetch(`http://127.0.0.1:${port}/index.html`, {
-    signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
+    signal: AbortSignal.any([processErrors.signal, AbortSignal.timeout(5_000)]),
   });
   if (indexResponse.status !== 200) {
     throw new Error(`Managed Bamboo index returned ${indexResponse.status}.`);
@@ -1484,13 +1515,22 @@ async function stopProvider(state) {
 }
 
 async function stopProviderInstance(state, provider) {
-  const teardown = await terminateOwnedChild(provider.child, { graceMs: 2_000, killMs: 2_000 });
+  let teardown;
+  if (!Number.isInteger(provider.child.pid) && provider.processErrors?.failure) {
+    teardown = {
+      phase: "spawn-failed",
+      exitCode: provider.child.exitCode,
+      signalCode: provider.child.signalCode,
+    };
+  } else {
+    teardown = await terminateOwnedChild(provider.child, { graceMs: 2_000, killMs: 2_000 });
+  }
   writePrivateText(
     path.join(state.directories.logs, "provider.log"),
     `${provider.stdout.value()}\n${provider.stderr.value()}`,
     [state.providerKey],
   );
-  state.provider = null;
+  if (state.provider === provider) state.provider = null;
   return teardown;
 }
 
