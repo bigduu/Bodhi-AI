@@ -20,8 +20,8 @@ const {
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
   pngEvidenceMetadata,
-  raceWithAbort,
   redactText,
+  runInterruptibleCommand,
   terminateOwnedChild,
   terminateVerifiedProcess,
   validateBrowserReceipt,
@@ -54,18 +54,6 @@ function commandText(command, args, options = {}) {
     maxBuffer: 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
-}
-
-function runVisible(command, args, options = {}) {
-  const result = require("node:child_process").spawnSync(command, args, {
-    cwd: options.cwd,
-    env: options.env,
-    stdio: "inherit",
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`${command} exited with status ${result.status}.`);
-  }
 }
 
 function repositoryIdentity(directory, expected, label) {
@@ -105,8 +93,9 @@ function readArtifactLock() {
   return lock;
 }
 
-function hostTriple() {
-  const output = commandText("rustc", ["-vV"]);
+async function hostTriple(signal) {
+  const { stdout } = await runInterruptibleCommand("rustc", ["-vV"], { signal });
+  const output = stdout.trim();
   const match = output.match(/^host:\s*(\S+)$/mu);
   if (!match) throw new Error("rustc did not report a host target triple.");
   return match[1];
@@ -147,7 +136,7 @@ function normalizeMachOLinkeditVirtualSize(bytes, label) {
   }
 }
 
-function unsignedMachOHash(binary, scratchDirectory, label) {
+async function unsignedMachOHash(binary, scratchDirectory, label, signal) {
   const copy = assertOwnedAbsolutePath(
     scratchDirectory,
     path.join(scratchDirectory, `${label}.unsigned`),
@@ -155,10 +144,7 @@ function unsignedMachOHash(binary, scratchDirectory, label) {
   );
   fs.copyFileSync(binary, copy, fs.constants.COPYFILE_EXCL);
   try {
-    execFileSync("codesign", ["--remove-signature", copy], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    await runInterruptibleCommand("codesign", ["--remove-signature", copy], { signal });
     const bytes = fs.readFileSync(copy);
     normalizeMachOLinkeditVirtualSize(bytes, label);
     return sha256(bytes);
@@ -167,24 +153,26 @@ function unsignedMachOHash(binary, scratchDirectory, label) {
   }
 }
 
-function verifyBundledSidecarIdentity(sourceBinary, bundledBinary, bundleRoot, scratchDirectory) {
-  execFileSync("codesign", ["--verify", "--strict", bundledBinary], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  execFileSync("codesign", ["--verify", "--deep", "--strict", bundleRoot], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  const sourceUnsignedSha256 = unsignedMachOHash(
+async function verifyBundledSidecarIdentity(
+  sourceBinary,
+  bundledBinary,
+  bundleRoot,
+  scratchDirectory,
+  signal,
+) {
+  await runInterruptibleCommand("codesign", ["--verify", "--strict", bundledBinary], { signal });
+  await runInterruptibleCommand("codesign", ["--verify", "--deep", "--strict", bundleRoot], { signal });
+  const sourceUnsignedSha256 = await unsignedMachOHash(
     sourceBinary,
     scratchDirectory,
     "source-sidecar",
+    signal,
   );
-  const bundledUnsignedSha256 = unsignedMachOHash(
+  const bundledUnsignedSha256 = await unsignedMachOHash(
     bundledBinary,
     scratchDirectory,
     "bundled-sidecar",
+    signal,
   );
   if (sourceUnsignedSha256 !== bundledUnsignedSha256) {
     throw new Error("The signed app bundle changed the Bamboo sidecar executable content.");
@@ -196,10 +184,14 @@ function verifyBundledSidecarIdentity(sourceBinary, bundledBinary, bundleRoot, s
   };
 }
 
-function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
+async function prepareApplication(bambooDirectory, artifactLock, scratchDirectory, signal) {
   console.log("Preparing the exact locked Lotus Next package and compiled Bodhi application…");
-  runVisible("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: ROOT });
-  runVisible(
+  await runInterruptibleCommand("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+    cwd: ROOT,
+    signal,
+    visible: true,
+  });
+  await runInterruptibleCommand(
     "npm",
     [
       "install",
@@ -208,7 +200,7 @@ function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
       "--package-lock=false",
       `${artifactLock.packageName}@${artifactLock.packageVersion}`,
     ],
-    { cwd: ROOT },
+    { cwd: ROOT, signal, visible: true },
   );
   const buildEnvironment = {
     ...process.env,
@@ -219,21 +211,27 @@ function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
     LOTUS_SOURCE: "package",
     VITE_BACKEND_BASE_URL: "",
   };
-  runVisible("node", ["scripts/build-sidecar.cjs", "--debug"], {
+  await runInterruptibleCommand("node", ["scripts/build-sidecar.cjs", "--debug"], {
     cwd: ROOT,
     env: buildEnvironment,
+    signal,
+    visible: true,
   });
   const source = resolveSource(buildEnvironment, ROOT);
   const identity = sourceIdentity(source);
   const receipt = verifyStaged(source, ROOT);
-  const triple = hostTriple();
+  const triple = await hostTriple(signal);
   const sidecar = verifySidecar(ROOT, triple);
 
   // The packaged frontend carries newer Tauri JavaScript APIs for its own
   // browser bundle. Remove those transient dependencies before invoking the
   // shell CLI so its normal JS/Rust version compatibility gate remains active.
-  runVisible("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: ROOT });
-  runVisible(
+  await runInterruptibleCommand("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], {
+    cwd: ROOT,
+    signal,
+    visible: true,
+  });
+  await runInterruptibleCommand(
     "npm",
     [
       "run",
@@ -246,7 +244,7 @@ function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
       "--config",
       JSON.stringify({ build: { beforeBuildCommand: "" } }),
     ],
-    { cwd: ROOT, env: buildEnvironment },
+    { cwd: ROOT, env: buildEnvironment, signal, visible: true },
   );
 
   const builtBundleRoot = path.join(ROOT, "target", "debug", "bundle", "macos", "Bodhi AI.app");
@@ -256,10 +254,7 @@ function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
     "run-owned application bundle",
   );
   if (fs.existsSync(bundleRoot)) throw new Error("The run-owned application bundle path already exists.");
-  execFileSync("ditto", [builtBundleRoot, bundleRoot], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  await runInterruptibleCommand("ditto", [builtBundleRoot, bundleRoot], { signal });
   const executable = fs.realpathSync(path.join(bundleRoot, "Contents", "MacOS", "bodhi"));
   const bundledSidecar = fs.realpathSync(path.join(bundleRoot, "Contents", "MacOS", "bamboo"));
   const metadata = fs.lstatSync(executable);
@@ -270,11 +265,12 @@ function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
   if (bundledSidecarMetadata.isSymbolicLink() || !bundledSidecarMetadata.isFile()) {
     throw new Error("The app bundle does not contain a regular Bamboo sidecar executable.");
   }
-  const bundledSidecarIdentity = verifyBundledSidecarIdentity(
+  const bundledSidecarIdentity = await verifyBundledSidecarIdentity(
     sidecar.binary,
     bundledSidecar,
     bundleRoot,
     scratchDirectory,
+    signal,
   );
   return { bundledSidecar, bundledSidecarIdentity, executable, identity, receipt, sidecar, triple };
 }
@@ -454,8 +450,8 @@ function boundedLogCollector() {
   };
 }
 
-async function startProvider(state, port) {
-  await assertLoopbackPortAvailable(port);
+async function startProvider(state, port, signal) {
+  await assertLoopbackPortAvailable(port, { signal });
   const stdout = boundedLogCollector();
   const stderr = boundedLogCollector();
   const child = spawn("python3", [state.providerScript], {
@@ -485,11 +481,11 @@ async function startProvider(state, port) {
       }
       const response = await fetch(`http://127.0.0.1:${port}/v1/models`, {
         headers: { Authorization: `Bearer ${state.providerKey}` },
-        signal: AbortSignal.timeout(1_000),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]),
       });
       return response.status === 200 && fs.existsSync(state.providerObservations);
     },
-    { timeoutMs: 15_000, intervalMs: 100, label: "deterministic provider readiness" },
+    { timeoutMs: 15_000, intervalMs: 100, label: "deterministic provider readiness", signal },
   );
 }
 
@@ -666,7 +662,11 @@ function snapshotJianduProcesses(excluded = new Set()) {
 }
 
 async function fetchPayload(url, options = {}, expectedStatuses = [200]) {
-  const response = await fetch(url, { ...options, signal: AbortSignal.timeout(options.timeoutMs ?? 5_000) });
+  const { signal, timeoutMs = 5_000, ...requestOptions } = options;
+  const requestSignal = signal
+    ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+    : AbortSignal.timeout(timeoutMs);
+  const response = await fetch(url, { ...requestOptions, signal: requestSignal });
   const text = await response.text();
   let body = null;
   if (text) {
@@ -706,25 +706,33 @@ function parseToolResponse(body, expectedTool) {
   }
 }
 
-async function executeTool(baseUrl, sessionId, toolName, args) {
+async function executeTool(baseUrl, sessionId, toolName, args, signal) {
   const parameters = Object.entries(args).map(([name, value]) => ({
     name,
     value: typeof value === "string" ? value : JSON.stringify(value),
   }));
   const response = await fetchPayload(
     `${baseUrl}/api/v1/tools/execute`,
-    jsonRequest("POST", { tool_name: toolName, parameters, session_id: sessionId }),
+    { ...jsonRequest("POST", { tool_name: toolName, parameters, session_id: sessionId }), signal },
   );
   return parseToolResponse(response.body, toolName);
 }
 
-async function waitForHistoryMarker(baseUrl, sessionId, marker) {
+async function waitForHistoryMarker(baseUrl, sessionId, marker, signal) {
   return await waitForCondition(
     async () => {
-      const response = await fetchPayload(`${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/history`);
+      const response = await fetchPayload(
+        `${baseUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/history`,
+        { signal },
+      );
       return JSON.stringify(response.body).includes(marker) ? response.body : false;
     },
-    { timeoutMs: SESSION_TIMEOUT_MS, intervalMs: 200, label: `session ${sessionId} provider completion` },
+    {
+      timeoutMs: SESSION_TIMEOUT_MS,
+      intervalMs: 200,
+      label: `session ${sessionId} provider completion`,
+      signal,
+    },
   );
 }
 
@@ -740,8 +748,8 @@ function managedSidecarFromLog(log, expectedPort) {
   return { pid, port, normalizedLog: normalized };
 }
 
-async function startBodhi(state, build, port, launchNumber) {
-  await assertLoopbackPortAvailable(port);
+async function startBodhi(state, build, port, launchNumber, signal) {
+  await assertLoopbackPortAvailable(port, { signal });
   const sidecarExecutable = fs.realpathSync(build.bundledSidecar);
   const preExistingSidecars = exactCommandProcessIdentities(sidecarExecutable);
   if (preExistingSidecars.length !== 0) {
@@ -794,7 +802,7 @@ async function startBodhi(state, build, port, launchNumber) {
       }
       return /Managed bamboo pid=\d+ port=\d+/u.test(stripAnsi(`${stdout.value()}\n${stderr.value()}`));
     },
-    { timeoutMs: READY_TIMEOUT_MS, intervalMs: 100, label: "managed sidecar identity log" },
+    { timeoutMs: READY_TIMEOUT_MS, intervalMs: 100, label: "managed sidecar identity log", signal },
   );
   const sidecar = managedSidecarFromLog(`${stdout.value()}\n${stderr.value()}`, port);
   if (!retainManagedSidecarIdentity(app, sidecar.pid)) {
@@ -807,11 +815,11 @@ async function startBodhi(state, build, port, launchNumber) {
         throw new Error(`Bodhi exited before readiness: ${stderr.value()}\n${stdout.value()}`);
       }
       const response = await fetch(`http://127.0.0.1:${port}/api/v1/health`, {
-        signal: AbortSignal.timeout(1_000),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]),
       });
       return response.status === 200;
     },
-    { timeoutMs: READY_TIMEOUT_MS, intervalMs: 150, label: `Bodhi launch ${launchNumber}` },
+    { timeoutMs: READY_TIMEOUT_MS, intervalMs: 150, label: `Bodhi launch ${launchNumber}`, signal },
   );
   const bambooChildren = directChildren(child.pid).filter((pid) => processCommandName(pid).toLowerCase().includes("bamboo"));
   if (bambooChildren.length !== 1 || bambooChildren[0] !== sidecar.pid) {
@@ -830,7 +838,7 @@ async function startBodhi(state, build, port, launchNumber) {
         log.includes(`webview navigated to sidecar http://127.0.0.1:${port}`)
       );
     },
-    { timeoutMs: 5_000, intervalMs: 50, label: "Jiandu selection and WebView navigation logs" },
+    { timeoutMs: 5_000, intervalMs: 50, label: "Jiandu selection and WebView navigation logs", signal },
   );
   sidecar.normalizedLog = stripAnsi(`${stdout.value()}\n${stderr.value()}`);
   if (
@@ -843,7 +851,7 @@ async function startBodhi(state, build, port, launchNumber) {
   }
 
   const indexResponse = await fetch(`http://127.0.0.1:${port}/index.html`, {
-    signal: AbortSignal.timeout(5_000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
   });
   if (indexResponse.status !== 200) {
     throw new Error(`Managed Bamboo index returned ${indexResponse.status}.`);
@@ -945,15 +953,18 @@ async function stopBodhiInstance(state, app) {
   }
 }
 
-async function createProjectAndSession(baseUrl, state) {
+async function createProjectAndSession(baseUrl, state, signal) {
   const projectResponse = await fetchPayload(
     `${baseUrl}/api/v1/projects`,
-    jsonRequest("POST", {
-      name: `Bodhi restart acceptance ${state.runId}`,
-      description: "Synthetic local acceptance project",
-      project_path: state.directories.project,
-      workspace_bindings: [],
-    }),
+    {
+      ...jsonRequest("POST", {
+        name: `Bodhi restart acceptance ${state.runId}`,
+        description: "Synthetic local acceptance project",
+        project_path: state.directories.project,
+        workspace_bindings: [],
+      }),
+      signal,
+    },
     [201],
   );
   const project = projectResponse.body;
@@ -962,15 +973,18 @@ async function createProjectAndSession(baseUrl, state) {
   }
   const sessionResponse = await fetchPayload(
     `${baseUrl}/api/v1/sessions`,
-    jsonRequest("POST", {
-      project_id: project.id,
-      title: "Bodhi managed restart acceptance",
-      title_generated: true,
-      model: MODEL,
-      provider: PROVIDER,
-      model_ref: { provider: PROVIDER, model: MODEL },
-      workspace_path: state.directories.project,
-    }),
+    {
+      ...jsonRequest("POST", {
+        project_id: project.id,
+        title: "Bodhi managed restart acceptance",
+        title_generated: true,
+        model: MODEL,
+        provider: PROVIDER,
+        model_ref: { provider: PROVIDER, model: MODEL },
+        workspace_path: state.directories.project,
+      }),
+      signal,
+    },
     [201],
   );
   const session = sessionResponse.body?.session;
@@ -986,16 +1000,19 @@ async function createProjectAndSession(baseUrl, state) {
   return { projectId: project.id, rootSessionId: session.id };
 }
 
-async function runProviderChat(baseUrl, sessionId, marker, assistantMarker, phase) {
+async function runProviderChat(baseUrl, sessionId, marker, assistantMarker, phase, signal) {
   const response = await fetchPayload(
     `${baseUrl}/api/v1/chat`,
-    jsonRequest("POST", {
-      message: marker,
-      session_id: sessionId,
-      model: MODEL,
-      provider: PROVIDER,
-      model_ref: { provider: PROVIDER, model: MODEL },
-    }),
+    {
+      ...jsonRequest("POST", {
+        message: marker,
+        session_id: sessionId,
+        model: MODEL,
+        provider: PROVIDER,
+        model_ref: { provider: PROVIDER, model: MODEL },
+      }),
+      signal,
+    },
     [201],
   );
   if (response.body?.session_id !== sessionId || response.body?.status !== "streaming") {
@@ -1003,11 +1020,14 @@ async function runProviderChat(baseUrl, sessionId, marker, assistantMarker, phas
   }
   const executeResponse = await fetchPayload(
     `${baseUrl}/api/v1/execute/${encodeURIComponent(sessionId)}`,
-    jsonRequest("POST", {
-      model: MODEL,
-      provider: PROVIDER,
-      model_ref: { provider: PROVIDER, model: MODEL },
-    }),
+    {
+      ...jsonRequest("POST", {
+        model: MODEL,
+        provider: PROVIDER,
+        model_ref: { provider: PROVIDER, model: MODEL },
+      }),
+      signal,
+    },
     [202],
   );
   if (
@@ -1019,8 +1039,8 @@ async function runProviderChat(baseUrl, sessionId, marker, assistantMarker, phas
   ) {
     throw new Error(`${phase} execute did not start the expected root-session run.`);
   }
-  await waitForHistoryMarker(baseUrl, sessionId, marker);
-  await waitForHistoryMarker(baseUrl, sessionId, `${assistantMarker}:${phase}`);
+  await waitForHistoryMarker(baseUrl, sessionId, marker, signal);
+  await waitForHistoryMarker(baseUrl, sessionId, `${assistantMarker}:${phase}`, signal);
 }
 
 function assertCompactQuery(query, memoryId, memoryBody, memoryTail) {
@@ -1040,20 +1060,24 @@ function assertCompactQuery(query, memoryId, memoryBody, memoryTail) {
   }
 }
 
-async function exerciseFirstLaunch(baseUrl, state) {
-  const identities = await createProjectAndSession(baseUrl, state);
+async function exerciseFirstLaunch(baseUrl, state, signal) {
+  const identities = await createProjectAndSession(baseUrl, state, signal);
   await runProviderChat(
     baseUrl,
     identities.rootSessionId,
     state.markers.root,
     state.markers.assistant,
     "root",
+    signal,
   );
 
-  const initialized = await executeTool(baseUrl, identities.rootSessionId, "memory", {
-    action: "rebuild",
-    scope: "project",
-  });
+  const initialized = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "memory",
+    { action: "rebuild", scope: "project" },
+    signal,
+  );
   if (
     initialized?.action !== "rebuild" ||
     initialized?.scope !== "project" ||
@@ -1063,62 +1087,84 @@ async function exerciseFirstLaunch(baseUrl, state) {
     throw new Error("Fresh Project memory indexes were not initialized under the canonical scope.");
   }
 
-  const before = await executeTool(baseUrl, identities.rootSessionId, "memory", {
-    action: "query",
-    scope: "project",
-    query: state.markers.memoryKeyword,
-  });
+  const before = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "memory",
+    { action: "query", scope: "project", query: state.markers.memoryKeyword },
+    signal,
+  );
   if (!Array.isArray(before?.data?.items) || before.data.items.length !== 0) {
     throw new Error("Fresh Project unexpectedly contained the synthetic memory before write.");
   }
 
-  const written = await executeTool(baseUrl, identities.rootSessionId, "memory", {
-    action: "write",
-    scope: "project",
-    type: "project",
-    title: `Managed restart ${state.runId}`,
-    content: state.markers.memoryBody,
-    tags: ["managed-restart"],
-    keywords: [state.markers.memoryKeyword],
-    entities: ["Bodhi", "Jiandu"],
-    options: { allow_merge_if_similar: false },
-  });
+  const written = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "memory",
+    {
+      action: "write",
+      scope: "project",
+      type: "project",
+      title: `Managed restart ${state.runId}`,
+      content: state.markers.memoryBody,
+      tags: ["managed-restart"],
+      keywords: [state.markers.memoryKeyword],
+      entities: ["Bodhi", "Jiandu"],
+      options: { allow_merge_if_similar: false },
+    },
+    signal,
+  );
   const memoryId = written?.memory?.id;
   if (typeof memoryId !== "string" || !memoryId) {
     throw new Error("Native memory write did not return a stable id.");
   }
 
-  const childResult = await executeTool(baseUrl, identities.rootSessionId, "SubAgent", {
-    action: "create",
-    title: "Restart persistence child",
-    responsibility: "Return the deterministic child marker",
-    prompt: state.markers.child,
-    workspace: state.directories.project,
-    auto_run: true,
-    wait: false,
-    model: `${PROVIDER}:${MODEL}`,
-  });
+  const childResult = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "SubAgent",
+    {
+      action: "create",
+      title: "Restart persistence child",
+      responsibility: "Return the deterministic child marker",
+      prompt: state.markers.child,
+      workspace: state.directories.project,
+      auto_run: true,
+      wait: false,
+      model: `${PROVIDER}:${MODEL}`,
+    },
+    signal,
+  );
   const childSessionId = childResult?.child_session_id;
   if (typeof childSessionId !== "string" || !childSessionId) {
     throw new Error("SubAgent create did not return a child Session id.");
   }
-  await waitForHistoryMarker(baseUrl, childSessionId, `${state.markers.assistant}:child`);
+  await waitForHistoryMarker(baseUrl, childSessionId, `${state.markers.assistant}:child`, signal);
 
-  const query = await executeTool(baseUrl, identities.rootSessionId, "memory", {
-    action: "query",
-    scope: "project",
-    query: state.markers.memoryKeyword,
-  });
+  const query = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "memory",
+    { action: "query", scope: "project", query: state.markers.memoryKeyword },
+    signal,
+  );
   assertCompactQuery(query, memoryId, state.markers.memoryBody, state.markers.memoryTail);
-  const selected = await executeTool(baseUrl, identities.rootSessionId, "memory", {
-    action: "get",
-    id: memoryId,
-  });
+  const selected = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "memory",
+    { action: "get", id: memoryId },
+    signal,
+  );
   if (selected?.memory?.frontmatter?.id !== memoryId || selected?.memory?.body !== state.markers.memoryBody) {
     throw new Error("Native memory get did not return the selected stable id and full body.");
   }
 
-  const childResponse = await fetchPayload(`${baseUrl}/api/v1/sessions/${encodeURIComponent(childSessionId)}`);
+  const childResponse = await fetchPayload(
+    `${baseUrl}/api/v1/sessions/${encodeURIComponent(childSessionId)}`,
+    { signal },
+  );
   const child = childResponse.body?.session;
   if (
     !child ||
@@ -1131,17 +1177,26 @@ async function exerciseFirstLaunch(baseUrl, state) {
   return { ...identities, childSessionId, memoryId };
 }
 
-async function exerciseSecondLaunch(baseUrl, state, identities) {
-  const projectResponse = await fetchPayload(`${baseUrl}/api/v1/projects/${encodeURIComponent(identities.projectId)}`);
+async function exerciseSecondLaunch(baseUrl, state, identities, signal) {
+  const projectResponse = await fetchPayload(
+    `${baseUrl}/api/v1/projects/${encodeURIComponent(identities.projectId)}`,
+    { signal },
+  );
   if (projectResponse.body?.id !== identities.projectId) {
     throw new Error("Project id was not restored on the second launch.");
   }
-  const rootResponse = await fetchPayload(`${baseUrl}/api/v1/sessions/${encodeURIComponent(identities.rootSessionId)}`);
+  const rootResponse = await fetchPayload(
+    `${baseUrl}/api/v1/sessions/${encodeURIComponent(identities.rootSessionId)}`,
+    { signal },
+  );
   const root = rootResponse.body?.session;
   if (!root || root.project_id !== identities.projectId || root.root_session_id !== identities.rootSessionId) {
     throw new Error("Root Session/Project identity was not restored on the second launch.");
   }
-  const childResponse = await fetchPayload(`${baseUrl}/api/v1/sessions/${encodeURIComponent(identities.childSessionId)}`);
+  const childResponse = await fetchPayload(
+    `${baseUrl}/api/v1/sessions/${encodeURIComponent(identities.childSessionId)}`,
+    { signal },
+  );
   const child = childResponse.body?.session;
   if (
     !child ||
@@ -1152,21 +1207,26 @@ async function exerciseSecondLaunch(baseUrl, state, identities) {
     throw new Error("Child/root/Project relationship was not restored on the second launch.");
   }
 
-  const query = await executeTool(baseUrl, identities.rootSessionId, "memory", {
-    action: "query",
-    scope: "project",
-    query: state.markers.memoryKeyword,
-  });
+  const query = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "memory",
+    { action: "query", scope: "project", query: state.markers.memoryKeyword },
+    signal,
+  );
   assertCompactQuery(
     query,
     identities.memoryId,
     state.markers.memoryBody,
     state.markers.memoryTail,
   );
-  const selected = await executeTool(baseUrl, identities.rootSessionId, "memory", {
-    action: "get",
-    id: identities.memoryId,
-  });
+  const selected = await executeTool(
+    baseUrl,
+    identities.rootSessionId,
+    "memory",
+    { action: "get", id: identities.memoryId },
+    signal,
+  );
   if (
     selected?.memory?.frontmatter?.id !== identities.memoryId ||
     selected?.memory?.body !== state.markers.memoryBody
@@ -1180,6 +1240,7 @@ async function exerciseSecondLaunch(baseUrl, state, identities) {
     state.markers.restart,
     state.markers.assistant,
     "restart",
+    signal,
   );
 }
 
@@ -1445,13 +1506,17 @@ async function main() {
   const bambooIdentity = repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo");
   const state = createRuntime(expectedBodhi, expectedBamboo);
   const interrupts = installInterruptHandlers(process);
-  const interruptible = (value) => raceWithAbort(value, interrupts.signal);
   let providerTeardown = null;
   let firstStop = null;
   let secondStop = null;
   try {
     interrupts.throwIfAborted();
-    const build = prepareApplication(bambooDirectory, artifactLock, state.directories.tmp);
+    const build = await prepareApplication(
+      bambooDirectory,
+      artifactLock,
+      state.directories.tmp,
+      interrupts.signal,
+    );
     interrupts.throwIfAborted();
     repositoryIdentity(ROOT, expectedBodhi, "Bodhi after build");
     repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo after build");
@@ -1467,25 +1532,31 @@ async function main() {
     }
 
     console.log(`Run-owned root: ${state.runRoot}`);
-    const [providerPort, appPort] = await interruptible(
-      Promise.all([allocateLoopbackPort(), allocateLoopbackPort()]),
-    );
+    const [providerPort, appPort] = await Promise.all([
+      allocateLoopbackPort({ signal: interrupts.signal }),
+      allocateLoopbackPort({ signal: interrupts.signal }),
+    ]);
     if (providerPort === appPort) throw new Error("Provider and Bodhi unexpectedly selected the same port.");
-    await interruptible(assertLoopbackPortAvailable(providerPort));
-    await interruptible(assertLoopbackPortAvailable(appPort));
+    await assertLoopbackPortAvailable(providerPort, { signal: interrupts.signal });
+    await assertLoopbackPortAvailable(appPort, { signal: interrupts.signal });
     writeRuntimeConfig(state, providerPort);
 
     const unrelatedBefore = snapshotRelevantProcesses();
     const jianduBefore = snapshotJianduProcesses();
-    await interruptible(startProvider(state, providerPort));
+    await startProvider(state, providerPort, interrupts.signal);
 
     if (launchEvidenceNames(state).length !== 0) {
       throw new Error("Screenshot evidence must be empty before the first managed launch.");
     }
-    const launchOne = await interruptible(startBodhi(state, build, appPort, 1));
-    const identities = await interruptible(exerciseFirstLaunch(`http://127.0.0.1:${appPort}`, state));
-    const launchOneScreenshot = await interruptible(pauseForVisualEvidence(state, 1, appPort, interrupts));
-    firstStop = await interruptible(stopBodhi(state));
+    const launchOne = await startBodhi(state, build, appPort, 1, interrupts.signal);
+    const identities = await exerciseFirstLaunch(
+      `http://127.0.0.1:${appPort}`,
+      state,
+      interrupts.signal,
+    );
+    const launchOneScreenshot = await pauseForVisualEvidence(state, 1, appPort, interrupts);
+    firstStop = await stopBodhi(state);
+    interrupts.throwIfAborted();
 
     if (
       JSON.stringify(launchEvidenceNames(state)) !==
@@ -1494,13 +1565,19 @@ async function main() {
       throw new Error("Only the locked first-launch screenshot and browser receipt may exist before the second managed launch.");
     }
     assertScreenshotEvidenceUnchanged(launchOneScreenshot, readLaunchEvidence(state, 1));
-    const launchTwo = await interruptible(startBodhi(state, build, appPort, 2));
+    const launchTwo = await startBodhi(state, build, appPort, 2, interrupts.signal);
     if (launchTwo.appPid === launchOne.appPid || launchTwo.sidecarPid === launchOne.sidecarPid) {
       throw new Error("Second launch must have fresh Bodhi and managed Bamboo process identities.");
     }
-    await interruptible(exerciseSecondLaunch(`http://127.0.0.1:${appPort}`, state, identities));
-    const launchTwoScreenshot = await interruptible(pauseForVisualEvidence(state, 2, appPort, interrupts));
-    secondStop = await interruptible(stopBodhi(state));
+    await exerciseSecondLaunch(
+      `http://127.0.0.1:${appPort}`,
+      state,
+      identities,
+      interrupts.signal,
+    );
+    const launchTwoScreenshot = await pauseForVisualEvidence(state, 2, appPort, interrupts);
+    secondStop = await stopBodhi(state);
+    interrupts.throwIfAborted();
 
     const unrelatedAfter = snapshotRelevantProcesses();
     const jianduAfter = snapshotJianduProcesses();
@@ -1526,7 +1603,7 @@ async function main() {
     }
     const observations = providerObservations(state);
     const screenshots = screenshotEvidence(state, [launchOneScreenshot, launchTwoScreenshot]);
-    providerTeardown = await interruptible(stopProvider(state));
+    providerTeardown = await stopProvider(state);
     interrupts.throwIfAborted();
 
     const report = {

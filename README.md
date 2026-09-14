@@ -220,7 +220,7 @@ It is never called by ordinary development, build, package, or CI entrypoints. T
 
 The visual record is an explicit headless black-box capture of the exact live managed URL; it is not represented as a native WebView screenshot. Each launch uses a fresh `agent-browser` session and must provide both `browser-launch-N.png` and `browser-launch-N.json`. The receipt binds the launch-specific challenge, exact URL, page title, browser session, observation time, and PNG SHA-256. The harness validates and locks both files while the matching Bodhi app and its exclusively owned Bamboo sidecar are still live, then revalidates them after teardown. The real app logs independently prove that its WebView navigated to that same managed URL.
 
-`SIGINT` or `SIGTERM`, including Ctrl-C at either capture prompt, aborts the gate with a nonzero result, closes the prompt, performs the same bounded identity-safe app/sidecar/provider cleanup, and writes a failed evidence report rather than silently succeeding.
+`SIGINT` or `SIGTERM` at any phase, including dependency installation, Rust compilation, signing checks, API polling, and either capture prompt, aborts the gate with a nonzero result. Build commands run in owned process groups that are fully settled before failure is returned; request and polling work shares the same cancellation signal. The gate then closes any prompt, performs bounded identity-safe app/sidecar/provider cleanup, and writes a failed evidence report rather than silently succeeding.
 
 ### Runtime diagnostic env vars
 

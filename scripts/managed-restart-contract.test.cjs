@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -20,8 +21,8 @@ const {
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
   pngEvidenceMetadata,
-  raceWithAbort,
   redactText,
+  runInterruptibleCommand,
   terminateOwnedChild,
   terminateVerifiedProcess,
   validateBrowserReceipt,
@@ -154,6 +155,20 @@ test("occupied loopback ports are refused without disturbing the owner", async (
 
   const freePort = await allocateLoopbackPort();
   await assertLoopbackPortAvailable(freePort);
+});
+
+test("aborted loopback probes settle and release their temporary listeners", async () => {
+  const port = await allocateLoopbackPort();
+  const probeController = new AbortController();
+  const probe = assertLoopbackPortAvailable(port, { signal: probeController.signal });
+  probeController.abort(new Error("cancel port probe"));
+  await assert.rejects(probe, /cancel port probe/);
+  await assertLoopbackPortAvailable(port);
+
+  const allocationController = new AbortController();
+  const allocation = allocateLoopbackPort({ signal: allocationController.signal });
+  allocationController.abort(new Error("cancel port allocation"));
+  await assert.rejects(allocation, /cancel port allocation/);
 });
 
 test("teardown is bounded and targets only the spawned process", async () => {
@@ -382,19 +397,71 @@ test("readline Ctrl-C routes through the same abort controller", async () => {
   interrupts.dispose();
 });
 
-test("abort racing rejects immediately while retaining the underlying rejection handler", async () => {
-  const target = new EventEmitter();
-  const interrupts = installInterruptHandlers(target);
-  let rejectUnderlying;
-  const underlying = new Promise((resolve, reject) => {
-    rejectUnderlying = reject;
-  });
-  const raced = raceWithAbort(underlying, interrupts.signal);
-  target.emit("SIGTERM");
-  await assert.rejects(raced, /interrupted by SIGTERM/);
-  rejectUnderlying(new Error("late owned-child failure"));
+test("abort stops signal-aware condition polling without a detached continuation", async () => {
+  const controller = new AbortController();
+  let checks = 0;
+  const waiting = waitForCondition(
+    () => {
+      checks += 1;
+      return false;
+    },
+    { timeoutMs: 10_000, intervalMs: 1_000, label: "abortable condition", signal: controller.signal },
+  );
   await new Promise((resolve) => setImmediate(resolve));
-  interrupts.dispose();
+  controller.abort(new Error("unit cancellation"));
+  await assert.rejects(waiting, /unit cancellation/);
+  const settledChecks = checks;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(checks, settledChecks);
+});
+
+test("interruptible commands capture output and report nonzero exits", async () => {
+  const result = await runInterruptibleCommand(process.execPath, ["-e", 'process.stdout.write("ready")']);
+  assert.equal(result.stdout, "ready");
+  assert.equal(result.stderr, "");
+  assert.equal(result.exitCode, 0);
+  await assert.rejects(
+    runInterruptibleCommand(process.execPath, ["-e", 'process.stderr.write("expected"); process.exit(7)']),
+    /status 7: expected/,
+  );
+});
+
+test("interruptible commands terminate their complete owned process group before rejecting", async (context) => {
+  if (process.platform === "win32") {
+    context.skip("POSIX process-group ownership is required for this assertion.");
+    return;
+  }
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-command-abort-"));
+  const pidFile = path.join(directory, "pids.json");
+  const script = [
+    'const { spawn } = require("node:child_process");',
+    'const fs = require("node:fs");',
+    'const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+    `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.pid, child.pid]));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  const controller = new AbortController();
+  try {
+    const command = runInterruptibleCommand(process.execPath, ["-e", script], {
+      graceMs: 1_000,
+      killMs: 1_000,
+      signal: controller.signal,
+    });
+    await waitForCondition(() => fs.existsSync(pidFile), {
+      timeoutMs: 2_000,
+      intervalMs: 10,
+      label: "owned command pid receipt",
+    });
+    const pids = JSON.parse(fs.readFileSync(pidFile, "utf8"));
+    assert.equal(pids.length, 2);
+    controller.abort(new Error("command interrupted for unit test"));
+    await assert.rejects(command, /command interrupted for unit test/);
+    for (const pid of pids) {
+      assert.throws(() => process.kill(pid, 0), /ESRCH|no such process/i);
+    }
+  } finally {
+    fs.rmSync(directory, { force: true, recursive: true });
+  }
 });
 
 test("evidence redaction removes every designated secret", () => {

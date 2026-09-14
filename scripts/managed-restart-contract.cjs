@@ -1,3 +1,4 @@
+const { spawn } = require("node:child_process");
 const net = require("node:net");
 const path = require("node:path");
 const zlib = require("node:zlib");
@@ -84,40 +85,108 @@ function isolatedChildEnvironment(source, overrides = {}) {
   return environment;
 }
 
-async function assertLoopbackPortAvailable(port) {
+function abortReason(signal) {
+  return signal?.reason instanceof Error ? signal.reason : new Error("Operation aborted.");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function delayWithSignal(delayMs, signal) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    let timer;
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function delay(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function assertLoopbackPortAvailable(port, options = {}) {
   assertTcpPort(port);
+  const signal = options.signal;
+  throwIfAborted(signal);
   await new Promise((resolve, reject) => {
     const server = net.createServer();
+    let aborted = false;
+    let closing = false;
+    let settled = false;
     const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
       server.removeAllListeners();
       if (error) reject(error);
       else resolve();
     };
+    const onAbort = () => {
+      aborted = true;
+      if (server.listening) closeServer();
+    };
+    const closeServer = () => {
+      if (closing) return;
+      closing = true;
+      server.close((error) => finish(aborted ? abortReason(signal) : error || null));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     server.once("error", () => {
-      finish(new Error(`Loopback port ${port} is already occupied.`));
+      finish(aborted ? abortReason(signal) : new Error(`Loopback port ${port} is already occupied.`));
     });
     server.once("listening", () => {
-      server.close((error) => finish(error || null));
+      closeServer();
     });
     server.listen({ host: "127.0.0.1", port, exclusive: true });
   });
 }
 
-async function allocateLoopbackPort() {
+async function allocateLoopbackPort(options = {}) {
+  const signal = options.signal;
+  throwIfAborted(signal);
   return await new Promise((resolve, reject) => {
     const server = net.createServer();
-    server.once("error", reject);
+    let aborted = false;
+    let closing = false;
+    let settled = false;
+    let allocatedPort = null;
+    const finish = (error, port) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      server.removeAllListeners();
+      if (error) reject(error);
+      else resolve(port);
+    };
+    const onAbort = () => {
+      aborted = true;
+      if (server.listening) closeServer();
+    };
+    const closeServer = () => {
+      if (closing) return;
+      closing = true;
+      server.close((error) => finish(aborted ? abortReason(signal) : error || null, allocatedPort));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    server.once("error", (error) => finish(aborted ? abortReason(signal) : error));
     server.once("listening", () => {
       const address = server.address();
       if (!address || typeof address === "string") {
-        server.close();
-        reject(new Error("Could not allocate a numeric loopback port."));
+        closing = true;
+        server.close(() => finish(new Error("Could not allocate a numeric loopback port.")));
         return;
       }
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(address.port);
-      });
+      allocatedPort = address.port;
+      closeServer();
     });
     server.listen({ host: "127.0.0.1", port: 0, exclusive: true });
   });
@@ -127,20 +196,25 @@ async function waitForCondition(check, options = {}) {
   const timeoutMs = options.timeoutMs ?? 10_000;
   const intervalMs = options.intervalMs ?? 100;
   const label = options.label ?? "condition";
+  const signal = options.signal;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) {
     throw new Error("wait timeout must be a positive integer.");
   }
   const deadline = Date.now() + timeoutMs;
   let lastFailure;
   while (Date.now() < deadline) {
+    throwIfAborted(signal);
     try {
       const result = await check();
+      throwIfAborted(signal);
       if (result) return result;
     } catch (error) {
+      throwIfAborted(signal);
       lastFailure = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await delayWithSignal(intervalMs, signal);
   }
+  throwIfAborted(signal);
   const detail = lastFailure instanceof Error ? ` Last failure: ${lastFailure.message}` : "";
   throw new Error(`${label} did not complete within ${timeoutMs}ms.${detail}`);
 }
@@ -166,6 +240,173 @@ function waitForChildExit(child, timeoutMs) {
     timer.unref();
     child.once("exit", finish);
   });
+}
+
+function processGroupExists(groupId) {
+  if (process.platform === "win32") return false;
+  try {
+    process.kill(-groupId, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function signalOwnedProcessGroup(child, signalName, detached) {
+  if (detached && process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signalName);
+      return true;
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error;
+    }
+  }
+  if (child.exitCode === null && child.signalCode === null) return child.kill(signalName);
+  return false;
+}
+
+async function waitForOwnedProcessGroupExit(child, detached, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const childExited = child.exitCode !== null || child.signalCode !== null;
+    const groupExited = !detached || !processGroupExists(child.pid);
+    if (childExited && groupExited) {
+      return { exitCode: child.exitCode, signalCode: child.signalCode };
+    }
+    if (Date.now() >= deadline) return null;
+    await delay(Math.min(25, deadline - Date.now()));
+  } while (true);
+}
+
+async function terminateOwnedProcessGroup(child, options = {}) {
+  const detached = options.detached === true && process.platform !== "win32";
+  const graceMs = options.graceMs ?? 3_000;
+  const killMs = options.killMs ?? 2_000;
+  if (!child || !Number.isInteger(child.pid) || child.pid < 1) {
+    throw new Error("An exact spawned command process is required for teardown.");
+  }
+
+  const alreadyExited = await waitForOwnedProcessGroupExit(child, detached, 1);
+  if (alreadyExited) return { phase: "already-exited", ...alreadyExited };
+
+  signalOwnedProcessGroup(child, "SIGTERM", detached);
+  const graceful = await waitForOwnedProcessGroupExit(child, detached, graceMs);
+  if (graceful) return { phase: "sigterm", ...graceful };
+
+  signalOwnedProcessGroup(child, "SIGKILL", detached);
+  const forced = await waitForOwnedProcessGroupExit(child, detached, killMs);
+  if (!forced) {
+    throw new Error(`Owned command process group ${child.pid} did not exit within the bounded teardown.`);
+  }
+  return { phase: "sigkill", ...forced };
+}
+
+async function runInterruptibleCommand(command, args, options = {}) {
+  if (typeof command !== "string" || !command || !Array.isArray(args)) {
+    throw new Error("An exact command and argument array are required.");
+  }
+  const signal = options.signal;
+  throwIfAborted(signal);
+  const detached = process.platform !== "win32";
+  const visible = options.visible === true;
+  const maxOutputBytes = options.maxOutputBytes ?? 64 * 1024 * 1024;
+  if (!Number.isInteger(maxOutputBytes) || maxOutputBytes < 1) {
+    throw new Error("Command output limit must be a positive integer.");
+  }
+
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    detached,
+    env: options.env,
+    stdio: visible ? ["ignore", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  const append = (current, chunk) => {
+    const combined = current + chunk.toString("utf8");
+    if (Buffer.byteLength(combined) <= maxOutputBytes) return combined;
+    return `[earlier output truncated]\n${combined.slice(-Math.floor(maxOutputBytes / 2))}`;
+  };
+  child.stdout?.on("data", (chunk) => {
+    stdout = append(stdout, chunk);
+  });
+  child.stderr?.on("data", (chunk) => {
+    stderr = append(stderr, chunk);
+  });
+
+  let abortTask = null;
+  let notifyAbort;
+  const abortNotification = new Promise((resolve) => {
+    notifyAbort = resolve;
+  });
+  const onAbort = () => {
+    if (!abortTask && Number.isInteger(child.pid)) {
+      abortTask = terminateOwnedProcessGroup(child, {
+        detached,
+        graceMs: options.graceMs,
+        killMs: options.killMs,
+      });
+      abortTask.catch(() => {});
+      notifyAbort();
+    }
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+
+  let spawnError = null;
+  child.once("error", (error) => {
+    spawnError = error;
+  });
+  const closePromise = new Promise((resolve) => {
+    child.once("close", (exitCode, signalCode) => resolve({ exitCode, signalCode }));
+  });
+  const firstSettlement = await Promise.race([
+    closePromise.then((result) => ({ kind: "closed", result })),
+    abortNotification.then(() => ({ kind: "aborted" })),
+  ]);
+  if (firstSettlement.kind === "aborted") {
+    try {
+      await abortTask;
+    } catch (error) {
+      signal?.removeEventListener("abort", onAbort);
+      throw new Error(
+        `${abortReason(signal).message} Owned command cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    await closePromise;
+    signal?.removeEventListener("abort", onAbort);
+    throw abortReason(signal);
+  }
+  const result = firstSettlement.result;
+  signal?.removeEventListener("abort", onAbort);
+
+  if (abortTask) {
+    await abortTask;
+    throw abortReason(signal);
+  }
+  if (spawnError) throw spawnError;
+  if (signal?.aborted) throw abortReason(signal);
+
+  const groupSettlement = await waitForOwnedProcessGroupExit(child, detached, 250);
+  if (!groupSettlement) {
+    const cleanup = await terminateOwnedProcessGroup(child, {
+      detached,
+      graceMs: options.graceMs,
+      killMs: options.killMs,
+    });
+    throw new Error(
+      `${command} left an owned descendant process after exiting; it was cleaned up with ${cleanup.phase}.`,
+    );
+  }
+  throwIfAborted(signal);
+  if (result.exitCode !== 0) {
+    const detail = stderr.trim() ? `: ${stderr.trim().slice(-2_000)}` : "";
+    throw new Error(
+      `${command} exited with ${result.signalCode ? `signal ${result.signalCode}` : `status ${result.exitCode}`}${detail}`,
+    );
+  }
+  return { ...result, pid: child.pid, stderr, stdout };
 }
 
 async function terminateOwnedChild(child, options = {}) {
@@ -532,25 +773,6 @@ function installInterruptHandlers(target = process) {
   };
 }
 
-function raceWithAbort(value, signal) {
-  if (!signal) return Promise.resolve(value);
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    Promise.resolve(value).then(
-      (result) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(result);
-      },
-      (error) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
-
 async function waitForInteractiveConfirmation(interface, prompt, interrupts) {
   if (
     typeof interface?.question !== "function" ||
@@ -565,10 +787,28 @@ async function waitForInteractiveConfirmation(interface, prompt, interrupts) {
   const onReadlineInterrupt = () => interrupts.interrupt("SIGINT");
   interface.once("SIGINT", onReadlineInterrupt);
   try {
-    await raceWithAbort(
-      new Promise((resolve) => interface.question(prompt, resolve)),
-      interrupts.signal,
-    );
+    throwIfAborted(interrupts.signal);
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        interrupts.signal.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onAbort = () => finish(abortReason(interrupts.signal));
+      interrupts.signal.addEventListener("abort", onAbort, { once: true });
+      if (interrupts.signal.aborted) {
+        onAbort();
+        return;
+      }
+      try {
+        interface.question(prompt, () => finish());
+      } catch (error) {
+        finish(error);
+      }
+    });
   } finally {
     interface.off("SIGINT", onReadlineInterrupt);
     interface.close();
@@ -609,10 +849,11 @@ module.exports = {
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
   pngEvidenceMetadata,
-  raceWithAbort,
   redactText,
+  runInterruptibleCommand,
   terminateOwnedChild,
   terminateVerifiedProcess,
+  throwIfAborted,
   validateBrowserReceipt,
   waitForInteractiveConfirmation,
   waitForCondition,
