@@ -4,6 +4,7 @@ const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const zlib = require("node:zlib");
 
 const {
   allocateLoopbackPort,
@@ -24,6 +25,53 @@ const {
 
 const REVISION_A = "a".repeat(40);
 const REVISION_B = "b".repeat(40);
+const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  return value >>> 0;
+});
+
+function crc32(bytes) {
+  let value = 0xffffffff;
+  for (const byte of bytes) value = CRC32_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8);
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  typeBytes.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(crc32(Buffer.concat([typeBytes, data])), 8 + data.length);
+  return chunk;
+}
+
+function screenshotPng(width = 320, height = 200, encodedOverride = null) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const scanlines = Buffer.alloc((width * 3 + 1) * height);
+  let seed = 0x12345678;
+  for (let row = 0; row < height; row += 1) {
+    const rowStart = row * (width * 3 + 1);
+    scanlines[rowStart] = 0;
+    for (let index = 1; index <= width * 3; index += 1) {
+      seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;
+      scanlines[rowStart + index] = seed >>> 24;
+    }
+  }
+  const encoded = encodedOverride ?? zlib.deflateSync(scanlines);
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", encoded),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 test("requires full exact Git revisions and rejects identity drift", () => {
   assert.equal(assertFullRevision(REVISION_A, "Bodhi"), REVISION_A);
@@ -62,6 +110,8 @@ test("isolated child environments drop host credentials and runtime controls", (
       GH_TOKEN: "host-token",
       HTTP_PROXY: "http://proxy.invalid",
       NODE_OPTIONS: "--require untrusted.js",
+      PYTHONHOME: "/host/python",
+      PYTHONPATH: "/host/python/modules",
       SSH_AUTH_SOCK: "/private/tmp/agent.sock",
     },
     {
@@ -156,22 +206,16 @@ test("sidecar teardown never succeeds while its identity is unknown", () => {
   );
 });
 
-test("PNG evidence requires a real screenshot-sized PNG structure", () => {
-  const bytes = Buffer.alloc(1_024);
-  Buffer.from("89504e470d0a1a0a", "hex").copy(bytes, 0);
-  bytes.writeUInt32BE(13, 8);
-  bytes.write("IHDR", 12, "ascii");
-  bytes.writeUInt32BE(1280, 16);
-  bytes.writeUInt32BE(720, 20);
-  bytes.writeUInt32BE(bytes.length - 57, 33);
-  bytes.write("IDAT", 37, "ascii");
-  const iend = bytes.length - 12;
-  bytes.writeUInt32BE(0, iend);
-  bytes.write("IEND", iend + 4, "ascii");
-  assert.deepEqual(pngEvidenceMetadata(bytes), { height: 720, size: 1_024, width: 1280 });
+test("PNG evidence requires CRC-valid decodable screenshot pixels", () => {
+  const bytes = screenshotPng();
+  assert(bytes.length > 1_024);
+  assert.deepEqual(pngEvidenceMetadata(bytes), { height: 200, size: bytes.length, width: 320 });
   assert.throws(() => pngEvidenceMetadata(Buffer.alloc(0)), /valid PNG/);
-  bytes.writeUInt32BE(1, 16);
-  assert.throws(() => pngEvidenceMetadata(bytes), /usable screenshot dimensions/);
+  const corruptCrc = Buffer.from(bytes);
+  corruptCrc[corruptCrc.length - 13] ^= 0xff;
+  assert.throws(() => pngEvidenceMetadata(corruptCrc), /invalid CRC/);
+  assert.throws(() => pngEvidenceMetadata(screenshotPng(320, 200, Buffer.alloc(1_100, 0x55))), /undecodable/);
+  assert.throws(() => pngEvidenceMetadata(screenshotPng(1, 200)), /supported screenshot dimensions/);
 });
 
 test("each launch requires an exact screenshot with distinct bytes", () => {

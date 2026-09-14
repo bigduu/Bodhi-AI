@@ -1,10 +1,11 @@
 const net = require("node:net");
 const path = require("node:path");
+const zlib = require("node:zlib");
 
 const FULL_GIT_REVISION = /^[0-9a-f]{40}$/u;
 const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
 const CONTROLLED_ENV_PREFIX =
-  /^(?:AWS|AZURE|BAMBOO|BODHI|CARGO|CLAUDE|CODEX|COPILOT|DEEPSEEK|DYLD|GEMINI|GH|GIT|GITHUB|GOOGLE|JIANDU|LOTUS|MCP|NODE|NPM|OPENAI|PYTHON|RUST|SSH|VITE)_/u;
+  /^(?:PYTHON|(?:AWS|AZURE|BAMBOO|BODHI|CARGO|CLAUDE|CODEX|COPILOT|DEEPSEEK|DYLD|GEMINI|GH|GIT|GITHUB|GOOGLE|JIANDU|LOTUS|MCP|NODE|NPM|OPENAI|RUST|SSH|VITE)_)/u;
 const CONTROLLED_ENV_NAMES = new Set([
   "ALL_PROXY",
   "CURL_CA_BUNDLE",
@@ -17,6 +18,13 @@ const CONTROLLED_ENV_NAMES = new Set([
   "SSL_CERT_FILE",
 ]);
 const CREDENTIAL_ENV_NAME = /(?:^|_)(?:API_KEY|ACCESS_KEY|PRIVATE_KEY|AUTH|COOKIE|CREDENTIALS?|PASSWD|PASSWORD|SECRET|TOKEN)(?:_|$)/u;
+const MAX_PNG_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_PNG_DECODED_BYTES = 128 * 1024 * 1024;
+const CRC32_TABLE = Uint32Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  return value >>> 0;
+});
 
 function assertFullRevision(value, label) {
   if (typeof value !== "string" || !FULL_GIT_REVISION.test(value)) {
@@ -245,34 +253,143 @@ async function terminateVerifiedProcess(expected, options = {}) {
   throw new Error(`Verified process ${expected.pid} did not exit within the bounded teardown.`);
 }
 
-function pngEvidenceMetadata(bytes, label = "PNG evidence") {
-  if (!Buffer.isBuffer(bytes) || bytes.length < 45 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
-    throw new Error(`${label} is not a valid PNG file.`);
+function crc32(bytes) {
+  let value = 0xffffffff;
+  for (const byte of bytes) value = CRC32_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8);
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function paethPredictor(left, above, upperLeft) {
+  const prediction = left + above - upperLeft;
+  const leftDistance = Math.abs(prediction - left);
+  const aboveDistance = Math.abs(prediction - above);
+  const upperLeftDistance = Math.abs(prediction - upperLeft);
+  if (leftDistance <= aboveDistance && leftDistance <= upperLeftDistance) return left;
+  return aboveDistance <= upperLeftDistance ? above : upperLeft;
+}
+
+function decodePngScanlines(compressed, width, height, channels, label) {
+  const rowBytes = width * channels;
+  const decodedBytes = (rowBytes + 1) * height;
+  if (!Number.isSafeInteger(decodedBytes) || decodedBytes > MAX_PNG_DECODED_BYTES) {
+    throw new Error(`${label} has unsafe decoded image dimensions.`);
   }
-  const ihdrLength = bytes.readUInt32BE(8);
-  const ihdrType = bytes.subarray(12, 16).toString("ascii");
-  const width = bytes.readUInt32BE(16);
-  const height = bytes.readUInt32BE(20);
-  if (ihdrLength !== 13 || ihdrType !== "IHDR" || width < 320 || height < 200 || bytes.length < 1_024) {
-    throw new Error(`${label} does not have usable screenshot dimensions or content.`);
+  let encoded;
+  try {
+    encoded = zlib.inflateSync(compressed, { maxOutputLength: decodedBytes + 1 });
+  } catch {
+    throw new Error(`${label} contains undecodable PNG image data.`);
+  }
+  if (encoded.length !== decodedBytes) {
+    throw new Error(`${label} decoded to an unexpected scanline length.`);
+  }
+
+  let previous = Buffer.alloc(rowBytes);
+  let sourceOffset = 0;
+  for (let row = 0; row < height; row += 1) {
+    const filter = encoded[sourceOffset];
+    sourceOffset += 1;
+    if (filter > 4) throw new Error(`${label} contains an invalid PNG scanline filter.`);
+    const current = Buffer.allocUnsafe(rowBytes);
+    for (let column = 0; column < rowBytes; column += 1) {
+      const source = encoded[sourceOffset];
+      sourceOffset += 1;
+      const left = column >= channels ? current[column - channels] : 0;
+      const above = previous[column];
+      const upperLeft = column >= channels ? previous[column - channels] : 0;
+      let predictor = 0;
+      if (filter === 1) predictor = left;
+      else if (filter === 2) predictor = above;
+      else if (filter === 3) predictor = Math.floor((left + above) / 2);
+      else if (filter === 4) predictor = paethPredictor(left, above, upperLeft);
+      current[column] = (source + predictor) & 0xff;
+    }
+    previous = current;
+  }
+}
+
+function pngEvidenceMetadata(bytes, label = "PNG evidence") {
+  if (
+    !Buffer.isBuffer(bytes) ||
+    bytes.length < 45 ||
+    bytes.length > MAX_PNG_FILE_BYTES ||
+    !bytes.subarray(0, 8).equals(PNG_SIGNATURE)
+  ) {
+    throw new Error(`${label} is not a valid PNG file.`);
   }
 
   let offset = 8;
+  let width = null;
+  let height = null;
+  let channels = null;
+  let sawHeader = false;
   let sawImageData = false;
+  let endedImageData = false;
   let sawEnd = false;
+  const imageData = [];
   while (offset + 12 <= bytes.length) {
     const length = bytes.readUInt32BE(offset);
     if (length > bytes.length - offset - 12) throw new Error(`${label} contains a truncated PNG chunk.`);
     const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
-    if (type === "IDAT" && length > 0) sawImageData = true;
-    offset += length + 12;
+    if (!/^[A-Za-z]{4}$/u.test(type)) throw new Error(`${label} contains an invalid PNG chunk type.`);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    const expectedCrc = bytes.readUInt32BE(dataEnd);
+    const actualCrc = crc32(bytes.subarray(offset + 4, dataEnd));
+    if (actualCrc !== expectedCrc) throw new Error(`${label} contains a PNG chunk with an invalid CRC.`);
+
+    if (!sawHeader && type !== "IHDR") throw new Error(`${label} does not begin with a PNG header.`);
+    if (type === "IHDR") {
+      if (sawHeader || offset !== 8 || length !== 13) throw new Error(`${label} has an invalid PNG header.`);
+      width = bytes.readUInt32BE(dataStart);
+      height = bytes.readUInt32BE(dataStart + 4);
+      const bitDepth = bytes[dataStart + 8];
+      const colorType = bytes[dataStart + 9];
+      const compression = bytes[dataStart + 10];
+      const filter = bytes[dataStart + 11];
+      const interlace = bytes[dataStart + 12];
+      channels = new Map([
+        [0, 1],
+        [2, 3],
+        [4, 2],
+        [6, 4],
+      ]).get(colorType);
+      if (
+        width < 320 ||
+        height < 200 ||
+        width > 16_384 ||
+        height > 16_384 ||
+        bytes.length < 1_024 ||
+        bitDepth !== 8 ||
+        channels === undefined ||
+        compression !== 0 ||
+        filter !== 0 ||
+        interlace !== 0
+      ) {
+        throw new Error(`${label} does not have supported screenshot dimensions or encoding.`);
+      }
+      sawHeader = true;
+    } else if (type === "IDAT") {
+      if (!sawHeader || sawEnd || endedImageData) throw new Error(`${label} has invalid PNG image-data ordering.`);
+      if (length > 0) {
+        imageData.push(bytes.subarray(dataStart, dataEnd));
+        sawImageData = true;
+      }
+    } else {
+      if (sawImageData && type !== "IEND") endedImageData = true;
+      if (type.charCodeAt(0) >= 65 && type.charCodeAt(0) <= 90 && type !== "PLTE" && type !== "IEND") {
+        throw new Error(`${label} contains an unsupported critical PNG chunk.`);
+      }
+    }
+    offset = dataEnd + 4;
     if (type === "IEND") {
       if (length !== 0 || offset !== bytes.length) throw new Error(`${label} has an invalid PNG terminator.`);
       sawEnd = true;
       break;
     }
   }
-  if (!sawImageData || !sawEnd) throw new Error(`${label} is missing encoded image data.`);
+  if (!sawHeader || !sawImageData || !sawEnd) throw new Error(`${label} is missing encoded image data.`);
+  decodePngScanlines(Buffer.concat(imageData), width, height, channels, label);
   return { height, size: bytes.length, width };
 }
 
