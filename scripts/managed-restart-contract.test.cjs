@@ -14,6 +14,7 @@ const {
   assertOwnedAbsolutePath,
   distinctLaunchScreenshots,
   isolatedChildEnvironment,
+  managedSidecarTeardownComplete,
   pngEvidenceMetadata,
   redactText,
   terminateOwnedChild,
@@ -141,6 +142,18 @@ test("verified PID teardown refuses reuse and force-cleans the exact identity", 
     /identity changed/,
   );
   assert.equal(signals.includes("unsafe"), false);
+});
+
+test("sidecar teardown never succeeds while its identity is unknown", () => {
+  const expected = { pid: 4242, startedAt: "Mon Sep 14 02:00:00 2026", command: "/owned/bamboo" };
+  assert.equal(managedSidecarTeardownComplete(null, null, []), false);
+  assert.equal(managedSidecarTeardownComplete(expected, expected, []), false);
+  assert.equal(managedSidecarTeardownComplete(expected, null, [4242]), false);
+  assert.equal(managedSidecarTeardownComplete(expected, null, []), true);
+  assert.throws(
+    () => managedSidecarTeardownComplete(expected, { ...expected, startedAt: "changed" }, []),
+    /identity changed/,
+  );
 });
 
 test("PNG evidence requires a real screenshot-sized PNG structure", () => {

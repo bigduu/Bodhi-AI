@@ -16,6 +16,7 @@ const {
   assertOwnedAbsolutePath,
   distinctLaunchScreenshots,
   isolatedChildEnvironment,
+  managedSidecarTeardownComplete,
   pngEvidenceMetadata,
   redactText,
   terminateOwnedChild,
@@ -243,9 +244,19 @@ function prepareApplication(bambooDirectory, artifactLock, scratchDirectory) {
     { cwd: ROOT, env: buildEnvironment },
   );
 
-  const bundleRoot = path.join(ROOT, "target", "debug", "bundle", "macos", "Bodhi AI.app");
-  const executable = path.join(bundleRoot, "Contents", "MacOS", "bodhi");
-  const bundledSidecar = path.join(bundleRoot, "Contents", "MacOS", "bamboo");
+  const builtBundleRoot = path.join(ROOT, "target", "debug", "bundle", "macos", "Bodhi AI.app");
+  const bundleRoot = assertOwnedAbsolutePath(
+    scratchDirectory,
+    path.join(scratchDirectory, "Bodhi AI acceptance.app"),
+    "run-owned application bundle",
+  );
+  if (fs.existsSync(bundleRoot)) throw new Error("The run-owned application bundle path already exists.");
+  execFileSync("ditto", [builtBundleRoot, bundleRoot], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const executable = fs.realpathSync(path.join(bundleRoot, "Contents", "MacOS", "bodhi"));
+  const bundledSidecar = fs.realpathSync(path.join(bundleRoot, "Contents", "MacOS", "bamboo"));
   const metadata = fs.lstatSync(executable);
   if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size < 65_536) {
     throw new Error(`Compiled Bodhi executable is missing or invalid at ${executable}.`);
@@ -514,6 +525,20 @@ function processIdentity(pid) {
   }
 }
 
+function exactCommandProcessIdentities(expectedCommand, excluded = new Set()) {
+  const expected = fs.realpathSync(expectedCommand);
+  const output = commandText("ps", ["-ww", "-axo", "pid=,lstart=,comm="]);
+  const identities = [];
+  for (const line of output.split(/\r?\n/u)) {
+    const match = line.match(/^\s*(\d+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d{4})\s+(.+)$/u);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (excluded.has(pid) || match[3].trim() !== expected) continue;
+    identities.push({ pid, startedAt: match[2], command: match[3].trim() });
+  }
+  return identities.sort((left, right) => left.pid - right.pid);
+}
+
 function directChildren(pid) {
   try {
     return commandText("pgrep", ["-P", String(pid)])
@@ -554,22 +579,35 @@ function retainManagedSidecarIdentity(app, expectedPid = null) {
   if (matches.length > 1) throw new Error(`Expected at most one managed Bamboo spawn log, found ${matches.length}.`);
   const loggedPid = matches.length === 1 ? managedSidecarFromLog(log, app.port).pid : null;
   const children = processExists(app.child.pid)
-    ? directChildren(app.child.pid).filter((pid) => processCommandName(pid).toLowerCase().includes("bamboo"))
+    ? directChildren(app.child.pid).filter((pid) => {
+        try {
+          return processCommandName(pid).toLowerCase().includes("bamboo");
+        } catch {
+          return false;
+        }
+      })
     : [];
   if (children.length > 1) throw new Error(`Bodhi owns ambiguous Bamboo children: ${JSON.stringify(children)}.`);
-  const pid = expectedPid ?? loggedPid ?? children[0] ?? null;
-  if (pid === null) return null;
-  if ((loggedPid !== null && loggedPid !== pid) || (children.length === 1 && children[0] !== pid)) {
-    throw new Error("Managed Bamboo log and direct-child identity disagree.");
+  const exactCandidates = exactCommandProcessIdentities(app.sidecarExecutable, new Set([app.child.pid]));
+  if (exactCandidates.length > 1) {
+    throw new Error(`The run-owned bundle has ambiguous Bamboo processes: ${JSON.stringify(exactCandidates.map(({ pid }) => pid))}.`);
   }
+  const exactPid = exactCandidates[0]?.pid ?? null;
+  const observedPids = [...new Set([expectedPid, loggedPid, children[0], exactPid].filter((pid) => pid !== null && pid !== undefined))];
+  if (observedPids.length > 1) {
+    throw new Error(`Managed Bamboo identity evidence disagrees: ${JSON.stringify(observedPids)}.`);
+  }
+  const pid = observedPids[0] ?? null;
+  if (pid === null) return null;
   app.sidecarPid = pid;
   const identity = processIdentity(pid);
   if (!identity) return null;
-  const commandMatches = path.basename(identity.command).toLowerCase().includes("bamboo");
+  const commandMatches = identity.command === app.sidecarExecutable;
   const direct = processExists(app.child.pid) && processParent(pid) === app.child.pid;
   const owners = listenerOwners(app.port);
   const exclusiveListener = owners.length === 1 && owners[0] === pid;
-  if (!commandMatches || (!direct && !exclusiveListener) || (owners.length > 0 && !exclusiveListener)) {
+  const runOwnedExecutable = exactPid === pid;
+  if (!commandMatches || (!direct && !exclusiveListener && !runOwnedExecutable) || (owners.length > 0 && !exclusiveListener)) {
     throw new Error(`Cannot prove process ${pid} is the managed Bamboo child for port ${app.port}.`);
   }
   app.sidecarIdentity = identity;
@@ -698,6 +736,11 @@ function managedSidecarFromLog(log, expectedPort) {
 
 async function startBodhi(state, build, port, launchNumber) {
   await assertLoopbackPortAvailable(port);
+  const sidecarExecutable = fs.realpathSync(build.bundledSidecar);
+  const preExistingSidecars = exactCommandProcessIdentities(sidecarExecutable);
+  if (preExistingSidecars.length !== 0) {
+    throw new Error(`The run-owned Bamboo executable is already active: ${JSON.stringify(preExistingSidecars.map(({ pid }) => pid))}.`);
+  }
   const stdout = boundedLogCollector();
   const stderr = boundedLogCollector();
   const child = spawn(build.executable, [], {
@@ -723,11 +766,21 @@ async function startBodhi(state, build, port, launchNumber) {
   });
   child.stdout.on("data", (chunk) => stdout.append(chunk));
   child.stderr.on("data", (chunk) => stderr.append(chunk));
-  const app = { child, launchNumber, port, stdout, stderr, sidecarIdentity: null, sidecarPid: null };
+  const app = {
+    child,
+    launchNumber,
+    port,
+    stdout,
+    stderr,
+    sidecarExecutable,
+    sidecarIdentity: null,
+    sidecarPid: null,
+  };
   state.app = app;
 
   await waitForCondition(
     () => {
+      retainManagedSidecarIdentity(app);
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Bodhi exited before spawning Bamboo: ${stderr.value()}\n${stdout.value()}`);
       }
@@ -813,15 +866,29 @@ async function stopBodhi(state) {
       recoveryError = error;
     }
   }
-  const sidecarPid = app.sidecarPid;
   let teardown = null;
   let sidecarCleanup = null;
   try {
     try {
       teardown = await terminateOwnedChild(app.child, { graceMs: 3_000, killMs: 2_000 });
       await waitForCondition(
-        async () => (!sidecarPid || !processExists(sidecarPid)) && listenerOwners(app.port).length === 0,
-        { timeoutMs: 10_000, intervalMs: 100, label: `managed Bamboo ${sidecarPid ?? "unknown"} teardown` },
+        async () => {
+          if (!app.sidecarIdentity) {
+            try {
+              retainManagedSidecarIdentity(app);
+            } catch (error) {
+              recoveryError = error;
+              throw error;
+            }
+          }
+          const actual = app.sidecarIdentity ? processIdentity(app.sidecarIdentity.pid) : null;
+          return managedSidecarTeardownComplete(app.sidecarIdentity, actual, listenerOwners(app.port));
+        },
+        {
+          timeoutMs: 10_000,
+          intervalMs: 100,
+          label: `managed Bamboo ${app.sidecarPid ?? "unknown"} verified teardown`,
+        },
       );
     } catch (error) {
       try {
@@ -851,10 +918,10 @@ async function stopBodhi(state) {
         );
       }
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)} Exact verified sidecar ${sidecarPid} was force-cleaned (${sidecarCleanup.phase}).`,
+        `${error instanceof Error ? error.message : String(error)} Exact verified sidecar ${app.sidecarPid} was force-cleaned (${sidecarCleanup.phase}).`,
       );
     }
-    return { appPid, sidecarPid, sidecarCleanup, teardown, listenerReleased: true };
+    return { appPid, sidecarPid: app.sidecarPid, sidecarCleanup, teardown, listenerReleased: true };
   } finally {
     writePrivateText(
       path.join(state.directories.logs, `launch-${app.launchNumber}.log`),

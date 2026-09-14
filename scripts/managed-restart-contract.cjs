@@ -192,6 +192,18 @@ function assertSameProcessIdentity(actual, expected) {
   }
 }
 
+function managedSidecarTeardownComplete(expected, actual, listenerPids) {
+  if (!Array.isArray(listenerPids)) {
+    throw new Error("Managed sidecar listener ownership must be an array.");
+  }
+  if (!expected) return false;
+  if (actual !== null) {
+    assertSameProcessIdentity(actual, expected);
+    return false;
+  }
+  return listenerPids.length === 0;
+}
+
 async function terminateVerifiedProcess(expected, options = {}) {
   const inspect = options.inspect;
   const signal = options.signal;
@@ -307,6 +319,7 @@ module.exports = {
   assertTcpPort,
   distinctLaunchScreenshots,
   isolatedChildEnvironment,
+  managedSidecarTeardownComplete,
   pngEvidenceMetadata,
   redactText,
   terminateOwnedChild,
