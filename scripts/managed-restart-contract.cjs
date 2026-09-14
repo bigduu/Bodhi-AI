@@ -396,6 +396,9 @@ function pngEvidenceMetadata(bytes, label = "PNG evidence") {
 function distinctLaunchScreenshots(screenshots) {
   if (!Array.isArray(screenshots)) throw new Error("Screenshot evidence must be an array.");
   const expectedNames = ["browser-launch-1.png", "browser-launch-2.png"];
+  if (screenshots.length !== expectedNames.length) {
+    throw new Error(`Visual evidence must contain only the two separate exact files: ${expectedNames.join(", ")}.`);
+  }
   const selected = expectedNames.map((name) => screenshots.find((entry) => entry?.name === name));
   if (selected.some((entry) => !entry || !/^[0-9a-f]{64}$/u.test(entry.sha256))) {
     throw new Error(`Visual evidence must include separate exact files: ${expectedNames.join(", ")}.`);
@@ -404,6 +407,19 @@ function distinctLaunchScreenshots(screenshots) {
     throw new Error("The two launch screenshots must contain distinct captured bytes.");
   }
   return selected;
+}
+
+function assertScreenshotEvidenceUnchanged(expected, actual) {
+  const scalarKeys = ["name", "sha256", "height", "size", "width"];
+  if (
+    !expected ||
+    !actual ||
+    scalarKeys.some((key) => expected[key] !== actual[key]) ||
+    JSON.stringify(expected.fileIdentity) !== JSON.stringify(actual.fileIdentity)
+  ) {
+    throw new Error(`Screenshot ${expected?.name ?? "evidence"} changed after its launch-time validation.`);
+  }
+  return expected;
 }
 
 function redactText(value, secrets) {
@@ -433,6 +449,7 @@ module.exports = {
   assertIdentityMatches,
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
+  assertScreenshotEvidenceUnchanged,
   assertTcpPort,
   distinctLaunchScreenshots,
   isolatedChildEnvironment,

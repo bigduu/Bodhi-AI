@@ -14,6 +14,7 @@ const {
   assertIdentityMatches,
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
+  assertScreenshotEvidenceUnchanged,
   distinctLaunchScreenshots,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
@@ -1175,13 +1176,15 @@ async function pauseForVisualEvidence(state, launchNumber, port) {
   console.log(`Evidence root: ${state.directories.evidence}`);
   console.log(`Screenshots: ${state.directories.screenshots}`);
   console.log(`Required capture: ${path.join(state.directories.screenshots, `browser-launch-${launchNumber}.png`)}`);
-  if (process.env.BODHI_ACCEPTANCE_AUTO_CONTINUE === "1") return;
-  if (!process.stdin.isTTY) {
-    throw new Error("Interactive visual acceptance requires a TTY, or set BODHI_ACCEPTANCE_AUTO_CONTINUE=1 for unattended contract runs.");
+  if (process.env.BODHI_ACCEPTANCE_AUTO_CONTINUE !== "1") {
+    if (!process.stdin.isTTY) {
+      throw new Error("Interactive visual acceptance requires a TTY, or set BODHI_ACCEPTANCE_AUTO_CONTINUE=1 for unattended contract runs.");
+    }
+    const interface = readline.createInterface({ input: process.stdin, output: process.stdout });
+    await new Promise((resolve) => interface.question(`Capture launch ${launchNumber} evidence, then press Enter to continue… `, resolve));
+    interface.close();
   }
-  const interface = readline.createInterface({ input: process.stdin, output: process.stdout });
-  await new Promise((resolve) => interface.question(`Capture launch ${launchNumber} evidence, then press Enter to continue… `, resolve));
-  interface.close();
+  return captureLaunchScreenshot(state, launchNumber);
 }
 
 function providerObservations(state) {
@@ -1214,17 +1217,80 @@ function providerObservations(state) {
   return value;
 }
 
-function screenshotEvidence(state) {
-  const screenshots = fs
+function screenshotNames(state) {
+  return fs
     .readdirSync(state.directories.screenshots, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && /\.png$/iu.test(entry.name))
-    .map((entry) => {
-      const file = path.join(state.directories.screenshots, entry.name);
-      const bytes = fs.readFileSync(file);
-      return { name: entry.name, sha256: sha256(bytes), ...pngEvidenceMetadata(bytes, entry.name) };
-    })
-    .sort((left, right) => left.name.localeCompare(right.name));
-  return distinctLaunchScreenshots(screenshots);
+    .filter((entry) => /\.png$/iu.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function readLaunchScreenshot(state, launchNumber) {
+  const name = `browser-launch-${launchNumber}.png`;
+  const file = assertOwnedAbsolutePath(
+    state.directories.screenshots,
+    path.join(state.directories.screenshots, name),
+    `launch ${launchNumber} screenshot`,
+  );
+  const metadata = fs.lstatSync(file);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(`${name} must be a regular run-owned file.`);
+  }
+  const bytes = fs.readFileSync(file);
+  return {
+    name,
+    sha256: sha256(bytes),
+    ...pngEvidenceMetadata(bytes, name),
+    fileIdentity: {
+      device: metadata.dev,
+      inode: metadata.ino,
+      changeTimeMs: metadata.ctimeMs,
+      modifiedTimeMs: metadata.mtimeMs,
+    },
+  };
+}
+
+function captureLaunchScreenshot(state, launchNumber) {
+  const app = state.app;
+  const actualSidecar = app?.sidecarIdentity ? processIdentity(app.sidecarIdentity.pid) : null;
+  if (
+    !app ||
+    app.launchNumber !== launchNumber ||
+    app.child.exitCode !== null ||
+    app.child.signalCode !== null ||
+    !app.sidecarIdentity ||
+    !actualSidecar ||
+    actualSidecar.pid !== app.sidecarIdentity.pid ||
+    actualSidecar.startedAt !== app.sidecarIdentity.startedAt ||
+    actualSidecar.command !== app.sidecarIdentity.command
+  ) {
+    throw new Error(`Launch ${launchNumber} screenshot was not validated while its managed app was active.`);
+  }
+  const owners = listenerOwners(app.port);
+  if (owners.length !== 1 || owners[0] !== app.sidecarIdentity.pid) {
+    throw new Error(`Launch ${launchNumber} screenshot was not validated against the exclusively owned sidecar.`);
+  }
+  const expectedNames = launchNumber === 1 ? ["browser-launch-1.png"] : ["browser-launch-1.png", "browser-launch-2.png"];
+  const names = screenshotNames(state);
+  if (JSON.stringify(names) !== JSON.stringify(expectedNames)) {
+    throw new Error(`Launch ${launchNumber} must contain exactly ${expectedNames.join(", ")} at its validation point.`);
+  }
+  return {
+    ...readLaunchScreenshot(state, launchNumber),
+    validatedDuringLaunch: launchNumber,
+    validatedAt: new Date().toISOString(),
+    appPid: app.child.pid,
+    sidecarPid: app.sidecarIdentity.pid,
+  };
+}
+
+function screenshotEvidence(state, captured) {
+  const current = distinctLaunchScreenshots([readLaunchScreenshot(state, 1), readLaunchScreenshot(state, 2)]);
+  const locked = distinctLaunchScreenshots(captured);
+  for (let index = 0; index < locked.length; index += 1) {
+    assertScreenshotEvidenceUnchanged(locked[index], current[index]);
+  }
+  return locked;
 }
 
 function regularFiles(root) {
@@ -1318,17 +1384,24 @@ async function main() {
     const jianduBefore = snapshotJianduProcesses();
     await startProvider(state, providerPort);
 
+    if (screenshotNames(state).length !== 0) {
+      throw new Error("Screenshot evidence must be empty before the first managed launch.");
+    }
     const launchOne = await startBodhi(state, build, appPort, 1);
     const identities = await exerciseFirstLaunch(`http://127.0.0.1:${appPort}`, state);
-    await pauseForVisualEvidence(state, 1, appPort);
+    const launchOneScreenshot = await pauseForVisualEvidence(state, 1, appPort);
     firstStop = await stopBodhi(state);
 
+    if (JSON.stringify(screenshotNames(state)) !== JSON.stringify(["browser-launch-1.png"])) {
+      throw new Error("Only the locked first-launch screenshot may exist before the second managed launch.");
+    }
+    assertScreenshotEvidenceUnchanged(launchOneScreenshot, readLaunchScreenshot(state, 1));
     const launchTwo = await startBodhi(state, build, appPort, 2);
     if (launchTwo.appPid === launchOne.appPid || launchTwo.sidecarPid === launchOne.sidecarPid) {
       throw new Error("Second launch must have fresh Bodhi and managed Bamboo process identities.");
     }
     await exerciseSecondLaunch(`http://127.0.0.1:${appPort}`, state, identities);
-    await pauseForVisualEvidence(state, 2, appPort);
+    const launchTwoScreenshot = await pauseForVisualEvidence(state, 2, appPort);
     secondStop = await stopBodhi(state);
 
     const unrelatedAfter = snapshotRelevantProcesses();
@@ -1354,7 +1427,7 @@ async function main() {
       throw new Error("The child session_note marker leaked into the fallback Jiandu root.");
     }
     const observations = providerObservations(state);
-    const screenshots = screenshotEvidence(state);
+    const screenshots = screenshotEvidence(state, [launchOneScreenshot, launchTwoScreenshot]);
     providerTeardown = await stopProvider(state);
 
     const report = {

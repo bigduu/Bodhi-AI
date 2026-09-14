@@ -13,6 +13,7 @@ const {
   assertIdentityMatches,
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
+  assertScreenshotEvidenceUnchanged,
   distinctLaunchScreenshots,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
@@ -219,8 +220,22 @@ test("PNG evidence requires CRC-valid decodable screenshot pixels", () => {
 });
 
 test("each launch requires an exact screenshot with distinct bytes", () => {
-  const first = { name: "browser-launch-1.png", sha256: "a".repeat(64) };
-  const second = { name: "browser-launch-2.png", sha256: "b".repeat(64) };
+  const first = {
+    name: "browser-launch-1.png",
+    sha256: "a".repeat(64),
+    height: 200,
+    size: 1_024,
+    width: 320,
+    fileIdentity: { device: 1, inode: 10, changeTimeMs: 100, modifiedTimeMs: 100 },
+  };
+  const second = {
+    name: "browser-launch-2.png",
+    sha256: "b".repeat(64),
+    height: 200,
+    size: 1_025,
+    width: 320,
+    fileIdentity: { device: 1, inode: 11, changeTimeMs: 101, modifiedTimeMs: 101 },
+  };
   assert.deepEqual(distinctLaunchScreenshots([second, first]), [first, second]);
   assert.throws(
     () => distinctLaunchScreenshots([{ name: "launch-1-launch-2.png", sha256: "c".repeat(64) }]),
@@ -229,6 +244,16 @@ test("each launch requires an exact screenshot with distinct bytes", () => {
   assert.throws(
     () => distinctLaunchScreenshots([first, { ...second, sha256: first.sha256 }]),
     /distinct captured bytes/,
+  );
+  assert.throws(() => distinctLaunchScreenshots([first, second, { ...second, name: "extra.png" }]), /only the two/);
+  assert.equal(assertScreenshotEvidenceUnchanged(first, { ...first }), first);
+  assert.throws(
+    () => assertScreenshotEvidenceUnchanged(first, { ...first, fileIdentity: { ...first.fileIdentity, inode: 99 } }),
+    /changed after its launch-time validation/,
+  );
+  assert.throws(
+    () => assertScreenshotEvidenceUnchanged(first, { ...first, sha256: "c".repeat(64) }),
+    /changed after its launch-time validation/,
   );
 });
 
