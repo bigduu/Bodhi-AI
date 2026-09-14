@@ -14,6 +14,7 @@ const {
   assertIdentityMatches,
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
+  distinctLaunchScreenshots,
   isolatedChildEnvironment,
   pngEvidenceMetadata,
   redactText,
@@ -540,6 +541,41 @@ function listenerOwners(port) {
   }
 }
 
+function retainManagedSidecarIdentity(app, expectedPid = null) {
+  if (app.sidecarIdentity) {
+    if (expectedPid !== null && app.sidecarIdentity.pid !== expectedPid) {
+      throw new Error(`Managed Bamboo identity changed from ${app.sidecarIdentity.pid} to ${expectedPid}.`);
+    }
+    return app.sidecarIdentity;
+  }
+
+  const log = stripAnsi(`${app.stdout.value()}\n${app.stderr.value()}`);
+  const matches = [...log.matchAll(/Managed bamboo pid=(\d+) port=(\d+)/gu)];
+  if (matches.length > 1) throw new Error(`Expected at most one managed Bamboo spawn log, found ${matches.length}.`);
+  const loggedPid = matches.length === 1 ? managedSidecarFromLog(log, app.port).pid : null;
+  const children = processExists(app.child.pid)
+    ? directChildren(app.child.pid).filter((pid) => processCommandName(pid).toLowerCase().includes("bamboo"))
+    : [];
+  if (children.length > 1) throw new Error(`Bodhi owns ambiguous Bamboo children: ${JSON.stringify(children)}.`);
+  const pid = expectedPid ?? loggedPid ?? children[0] ?? null;
+  if (pid === null) return null;
+  if ((loggedPid !== null && loggedPid !== pid) || (children.length === 1 && children[0] !== pid)) {
+    throw new Error("Managed Bamboo log and direct-child identity disagree.");
+  }
+  app.sidecarPid = pid;
+  const identity = processIdentity(pid);
+  if (!identity) return null;
+  const commandMatches = path.basename(identity.command).toLowerCase().includes("bamboo");
+  const direct = processExists(app.child.pid) && processParent(pid) === app.child.pid;
+  const owners = listenerOwners(app.port);
+  const exclusiveListener = owners.length === 1 && owners[0] === pid;
+  if (!commandMatches || (!direct && !exclusiveListener) || (owners.length > 0 && !exclusiveListener)) {
+    throw new Error(`Cannot prove process ${pid} is the managed Bamboo child for port ${app.port}.`);
+  }
+  app.sidecarIdentity = identity;
+  return identity;
+}
+
 function processListeners(pid) {
   try {
     const output = commandText("lsof", ["-nP", "-a", "-p", String(pid), "-iTCP", "-sTCP:LISTEN", "-Fn"]);
@@ -691,6 +727,20 @@ async function startBodhi(state, build, port, launchNumber) {
   state.app = app;
 
   await waitForCondition(
+    () => {
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`Bodhi exited before spawning Bamboo: ${stderr.value()}\n${stdout.value()}`);
+      }
+      return /Managed bamboo pid=\d+ port=\d+/u.test(stripAnsi(`${stdout.value()}\n${stderr.value()}`));
+    },
+    { timeoutMs: READY_TIMEOUT_MS, intervalMs: 100, label: "managed sidecar identity log" },
+  );
+  const sidecar = managedSidecarFromLog(`${stdout.value()}\n${stderr.value()}`, port);
+  if (!retainManagedSidecarIdentity(app, sidecar.pid)) {
+    throw new Error(`Managed Bamboo ${sidecar.pid} exited before its identity could be retained.`);
+  }
+
+  await waitForCondition(
     async () => {
       if (child.exitCode !== null || child.signalCode !== null) {
         throw new Error(`Bodhi exited before readiness: ${stderr.value()}\n${stdout.value()}`);
@@ -702,17 +752,6 @@ async function startBodhi(state, build, port, launchNumber) {
     },
     { timeoutMs: READY_TIMEOUT_MS, intervalMs: 150, label: `Bodhi launch ${launchNumber}` },
   );
-  await waitForCondition(
-    () => /Managed bamboo pid=\d+ port=\d+/u.test(stripAnsi(`${stdout.value()}\n${stderr.value()}`)),
-    { timeoutMs: 5_000, intervalMs: 50, label: "managed sidecar identity log" },
-  );
-
-  const sidecar = managedSidecarFromLog(`${stdout.value()}\n${stderr.value()}`, port);
-  app.sidecarPid = sidecar.pid;
-  app.sidecarIdentity = processIdentity(sidecar.pid);
-  if (!app.sidecarIdentity || processParent(sidecar.pid) !== child.pid) {
-    throw new Error(`Managed Bamboo ${sidecar.pid} is not a live direct child of Bodhi ${child.pid}.`);
-  }
   const bambooChildren = directChildren(child.pid).filter((pid) => processCommandName(pid).toLowerCase().includes("bamboo"));
   if (bambooChildren.length !== 1 || bambooChildren[0] !== sidecar.pid) {
     throw new Error(`Bodhi must own exactly one Bamboo child; observed ${JSON.stringify(bambooChildren)}.`);
@@ -766,21 +805,33 @@ async function stopBodhi(state) {
   const app = state.app;
   if (!app) return null;
   const appPid = app.child.pid;
+  let recoveryError = null;
+  if (!app.sidecarIdentity) {
+    try {
+      retainManagedSidecarIdentity(app);
+    } catch (error) {
+      recoveryError = error;
+    }
+  }
   const sidecarPid = app.sidecarPid;
   let teardown = null;
   let sidecarCleanup = null;
   try {
     try {
       teardown = await terminateOwnedChild(app.child, { graceMs: 3_000, killMs: 2_000 });
-      if (sidecarPid) {
-        await waitForCondition(
-          async () => !processExists(sidecarPid) && listenerOwners(app.port).length === 0,
-          { timeoutMs: 10_000, intervalMs: 100, label: `managed Bamboo ${sidecarPid} teardown` },
-        );
-      }
+      await waitForCondition(
+        async () => (!sidecarPid || !processExists(sidecarPid)) && listenerOwners(app.port).length === 0,
+        { timeoutMs: 10_000, intervalMs: 100, label: `managed Bamboo ${sidecarPid ?? "unknown"} teardown` },
+      );
     } catch (error) {
       try {
-        if (!app.sidecarIdentity) throw new Error("No verified managed sidecar identity was retained.");
+        if (!app.sidecarIdentity) {
+          throw new Error(
+            recoveryError instanceof Error
+              ? `No verified managed sidecar identity was retained: ${recoveryError.message}`
+              : "No verified managed sidecar identity was retained.",
+          );
+        }
         sidecarCleanup = await terminateVerifiedProcess(app.sidecarIdentity, {
           inspect: processIdentity,
           signal: (pid, signal) => process.kill(pid, signal),
@@ -1056,6 +1107,7 @@ async function pauseForVisualEvidence(state, launchNumber, port) {
   console.log(`\nBODHI_ACCEPTANCE_READY launch=${launchNumber} port=${port}`);
   console.log(`Evidence root: ${state.directories.evidence}`);
   console.log(`Screenshots: ${state.directories.screenshots}`);
+  console.log(`Required capture: ${path.join(state.directories.screenshots, `browser-launch-${launchNumber}.png`)}`);
   if (process.env.BODHI_ACCEPTANCE_AUTO_CONTINUE === "1") return;
   if (!process.stdin.isTTY) {
     throw new Error("Interactive visual acceptance requires a TTY, or set BODHI_ACCEPTANCE_AUTO_CONTINUE=1 for unattended contract runs.");
@@ -1096,7 +1148,7 @@ function providerObservations(state) {
 }
 
 function screenshotEvidence(state) {
-  return fs
+  const screenshots = fs
     .readdirSync(state.directories.screenshots, { withFileTypes: true })
     .filter((entry) => entry.isFile() && /\.png$/iu.test(entry.name))
     .map((entry) => {
@@ -1105,6 +1157,7 @@ function screenshotEvidence(state) {
       return { name: entry.name, sha256: sha256(bytes), ...pngEvidenceMetadata(bytes, entry.name) };
     })
     .sort((left, right) => left.name.localeCompare(right.name));
+  return distinctLaunchScreenshots(screenshots);
 }
 
 function regularFiles(root) {
@@ -1235,12 +1288,6 @@ async function main() {
     }
     const observations = providerObservations(state);
     const screenshots = screenshotEvidence(state);
-    if (
-      !screenshots.some((entry) => entry.name.includes("launch-1")) ||
-      !screenshots.some((entry) => entry.name.includes("launch-2"))
-    ) {
-      throw new Error("Visual evidence must include at least one PNG for each real launch.");
-    }
     providerTeardown = await stopProvider(state);
 
     const report = {

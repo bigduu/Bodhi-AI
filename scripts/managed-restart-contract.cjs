@@ -264,6 +264,19 @@ function pngEvidenceMetadata(bytes, label = "PNG evidence") {
   return { height, size: bytes.length, width };
 }
 
+function distinctLaunchScreenshots(screenshots) {
+  if (!Array.isArray(screenshots)) throw new Error("Screenshot evidence must be an array.");
+  const expectedNames = ["browser-launch-1.png", "browser-launch-2.png"];
+  const selected = expectedNames.map((name) => screenshots.find((entry) => entry?.name === name));
+  if (selected.some((entry) => !entry || !/^[0-9a-f]{64}$/u.test(entry.sha256))) {
+    throw new Error(`Visual evidence must include separate exact files: ${expectedNames.join(", ")}.`);
+  }
+  if (selected[0].sha256 === selected[1].sha256) {
+    throw new Error("The two launch screenshots must contain distinct captured bytes.");
+  }
+  return selected;
+}
+
 function redactText(value, secrets) {
   let redacted = String(value);
   for (const secret of secrets) {
@@ -292,6 +305,7 @@ module.exports = {
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
   assertTcpPort,
+  distinctLaunchScreenshots,
   isolatedChildEnvironment,
   pngEvidenceMetadata,
   redactText,

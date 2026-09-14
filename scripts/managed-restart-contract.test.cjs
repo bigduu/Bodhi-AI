@@ -12,6 +12,7 @@ const {
   assertIdentityMatches,
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
+  distinctLaunchScreenshots,
   isolatedChildEnvironment,
   pngEvidenceMetadata,
   redactText,
@@ -158,6 +159,20 @@ test("PNG evidence requires a real screenshot-sized PNG structure", () => {
   assert.throws(() => pngEvidenceMetadata(Buffer.alloc(0)), /valid PNG/);
   bytes.writeUInt32BE(1, 16);
   assert.throws(() => pngEvidenceMetadata(bytes), /usable screenshot dimensions/);
+});
+
+test("each launch requires an exact screenshot with distinct bytes", () => {
+  const first = { name: "browser-launch-1.png", sha256: "a".repeat(64) };
+  const second = { name: "browser-launch-2.png", sha256: "b".repeat(64) };
+  assert.deepEqual(distinctLaunchScreenshots([second, first]), [first, second]);
+  assert.throws(
+    () => distinctLaunchScreenshots([{ name: "launch-1-launch-2.png", sha256: "c".repeat(64) }]),
+    /separate exact files/,
+  );
+  assert.throws(
+    () => distinctLaunchScreenshots([first, { ...second, sha256: first.sha256 }]),
+    /distinct captured bytes/,
+  );
 });
 
 test("evidence redaction removes every designated secret", () => {
