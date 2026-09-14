@@ -15,8 +15,10 @@ const {
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
   isolatedChildEnvironment,
+  pngEvidenceMetadata,
   redactText,
   terminateOwnedChild,
+  terminateVerifiedProcess,
   waitForCondition,
 } = require("./managed-restart-contract.cjs");
 const { NEXT_PACKAGE, resolveSource, sourceIdentity, verifyStaged } = require("./lotus-dist.cjs");
@@ -443,6 +445,7 @@ async function startProvider(state, port) {
     env: isolatedChildEnvironment(process.env, {
       BODHI_ACCEPTANCE_ASSISTANT_MARKER: state.markers.assistant,
       BODHI_ACCEPTANCE_CHILD_MARKER: state.markers.child,
+      BODHI_ACCEPTANCE_JIANDU_DATA_DIR: state.directories.jianduData,
       BODHI_ACCEPTANCE_PROVIDER_KEY: state.providerKey,
       BODHI_ACCEPTANCE_PROVIDER_OBSERVATIONS: state.providerObservations,
       BODHI_ACCEPTANCE_PROVIDER_PORT: String(port),
@@ -495,6 +498,19 @@ function processParent(pid) {
 function processCommandName(pid) {
   const value = commandText("ps", ["-o", "comm=", "-p", String(pid)]);
   return path.basename(value);
+}
+
+function processIdentity(pid) {
+  if (!processExists(pid)) return null;
+  try {
+    const startedAt = commandText("ps", ["-o", "lstart=", "-p", String(pid)]);
+    const command = commandText("ps", ["-ww", "-o", "comm=", "-p", String(pid)]);
+    if (!startedAt || !command || !processExists(pid)) return null;
+    return { pid, startedAt, command };
+  } catch (error) {
+    if (!processExists(pid)) return null;
+    throw error;
+  }
 }
 
 function directChildren(pid) {
@@ -671,7 +687,7 @@ async function startBodhi(state, build, port, launchNumber) {
   });
   child.stdout.on("data", (chunk) => stdout.append(chunk));
   child.stderr.on("data", (chunk) => stderr.append(chunk));
-  const app = { child, launchNumber, port, stdout, stderr, sidecarPid: null };
+  const app = { child, launchNumber, port, stdout, stderr, sidecarIdentity: null, sidecarPid: null };
   state.app = app;
 
   await waitForCondition(
@@ -693,7 +709,8 @@ async function startBodhi(state, build, port, launchNumber) {
 
   const sidecar = managedSidecarFromLog(`${stdout.value()}\n${stderr.value()}`, port);
   app.sidecarPid = sidecar.pid;
-  if (!processExists(sidecar.pid) || processParent(sidecar.pid) !== child.pid) {
+  app.sidecarIdentity = processIdentity(sidecar.pid);
+  if (!app.sidecarIdentity || processParent(sidecar.pid) !== child.pid) {
     throw new Error(`Managed Bamboo ${sidecar.pid} is not a live direct child of Bodhi ${child.pid}.`);
   }
   const bambooChildren = directChildren(child.pid).filter((pid) => processCommandName(pid).toLowerCase().includes("bamboo"));
@@ -750,20 +767,51 @@ async function stopBodhi(state) {
   if (!app) return null;
   const appPid = app.child.pid;
   const sidecarPid = app.sidecarPid;
-  const teardown = await terminateOwnedChild(app.child, { graceMs: 3_000, killMs: 2_000 });
-  if (sidecarPid) {
-    await waitForCondition(
-      async () => !processExists(sidecarPid) && listenerOwners(app.port).length === 0,
-      { timeoutMs: 10_000, intervalMs: 100, label: `managed Bamboo ${sidecarPid} teardown` },
+  let teardown = null;
+  let sidecarCleanup = null;
+  try {
+    try {
+      teardown = await terminateOwnedChild(app.child, { graceMs: 3_000, killMs: 2_000 });
+      if (sidecarPid) {
+        await waitForCondition(
+          async () => !processExists(sidecarPid) && listenerOwners(app.port).length === 0,
+          { timeoutMs: 10_000, intervalMs: 100, label: `managed Bamboo ${sidecarPid} teardown` },
+        );
+      }
+    } catch (error) {
+      try {
+        if (!app.sidecarIdentity) throw new Error("No verified managed sidecar identity was retained.");
+        sidecarCleanup = await terminateVerifiedProcess(app.sidecarIdentity, {
+          inspect: processIdentity,
+          signal: (pid, signal) => process.kill(pid, signal),
+          graceMs: 3_000,
+          killMs: 2_000,
+        });
+        await waitForCondition(() => listenerOwners(app.port).length === 0, {
+          timeoutMs: 2_000,
+          intervalMs: 50,
+          label: `managed Bamboo port ${app.port} release after verified cleanup`,
+        });
+      } catch (cleanupError) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)} Cleanup of the exact verified sidecar also failed: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+        );
+      }
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} Exact verified sidecar ${sidecarPid} was force-cleaned (${sidecarCleanup.phase}).`,
+      );
+    }
+    return { appPid, sidecarPid, sidecarCleanup, teardown, listenerReleased: true };
+  } finally {
+    writePrivateText(
+      path.join(state.directories.logs, `launch-${app.launchNumber}.log`),
+      `${app.stdout.value()}\n${app.stderr.value()}`,
+      [state.providerKey],
     );
+    state.app = null;
   }
-  writePrivateText(
-    path.join(state.directories.logs, `launch-${app.launchNumber}.log`),
-    `${app.stdout.value()}\n${app.stderr.value()}`,
-    [state.providerKey],
-  );
-  state.app = null;
-  return { appPid, sidecarPid, teardown, listenerReleased: true };
 }
 
 async function createProjectAndSession(baseUrl, state) {
@@ -1053,7 +1101,8 @@ function screenshotEvidence(state) {
     .filter((entry) => entry.isFile() && /\.png$/iu.test(entry.name))
     .map((entry) => {
       const file = path.join(state.directories.screenshots, entry.name);
-      return { name: entry.name, sha256: sha256(fs.readFileSync(file)), size: fs.statSync(file).size };
+      const bytes = fs.readFileSync(file);
+      return { name: entry.name, sha256: sha256(bytes), ...pngEvidenceMetadata(bytes, entry.name) };
     })
     .sort((left, right) => left.name.localeCompare(right.name));
 }
@@ -1077,6 +1126,23 @@ function regularFiles(root) {
 function filesContainingText(root, files, marker) {
   const needle = Buffer.from(marker, "utf8");
   return files.filter((relative) => fs.readFileSync(path.join(root, relative)).includes(needle));
+}
+
+function canonicalSessionNoteEvidence(state, childSessionId, jianduFiles) {
+  const relative = path.join("memory", "v1", "sessions", childSessionId, "note", "acceptance.md");
+  const file = assertOwnedAbsolutePath(state.directories.jianduData, path.join(state.directories.jianduData, relative), "child session note");
+  const metadata = fs.lstatSync(file);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("The canonical child session note is not a regular owned file.");
+  }
+  if (!fs.readFileSync(file).equals(Buffer.from(state.markers.sessionNote, "utf8"))) {
+    throw new Error("The canonical child session note does not contain the exact successful marker.");
+  }
+  const matching = filesContainingText(state.directories.jianduData, jianduFiles, state.markers.sessionNote);
+  if (matching.length !== 1 || matching[0] !== relative) {
+    throw new Error(`The session note marker must exist only in ${relative}; observed ${JSON.stringify(matching)}.`);
+  }
+  return matching;
 }
 
 async function stopProvider(state) {
@@ -1161,14 +1227,7 @@ async function main() {
     if (jianduFiles.length === 0) {
       throw new Error("The explicit run-owned Jiandu root contains no persisted memory state.");
     }
-    const jianduSessionNoteFiles = filesContainingText(
-      state.directories.jianduData,
-      jianduFiles,
-      state.markers.sessionNote,
-    );
-    if (jianduSessionNoteFiles.length === 0) {
-      throw new Error("The child session_note marker was not persisted in the explicit Jiandu root.");
-    }
+    const jianduSessionNoteFiles = canonicalSessionNoteEvidence(state, identities.childSessionId, jianduFiles);
     const fallbackJiandu = path.join(state.directories.syntheticHome, ".jiandu");
     const fallbackJianduFiles = regularFiles(fallbackJiandu);
     if (filesContainingText(fallbackJiandu, fallbackJianduFiles, state.markers.sessionNote).length !== 0) {

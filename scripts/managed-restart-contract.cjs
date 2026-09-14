@@ -2,6 +2,7 @@ const net = require("node:net");
 const path = require("node:path");
 
 const FULL_GIT_REVISION = /^[0-9a-f]{40}$/u;
+const PNG_SIGNATURE = Buffer.from("89504e470d0a1a0a", "hex");
 const CONTROLLED_ENV_PREFIX =
   /^(?:AWS|AZURE|BAMBOO|BODHI|CARGO|CLAUDE|CODEX|COPILOT|DEEPSEEK|DYLD|GEMINI|GH|GIT|GITHUB|GOOGLE|JIANDU|LOTUS|MCP|NODE|NPM|OPENAI|PYTHON|RUST|SSH|VITE)_/u;
 const CONTROLLED_ENV_NAMES = new Set([
@@ -180,6 +181,89 @@ async function terminateOwnedChild(child, options = {}) {
   return { phase: "sigkill", ...forced };
 }
 
+function assertSameProcessIdentity(actual, expected) {
+  if (
+    !actual ||
+    actual.pid !== expected.pid ||
+    actual.startedAt !== expected.startedAt ||
+    actual.command !== expected.command
+  ) {
+    throw new Error(`Refusing to signal PID ${expected.pid} because its verified process identity changed.`);
+  }
+}
+
+async function terminateVerifiedProcess(expected, options = {}) {
+  const inspect = options.inspect;
+  const signal = options.signal;
+  const graceMs = options.graceMs ?? 2_000;
+  const killMs = options.killMs ?? 2_000;
+  const intervalMs = options.intervalMs ?? 25;
+  if (
+    !expected ||
+    !Number.isInteger(expected.pid) ||
+    expected.pid < 1 ||
+    typeof expected.startedAt !== "string" ||
+    !expected.startedAt ||
+    typeof expected.command !== "string" ||
+    !expected.command ||
+    typeof inspect !== "function" ||
+    typeof signal !== "function"
+  ) {
+    throw new Error("An exact process identity plus inspect and signal functions are required for teardown.");
+  }
+
+  const waitForExit = async (timeoutMs) => {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      const actual = await inspect(expected.pid);
+      if (actual === null) return true;
+      assertSameProcessIdentity(actual, expected);
+      if (Date.now() >= deadline) return false;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, deadline - Date.now())));
+    } while (true);
+  };
+
+  const actual = await inspect(expected.pid);
+  if (actual === null) return { phase: "already-exited", pid: expected.pid };
+  assertSameProcessIdentity(actual, expected);
+  signal(expected.pid, "SIGTERM");
+  if (await waitForExit(graceMs)) return { phase: "sigterm", pid: expected.pid };
+  signal(expected.pid, "SIGKILL");
+  if (await waitForExit(killMs)) return { phase: "sigkill", pid: expected.pid };
+  throw new Error(`Verified process ${expected.pid} did not exit within the bounded teardown.`);
+}
+
+function pngEvidenceMetadata(bytes, label = "PNG evidence") {
+  if (!Buffer.isBuffer(bytes) || bytes.length < 45 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    throw new Error(`${label} is not a valid PNG file.`);
+  }
+  const ihdrLength = bytes.readUInt32BE(8);
+  const ihdrType = bytes.subarray(12, 16).toString("ascii");
+  const width = bytes.readUInt32BE(16);
+  const height = bytes.readUInt32BE(20);
+  if (ihdrLength !== 13 || ihdrType !== "IHDR" || width < 320 || height < 200 || bytes.length < 1_024) {
+    throw new Error(`${label} does not have usable screenshot dimensions or content.`);
+  }
+
+  let offset = 8;
+  let sawImageData = false;
+  let sawEnd = false;
+  while (offset + 12 <= bytes.length) {
+    const length = bytes.readUInt32BE(offset);
+    if (length > bytes.length - offset - 12) throw new Error(`${label} contains a truncated PNG chunk.`);
+    const type = bytes.subarray(offset + 4, offset + 8).toString("ascii");
+    if (type === "IDAT" && length > 0) sawImageData = true;
+    offset += length + 12;
+    if (type === "IEND") {
+      if (length !== 0 || offset !== bytes.length) throw new Error(`${label} has an invalid PNG terminator.`);
+      sawEnd = true;
+      break;
+    }
+  }
+  if (!sawImageData || !sawEnd) throw new Error(`${label} is missing encoded image data.`);
+  return { height, size: bytes.length, width };
+}
+
 function redactText(value, secrets) {
   let redacted = String(value);
   for (const secret of secrets) {
@@ -209,7 +293,9 @@ module.exports = {
   assertOwnedAbsolutePath,
   assertTcpPort,
   isolatedChildEnvironment,
+  pngEvidenceMetadata,
   redactText,
   terminateOwnedChild,
+  terminateVerifiedProcess,
   waitForCondition,
 };

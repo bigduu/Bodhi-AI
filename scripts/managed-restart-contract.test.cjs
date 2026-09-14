@@ -13,8 +13,10 @@ const {
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
   isolatedChildEnvironment,
+  pngEvidenceMetadata,
   redactText,
   terminateOwnedChild,
+  terminateVerifiedProcess,
   waitForCondition,
 } = require("./managed-restart-contract.cjs");
 
@@ -110,6 +112,52 @@ test("teardown is bounded and targets only the spawned process", async () => {
     waitForCondition(() => false, { timeoutMs: 60, intervalMs: 10, label: "test fence" }),
     /test fence did not complete within 60ms/,
   );
+});
+
+test("verified PID teardown refuses reuse and force-cleans the exact identity", async () => {
+  const expected = { pid: 4242, startedAt: "Mon Sep 14 02:00:00 2026", command: "bamboo" };
+  let actual = { ...expected };
+  const signals = [];
+  const result = await terminateVerifiedProcess(expected, {
+    inspect: () => actual,
+    signal: (pid, signal) => {
+      signals.push([pid, signal]);
+      if (signal === "SIGKILL") actual = null;
+    },
+    graceMs: 20,
+    killMs: 20,
+    intervalMs: 2,
+  });
+  assert.deepEqual(result, { phase: "sigkill", pid: expected.pid });
+  assert.deepEqual(signals, [
+    [expected.pid, "SIGTERM"],
+    [expected.pid, "SIGKILL"],
+  ]);
+
+  actual = { ...expected, startedAt: "Mon Sep 14 02:00:01 2026" };
+  await assert.rejects(
+    terminateVerifiedProcess(expected, { inspect: () => actual, signal: () => signals.push("unsafe") }),
+    /identity changed/,
+  );
+  assert.equal(signals.includes("unsafe"), false);
+});
+
+test("PNG evidence requires a real screenshot-sized PNG structure", () => {
+  const bytes = Buffer.alloc(1_024);
+  Buffer.from("89504e470d0a1a0a", "hex").copy(bytes, 0);
+  bytes.writeUInt32BE(13, 8);
+  bytes.write("IHDR", 12, "ascii");
+  bytes.writeUInt32BE(1280, 16);
+  bytes.writeUInt32BE(720, 20);
+  bytes.writeUInt32BE(bytes.length - 57, 33);
+  bytes.write("IDAT", 37, "ascii");
+  const iend = bytes.length - 12;
+  bytes.writeUInt32BE(0, iend);
+  bytes.write("IEND", iend + 4, "ascii");
+  assert.deepEqual(pngEvidenceMetadata(bytes), { height: 720, size: 1_024, width: 1280 });
+  assert.throws(() => pngEvidenceMetadata(Buffer.alloc(0)), /valid PNG/);
+  bytes.writeUInt32BE(1, 16);
+  assert.throws(() => pngEvidenceMetadata(bytes), /usable screenshot dimensions/);
 });
 
 test("evidence redaction removes every designated secret", () => {

@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -40,18 +41,57 @@ def contains(value: Any, marker: str) -> bool:
     return False
 
 
-def has_tool_result(body: Any, tool_call_id: str) -> bool:
+def has_successful_session_note_result(
+    body: Any,
+    tool_call_id: str,
+    marker: str,
+    jiandu_data_dir: Path,
+) -> bool:
     if not isinstance(body, dict):
         return False
     messages = body.get("messages")
     if not isinstance(messages, list):
         return False
-    return any(
-        isinstance(message, dict)
-        and message.get("role") == "tool"
-        and message.get("tool_call_id") == tool_call_id
-        for message in messages
-    )
+    for message in messages:
+        if (
+            not isinstance(message, dict)
+            or message.get("role") != "tool"
+            or message.get("tool_call_id") != tool_call_id
+            or not isinstance(message.get("content"), str)
+        ):
+            continue
+        try:
+            result = json.loads(message["content"])
+            if not isinstance(result, dict):
+                continue
+            session_id = result.get("session_id")
+            if not isinstance(session_id, str):
+                continue
+            if str(uuid.UUID(session_id)) != session_id:
+                continue
+            expected_path = (
+                jiandu_data_dir
+                / "memory"
+                / "v1"
+                / "sessions"
+                / session_id
+                / "note"
+                / "acceptance.md"
+            )
+            if (
+                result.get("action") != "replace"
+                or result.get("topic") != "acceptance"
+                or result.get("length_chars") != len(marker)
+                or Path(result.get("path", "")) != expected_path
+                or not expected_path.is_file()
+                or expected_path.is_symlink()
+                or expected_path.read_text(encoding="utf-8") != marker
+            ):
+                continue
+            return True
+        except (OSError, TypeError, UnicodeError, ValueError, json.JSONDecodeError):
+            continue
+    return False
 
 
 class Observations:
@@ -138,6 +178,7 @@ class Handler(BaseHTTPRequestHandler):
 
     api_key: str
     assistant_marker: str
+    jiandu_data_dir: Path
     markers: dict[str, str]
     observations: Observations
     session_note_marker: str
@@ -210,7 +251,13 @@ class Handler(BaseHTTPRequestHandler):
         tool_call_id = "call_bodhi_session_note"
         response_action = (
             "final"
-            if phase != "child" or has_tool_result(body, tool_call_id)
+            if phase != "child"
+            or has_successful_session_note_result(
+                body,
+                tool_call_id,
+                self.session_note_marker,
+                self.jiandu_data_dir,
+            )
             else "session_note"
         )
         self.observations.append(
@@ -327,6 +374,7 @@ def main() -> None:
         raise RuntimeError("provider port is outside the TCP range")
     Handler.api_key = required("BODHI_ACCEPTANCE_PROVIDER_KEY")
     Handler.assistant_marker = required("BODHI_ACCEPTANCE_ASSISTANT_MARKER")
+    Handler.jiandu_data_dir = Path(required("BODHI_ACCEPTANCE_JIANDU_DATA_DIR")).resolve(strict=True)
     Handler.session_note_marker = required("BODHI_ACCEPTANCE_SESSION_NOTE_MARKER")
     Handler.markers = {
         "child": required("BODHI_ACCEPTANCE_CHILD_MARKER"),
