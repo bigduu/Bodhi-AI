@@ -208,7 +208,19 @@ npm run dev
 
 Run `bamboo serve --help` for the current server options.
 
-For automated desktop acceptance, use a disposable `BAMBOO_DATA_DIR`, configuration and workspace, a separate WebView/app identifier and an unused `BODHI_BACKEND_PORT`. Enforce denial of access to the user's real `.bamboo` and `.jiandu` stores. Move the test bundle away from source checkouts, launch its actual WebView and managed Bamboo twice, verify the same artifact and local setting/session, and verify the child exits after each complete app exit. Do not install over the user's app or treat a browser mock as this acceptance test.
+For automated desktop acceptance, use disposable Bamboo/Jiandu data, configuration and workspace roots, an isolated Foundation/user home, and an unused `BODHI_BACKEND_PORT`. Enforce denial of access to the user's real `.bamboo` and `.jiandu` stores. Launch the compiled test bundle without installing it, exercise the real app and managed Bamboo twice, verify the app's WebView navigation logs plus the same artifact and local setting/session, and verify the child exits after each complete app exit. Do not install over the user's app or treat a frontend-only browser mock as this acceptance test.
+
+The opt-in managed restart gate packages that contract into one local macOS command:
+
+```bash
+npm run test:managed-restart -- --help
+```
+
+It is never called by ordinary development, build, package, or CI entrypoints. The command requires exact clean Bodhi and Bamboo revisions, verifies the committed Lotus Next package lock, allocates every mutable Bamboo/Jiandu/Project/provider path under one fresh temporary root, launches the compiled `.app` twice, and pauses on each launch for visual evidence. A deterministic child agent must execute `session_note` into that explicit Jiandu root before the restart, while Project memory and the root/child Session identities must remain readable afterward. The gate refuses dirty inputs and occupied ports, records only synthetic/redacted provider metadata, and preserves its machine-readable report and screenshots for inspection.
+
+The visual record is an explicit headless black-box capture of the exact live managed URL; it is not represented as a native WebView screenshot. Each launch uses a fresh `agent-browser` session and must provide both `browser-launch-N.png` and `browser-launch-N.json`. The receipt binds the launch-specific challenge, exact URL, page title, browser session, observation time, and PNG SHA-256. The harness validates and locks both files while the matching Bodhi app and its exclusively owned Bamboo sidecar are still live, then revalidates them after teardown. The real app logs independently prove that its WebView navigated to that same managed URL.
+
+`SIGINT` or `SIGTERM` at any phase, including dependency installation, Rust compilation, signing checks, API polling, and either capture prompt, aborts the gate with a nonzero result. Build commands run in owned process groups that are fully settled before failure is returned; request and polling work shares the same cancellation signal. The gate then closes any prompt, performs bounded identity-safe app/sidecar/provider cleanup, and writes a failed evidence report rather than silently succeeding.
 
 ### Runtime diagnostic env vars
 
