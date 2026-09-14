@@ -14,6 +14,7 @@ const {
   assertIdentityMatches,
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
+  isolatedChildEnvironment,
   redactText,
   terminateOwnedChild,
   waitForCondition,
@@ -439,8 +440,7 @@ async function startProvider(state, port) {
   const stderr = boundedLogCollector();
   const child = spawn("python3", [state.providerScript], {
     cwd: ROOT,
-    env: {
-      ...process.env,
+    env: isolatedChildEnvironment(process.env, {
       BODHI_ACCEPTANCE_ASSISTANT_MARKER: state.markers.assistant,
       BODHI_ACCEPTANCE_CHILD_MARKER: state.markers.child,
       BODHI_ACCEPTANCE_PROVIDER_KEY: state.providerKey,
@@ -449,7 +449,9 @@ async function startProvider(state, port) {
       BODHI_ACCEPTANCE_RESTART_MARKER: state.markers.restart,
       BODHI_ACCEPTANCE_ROOT_MARKER: state.markers.root,
       BODHI_ACCEPTANCE_SESSION_NOTE_MARKER: state.markers.sessionNote,
-    },
+      HOME: state.directories.syntheticHome,
+      TMPDIR: state.directories.tmp,
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (chunk) => stdout.append(chunk));
@@ -648,8 +650,7 @@ async function startBodhi(state, build, port, launchNumber) {
   const stderr = boundedLogCollector();
   const child = spawn(build.executable, [], {
     cwd: ROOT,
-    env: {
-      ...process.env,
+    env: isolatedChildEnvironment(process.env, {
       BAMBOO_DATA_DIR: state.directories.bambooData,
       BAMBOO_JIANDU_DATA_DIR: state.directories.jianduData,
       BAMBOO_RATE_LIMIT_BURST: "1000",
@@ -665,7 +666,7 @@ async function startBodhi(state, build, port, launchNumber) {
       XDG_CACHE_HOME: state.directories.cache,
       XDG_CONFIG_HOME: state.directories.config,
       XDG_DATA_HOME: state.directories.data,
-    },
+    }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout.on("data", (chunk) => stdout.append(chunk));

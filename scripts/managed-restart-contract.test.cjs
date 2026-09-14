@@ -12,6 +12,7 @@ const {
   assertIdentityMatches,
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
+  isolatedChildEnvironment,
   redactText,
   terminateOwnedChild,
   waitForCondition,
@@ -43,6 +44,39 @@ test("all mutable paths must be absolute and run-owned", () => {
   assert.throws(
     () => assertOwnedAbsolutePath("relative", "relative/data", "data"),
     /absolute paths/,
+  );
+});
+
+test("isolated child environments drop host credentials and runtime controls", () => {
+  const environment = isolatedChildEnvironment(
+    {
+      PATH: "/usr/bin:/bin",
+      LANG: "en_US.UTF-8",
+      HOME: "/Users/example",
+      BAMBOO_DATA_DIR: "/Users/example/.bamboo",
+      BAMBOO_API_KEY: "host-secret",
+      GH_TOKEN: "host-token",
+      HTTP_PROXY: "http://proxy.invalid",
+      NODE_OPTIONS: "--require untrusted.js",
+      SSH_AUTH_SOCK: "/private/tmp/agent.sock",
+    },
+    {
+      HOME: "/private/tmp/synthetic-home",
+      BAMBOO_DATA_DIR: "/private/tmp/run/bamboo",
+      BODHI_ACCEPTANCE_PROVIDER_KEY: "synthetic-key",
+    },
+  );
+
+  assert.deepEqual(environment, {
+    PATH: "/usr/bin:/bin",
+    LANG: "en_US.UTF-8",
+    HOME: "/private/tmp/synthetic-home",
+    BAMBOO_DATA_DIR: "/private/tmp/run/bamboo",
+    BODHI_ACCEPTANCE_PROVIDER_KEY: "synthetic-key",
+  });
+  assert.throws(
+    () => isolatedChildEnvironment({}, { HOME: null }),
+    /override HOME must be a string/,
   );
 });
 

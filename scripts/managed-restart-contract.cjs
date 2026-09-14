@@ -2,6 +2,20 @@ const net = require("node:net");
 const path = require("node:path");
 
 const FULL_GIT_REVISION = /^[0-9a-f]{40}$/u;
+const CONTROLLED_ENV_PREFIX =
+  /^(?:AWS|AZURE|BAMBOO|BODHI|CARGO|CLAUDE|CODEX|COPILOT|DEEPSEEK|DYLD|GEMINI|GH|GIT|GITHUB|GOOGLE|JIANDU|LOTUS|MCP|NODE|NPM|OPENAI|PYTHON|RUST|SSH|VITE)_/u;
+const CONTROLLED_ENV_NAMES = new Set([
+  "ALL_PROXY",
+  "CURL_CA_BUNDLE",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "LD_PRELOAD",
+  "NO_PROXY",
+  "REQUESTS_CA_BUNDLE",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+]);
+const CREDENTIAL_ENV_NAME = /(?:^|_)(?:API_KEY|ACCESS_KEY|PRIVATE_KEY|AUTH|COOKIE|CREDENTIALS?|PASSWD|PASSWORD|SECRET|TOKEN)(?:_|$)/u;
 
 function assertFullRevision(value, label) {
   if (typeof value !== "string" || !FULL_GIT_REVISION.test(value)) {
@@ -36,6 +50,29 @@ function assertTcpPort(port, label = "port") {
     throw new Error(`${label} must be an integer between 1 and 65535.`);
   }
   return port;
+}
+
+function isolatedChildEnvironment(source, overrides = {}) {
+  const environment = {};
+  for (const [name, value] of Object.entries(source || {})) {
+    if (typeof value !== "string") continue;
+    const normalized = name.toUpperCase();
+    if (
+      CONTROLLED_ENV_NAMES.has(normalized) ||
+      CONTROLLED_ENV_PREFIX.test(normalized) ||
+      CREDENTIAL_ENV_NAME.test(normalized)
+    ) {
+      continue;
+    }
+    environment[name] = value;
+  }
+  for (const [name, value] of Object.entries(overrides)) {
+    if (typeof value !== "string") {
+      throw new Error(`Isolated child environment override ${name} must be a string.`);
+    }
+    environment[name] = value;
+  }
+  return environment;
 }
 
 async function assertLoopbackPortAvailable(port) {
@@ -171,6 +208,7 @@ module.exports = {
   assertLoopbackPortAvailable,
   assertOwnedAbsolutePath,
   assertTcpPort,
+  isolatedChildEnvironment,
   redactText,
   terminateOwnedChild,
   waitForCondition,
