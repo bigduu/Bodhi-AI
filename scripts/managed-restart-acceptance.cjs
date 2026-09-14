@@ -57,20 +57,30 @@ function commandText(command, args, options = {}) {
   }).trim();
 }
 
-function repositoryIdentity(directory, expected, label) {
-  const top = fs.realpathSync(commandText("git", ["-C", directory, "rev-parse", "--show-toplevel"]));
+async function repositoryIdentity(directory, expected, label, signal) {
+  const top = fs.realpathSync(
+    (
+      await runInterruptibleCommand("git", ["-C", directory, "rev-parse", "--show-toplevel"], {
+        signal,
+      })
+    ).stdout.trim(),
+  );
   if (top !== fs.realpathSync(directory)) {
     throw new Error(`${label} source must be the Git checkout root.`);
   }
-  const head = commandText("git", ["-C", directory, "rev-parse", "HEAD^{commit}"]);
+  const head = (
+    await runInterruptibleCommand("git", ["-C", directory, "rev-parse", "HEAD^{commit}"], {
+      signal,
+    })
+  ).stdout.trim();
   assertIdentityMatches(head, expected, label);
-  const status = commandText("git", [
-    "-C",
-    directory,
-    "status",
-    "--porcelain=v1",
-    "--untracked-files=all",
-  ]);
+  const status = (
+    await runInterruptibleCommand(
+      "git",
+      ["-C", directory, "status", "--porcelain=v1", "--untracked-files=all"],
+      { signal },
+    )
+  ).stdout.trim();
   if (status) {
     throw new Error(`${label} source must be clean; Git reported ${status.split(/\r?\n/u).length} changed path(s).`);
   }
@@ -1535,21 +1545,29 @@ async function stopProviderInstance(state, provider) {
 }
 
 async function main() {
-  if (process.platform !== "darwin") {
-    throw new Error("Managed desktop restart acceptance is intentionally macOS-only.");
-  }
-  const expectedBodhi = assertFullRevision(requiredEnvironment("BODHI_ACCEPTANCE_BODHI_REVISION"), "Bodhi");
-  const expectedBamboo = assertFullRevision(requiredEnvironment("BODHI_ACCEPTANCE_BAMBOO_REVISION"), "Bamboo");
-  const bambooDirectory = fs.realpathSync(path.resolve(requiredEnvironment("BODHI_ACCEPTANCE_BAMBOO_DIR")));
-  const artifactLock = readArtifactLock();
-  const bodhiIdentity = repositoryIdentity(ROOT, expectedBodhi, "Bodhi");
-  const bambooIdentity = repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo");
-  const state = createRuntime(expectedBodhi, expectedBamboo);
   const interrupts = installInterruptHandlers(process);
+  let state = null;
   let providerTeardown = null;
   let firstStop = null;
   let secondStop = null;
   try {
+    if (process.platform !== "darwin") {
+      throw new Error("Managed desktop restart acceptance is intentionally macOS-only.");
+    }
+    const expectedBodhi = assertFullRevision(requiredEnvironment("BODHI_ACCEPTANCE_BODHI_REVISION"), "Bodhi");
+    const expectedBamboo = assertFullRevision(requiredEnvironment("BODHI_ACCEPTANCE_BAMBOO_REVISION"), "Bamboo");
+    state = createRuntime(expectedBodhi, expectedBamboo);
+    interrupts.throwIfAborted();
+    const bambooDirectory = fs.realpathSync(path.resolve(requiredEnvironment("BODHI_ACCEPTANCE_BAMBOO_DIR")));
+    const artifactLock = readArtifactLock();
+    interrupts.throwIfAborted();
+    const bodhiIdentity = await repositoryIdentity(ROOT, expectedBodhi, "Bodhi", interrupts.signal);
+    const bambooIdentity = await repositoryIdentity(
+      bambooDirectory,
+      expectedBamboo,
+      "Bamboo",
+      interrupts.signal,
+    );
     interrupts.throwIfAborted();
     const build = await prepareApplication(
       bambooDirectory,
@@ -1558,8 +1576,13 @@ async function main() {
       interrupts.signal,
     );
     interrupts.throwIfAborted();
-    repositoryIdentity(ROOT, expectedBodhi, "Bodhi after build");
-    repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo after build");
+    await repositoryIdentity(ROOT, expectedBodhi, "Bodhi after build", interrupts.signal);
+    await repositoryIdentity(
+      bambooDirectory,
+      expectedBamboo,
+      "Bamboo after build",
+      interrupts.signal,
+    );
     if (
       build.identity.sourceRevision !== artifactLock.sourceRevision ||
       build.identity.sourceDirty !== false ||
@@ -1689,6 +1712,7 @@ async function main() {
     interrupts.throwIfAborted();
     console.log(`\nBODHI_ACCEPTANCE_PASSED report=${path.join(state.directories.evidence, "report.json")}`);
   } catch (error) {
+    if (!state) throw error;
     try {
       if (state.app) await stopBodhi(state);
     } catch {
@@ -1715,14 +1739,14 @@ async function main() {
     console.error(`BODHI_ACCEPTANCE_FAILED evidence=${state.directories.evidence}`);
     throw error;
   } finally {
-    if (state.app) {
+    if (state?.app) {
       try {
         await stopBodhi(state);
       } catch {
         // The main result already captures the failure.
       }
     }
-    if (state.provider) {
+    if (state?.provider) {
       try {
         await stopProvider(state);
       } catch {

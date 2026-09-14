@@ -91,6 +91,39 @@ test("requires full exact Git revisions and rejects identity drift", () => {
   );
 });
 
+test("acceptance arms structured interruption before signal-aware repository preflight", () => {
+  const source = fs.readFileSync(path.join(__dirname, "managed-restart-acceptance.cjs"), "utf8");
+  const mainStart = source.indexOf("async function main() {");
+  const mainEnd = source.indexOf("\nif (process.argv.includes(\"--help\"))", mainStart);
+  assert(mainStart >= 0 && mainEnd > mainStart);
+  const mainSource = source.slice(mainStart, mainEnd).replace(/\s+/gu, " ");
+  const handlers = mainSource.indexOf("const interrupts = installInterruptHandlers(process);");
+  const runtime = mainSource.indexOf("state = createRuntime(expectedBodhi, expectedBamboo);");
+  const preflight = mainSource.indexOf(
+    'const bodhiIdentity = await repositoryIdentity(ROOT, expectedBodhi, "Bodhi", interrupts.signal);',
+  );
+  assert(handlers >= 0 && handlers < runtime && runtime < preflight);
+  assert.match(
+    mainSource,
+    /await repositoryIdentity\( ?bambooDirectory, expectedBamboo, "Bamboo", interrupts\.signal,? ?\);/u,
+  );
+  assert.match(
+    mainSource,
+    /await repositoryIdentity\(ROOT, expectedBodhi, "Bodhi after build", interrupts\.signal\);/u,
+  );
+  assert.match(
+    mainSource,
+    /await repositoryIdentity\( ?bambooDirectory, expectedBamboo, "Bamboo after build", interrupts\.signal,? ?\);/u,
+  );
+
+  const identityStart = source.indexOf("async function repositoryIdentity(");
+  const identityEnd = source.indexOf("\n}\n\nfunction readArtifactLock", identityStart);
+  assert(identityStart >= 0 && identityEnd > identityStart);
+  const identitySource = source.slice(identityStart, identityEnd);
+  assert.equal((identitySource.match(/runInterruptibleCommand\(/gu) ?? []).length, 3);
+  assert.doesNotMatch(identitySource, /commandText\("git"/u);
+});
+
 test("all mutable paths must be absolute and run-owned", () => {
   const root = path.join(os.tmpdir(), "bodhi-owned-root");
   assert.equal(
