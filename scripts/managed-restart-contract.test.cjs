@@ -21,6 +21,7 @@ const {
   redactText,
   terminateOwnedChild,
   terminateVerifiedProcess,
+  validateBrowserReceipt,
   waitForCondition,
 } = require("./managed-restart-contract.cjs");
 
@@ -227,6 +228,17 @@ test("each launch requires an exact screenshot with distinct bytes", () => {
     size: 1_024,
     width: 320,
     fileIdentity: { device: 1, inode: 10, changeTimeMs: 100, modifiedTimeMs: 100 },
+    browser: {
+      schemaVersion: 1,
+      launchNumber: 1,
+      captureTool: "agent-browser",
+      mode: "headless",
+      browserSession: "acceptance-launch-1",
+      screenshotName: "browser-launch-1.png",
+      screenshotSha256: "a".repeat(64),
+      receiptName: "browser-launch-1.json",
+      receiptSha256: "c".repeat(64),
+    },
   };
   const second = {
     name: "browser-launch-2.png",
@@ -235,6 +247,17 @@ test("each launch requires an exact screenshot with distinct bytes", () => {
     size: 1_025,
     width: 320,
     fileIdentity: { device: 1, inode: 11, changeTimeMs: 101, modifiedTimeMs: 101 },
+    browser: {
+      schemaVersion: 1,
+      launchNumber: 2,
+      captureTool: "agent-browser",
+      mode: "headless",
+      browserSession: "acceptance-launch-2",
+      screenshotName: "browser-launch-2.png",
+      screenshotSha256: "b".repeat(64),
+      receiptName: "browser-launch-2.json",
+      receiptSha256: "d".repeat(64),
+    },
   };
   assert.deepEqual(distinctLaunchScreenshots([second, first]), [first, second]);
   assert.throws(
@@ -254,6 +277,66 @@ test("each launch requires an exact screenshot with distinct bytes", () => {
   assert.throws(
     () => assertScreenshotEvidenceUnchanged(first, { ...first, sha256: "c".repeat(64) }),
     /changed after its launch-time validation/,
+  );
+  assert.throws(
+    () =>
+      assertScreenshotEvidenceUnchanged(first, {
+        ...first,
+        browser: { ...first.browser, url: "http://127.0.0.1:9999/" },
+      }),
+    /changed after its launch-time validation/,
+  );
+  assert.throws(
+    () => distinctLaunchScreenshots([first, { ...second, browser: { ...second.browser, browserSession: first.browser.browserSession } }]),
+    /fresh headless-browser session/,
+  );
+});
+
+test("browser receipt binds the live launch URL, title, challenge, session, and screenshot", () => {
+  const observedAt = "2026-09-14T04:05:20.225Z";
+  const receipt = {
+    schemaVersion: 1,
+    launchNumber: 1,
+    captureTool: "agent-browser",
+    mode: "headless",
+    browserSession: "bodhi-67-launch-1",
+    challenge: "5a62b502-dab3-47c2-aa4c-24b9cf5d19de",
+    observedAt,
+    url: "http://127.0.0.1:58930/",
+    title: "Bodhi",
+    screenshotName: "browser-launch-1.png",
+    screenshotSha256: "a".repeat(64),
+  };
+  const expected = {
+    challenge: receipt.challenge,
+    earliestObservedAtMs: Date.parse(observedAt) - 1,
+    latestObservedAtMs: Date.parse(observedAt) + 1,
+    launchNumber: 1,
+    screenshotName: receipt.screenshotName,
+    screenshotSha256: receipt.screenshotSha256,
+    title: receipt.title,
+    url: receipt.url,
+  };
+  assert.equal(validateBrowserReceipt(receipt, expected), receipt);
+  assert.throws(
+    () => validateBrowserReceipt({ ...receipt, url: "http://127.0.0.1:58931/" }, expected),
+    /does not match the live launch/,
+  );
+  assert.throws(
+    () => validateBrowserReceipt({ ...receipt, title: "generic page" }, expected),
+    /does not match the live launch/,
+  );
+  assert.throws(
+    () => validateBrowserReceipt({ ...receipt, screenshotSha256: "b".repeat(64) }, expected),
+    /does not match the live launch/,
+  );
+  assert.throws(
+    () => validateBrowserReceipt({ ...receipt, observedAt: "2026-09-14T04:05:19.000Z" }, expected),
+    /predates its managed app launch/,
+  );
+  assert.throws(
+    () => validateBrowserReceipt({ ...receipt, unexpected: true }, expected),
+    /exact evidence schema fields/,
   );
 });
 

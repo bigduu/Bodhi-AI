@@ -406,6 +406,26 @@ function distinctLaunchScreenshots(screenshots) {
   if (selected[0].sha256 === selected[1].sha256) {
     throw new Error("The two launch screenshots must contain distinct captured bytes.");
   }
+  for (let index = 0; index < selected.length; index += 1) {
+    const screenshot = selected[index];
+    const launchNumber = index + 1;
+    const expectedReceiptName = `browser-launch-${launchNumber}.json`;
+    if (
+      screenshot.browser?.schemaVersion !== 1 ||
+      screenshot.browser?.captureTool !== "agent-browser" ||
+      screenshot.browser?.mode !== "headless" ||
+      screenshot.browser?.launchNumber !== launchNumber ||
+      screenshot.browser?.receiptName !== expectedReceiptName ||
+      !/^[0-9a-f]{64}$/u.test(screenshot.browser?.receiptSha256 ?? "") ||
+      screenshot.browser?.screenshotName !== screenshot.name ||
+      screenshot.browser?.screenshotSha256 !== screenshot.sha256
+    ) {
+      throw new Error(`${screenshot.name} is not bound to its exact headless-browser receipt.`);
+    }
+  }
+  if (selected[0].browser.browserSession === selected[1].browser.browserSession) {
+    throw new Error("Each launch must use a fresh headless-browser session.");
+  }
   return selected;
 }
 
@@ -415,11 +435,69 @@ function assertScreenshotEvidenceUnchanged(expected, actual) {
     !expected ||
     !actual ||
     scalarKeys.some((key) => expected[key] !== actual[key]) ||
-    JSON.stringify(expected.fileIdentity) !== JSON.stringify(actual.fileIdentity)
+    JSON.stringify(expected.fileIdentity) !== JSON.stringify(actual.fileIdentity) ||
+    JSON.stringify(expected.browser) !== JSON.stringify(actual.browser)
   ) {
     throw new Error(`Screenshot ${expected?.name ?? "evidence"} changed after its launch-time validation.`);
   }
   return expected;
+}
+
+function validateBrowserReceipt(receipt, expected) {
+  const exactKeys = [
+    "browserSession",
+    "captureTool",
+    "challenge",
+    "launchNumber",
+    "mode",
+    "observedAt",
+    "schemaVersion",
+    "screenshotName",
+    "screenshotSha256",
+    "title",
+    "url",
+  ];
+  if (
+    !receipt ||
+    typeof receipt !== "object" ||
+    Array.isArray(receipt) ||
+    JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(exactKeys)
+  ) {
+    throw new Error("Browser receipt must contain only the exact evidence schema fields.");
+  }
+  if (
+    receipt.schemaVersion !== 1 ||
+    receipt.captureTool !== "agent-browser" ||
+    receipt.mode !== "headless" ||
+    receipt.launchNumber !== expected.launchNumber ||
+    receipt.challenge !== expected.challenge ||
+    receipt.url !== expected.url ||
+    receipt.title !== expected.title ||
+    receipt.screenshotName !== expected.screenshotName ||
+    receipt.screenshotSha256 !== expected.screenshotSha256
+  ) {
+    throw new Error("Browser receipt does not match the live launch, page, or screenshot.");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/u.test(receipt.browserSession)) {
+    throw new Error("Browser receipt must name one bounded headless-browser session.");
+  }
+  const observedAtMs = Date.parse(receipt.observedAt);
+  if (!Number.isFinite(observedAtMs) || new Date(observedAtMs).toISOString() !== receipt.observedAt) {
+    throw new Error("Browser receipt observedAt must be an exact ISO timestamp.");
+  }
+  if (
+    Number.isFinite(expected.earliestObservedAtMs) &&
+    observedAtMs < expected.earliestObservedAtMs
+  ) {
+    throw new Error("Browser receipt predates its managed app launch.");
+  }
+  if (
+    Number.isFinite(expected.latestObservedAtMs) &&
+    observedAtMs > expected.latestObservedAtMs
+  ) {
+    throw new Error("Browser receipt was not observed by the live-launch validation point.");
+  }
+  return receipt;
 }
 
 function redactText(value, secrets) {
@@ -458,5 +536,6 @@ module.exports = {
   redactText,
   terminateOwnedChild,
   terminateVerifiedProcess,
+  validateBrowserReceipt,
   waitForCondition,
 };

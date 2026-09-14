@@ -22,6 +22,7 @@ const {
   redactText,
   terminateOwnedChild,
   terminateVerifiedProcess,
+  validateBrowserReceipt,
   waitForCondition,
 } = require("./managed-restart-contract.cjs");
 const { NEXT_PACKAGE, resolveSource, sourceIdentity, verifyStaged } = require("./lotus-dist.cjs");
@@ -348,6 +349,7 @@ function createRuntime(expectedBodhi, expectedBamboo) {
   const memoryTail = `project-memory-tail-${runId}`;
   return {
     app: null,
+    browserExpectations: {},
     expectedBamboo,
     expectedBodhi,
     runId,
@@ -744,6 +746,7 @@ async function startBodhi(state, build, port, launchNumber) {
   }
   const stdout = boundedLogCollector();
   const stderr = boundedLogCollector();
+  const launchedAtMs = Date.now();
   const child = spawn(build.executable, [], {
     cwd: ROOT,
     env: isolatedChildEnvironment(process.env, {
@@ -769,6 +772,7 @@ async function startBodhi(state, build, port, launchNumber) {
   child.stderr.on("data", (chunk) => stderr.append(chunk));
   const app = {
     child,
+    launchedAtMs,
     launchNumber,
     port,
     stdout,
@@ -1172,10 +1176,23 @@ async function exerciseSecondLaunch(baseUrl, state, identities) {
 }
 
 async function pauseForVisualEvidence(state, launchNumber, port) {
+  if (state.browserExpectations[launchNumber]) {
+    throw new Error(`Launch ${launchNumber} browser challenge was already allocated.`);
+  }
+  const browserExpectation = {
+    challenge: crypto.randomUUID(),
+    title: "Bodhi",
+    url: `http://127.0.0.1:${port}/`,
+  };
+  state.browserExpectations[launchNumber] = browserExpectation;
   console.log(`\nBODHI_ACCEPTANCE_READY launch=${launchNumber} port=${port}`);
   console.log(`Evidence root: ${state.directories.evidence}`);
   console.log(`Screenshots: ${state.directories.screenshots}`);
   console.log(`Required capture: ${path.join(state.directories.screenshots, `browser-launch-${launchNumber}.png`)}`);
+  console.log(`Required receipt: ${path.join(state.directories.screenshots, `browser-launch-${launchNumber}.json`)}`);
+  console.log(
+    `Browser receipt: launch=${launchNumber} mode=headless url=${browserExpectation.url} title=${browserExpectation.title} challenge=${browserExpectation.challenge}`,
+  );
   if (process.env.BODHI_ACCEPTANCE_AUTO_CONTINUE !== "1") {
     if (!process.stdin.isTTY) {
       throw new Error("Interactive visual acceptance requires a TTY, or set BODHI_ACCEPTANCE_AUTO_CONTINUE=1 for unattended contract runs.");
@@ -1217,10 +1234,9 @@ function providerObservations(state) {
   return value;
 }
 
-function screenshotNames(state) {
+function launchEvidenceNames(state) {
   return fs
     .readdirSync(state.directories.screenshots, { withFileTypes: true })
-    .filter((entry) => /\.png$/iu.test(entry.name))
     .map((entry) => entry.name)
     .sort((left, right) => left.localeCompare(right));
 }
@@ -1250,6 +1266,57 @@ function readLaunchScreenshot(state, launchNumber) {
   };
 }
 
+function readBrowserReceipt(state, launchNumber, screenshot, timing = {}) {
+  const name = `browser-launch-${launchNumber}.json`;
+  const file = assertOwnedAbsolutePath(
+    state.directories.screenshots,
+    path.join(state.directories.screenshots, name),
+    `launch ${launchNumber} browser receipt`,
+  );
+  const metadata = fs.lstatSync(file);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error(`${name} must be a regular run-owned file.`);
+  }
+  const bytes = fs.readFileSync(file);
+  let parsed;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error(`${name} must contain valid JSON.`);
+  }
+  const expectation = state.browserExpectations[launchNumber];
+  if (!expectation) throw new Error(`Launch ${launchNumber} has no run-owned browser challenge.`);
+  const receipt = validateBrowserReceipt(parsed, {
+    challenge: expectation.challenge,
+    earliestObservedAtMs: timing.earliestObservedAtMs,
+    latestObservedAtMs: timing.latestObservedAtMs,
+    launchNumber,
+    screenshotName: screenshot.name,
+    screenshotSha256: screenshot.sha256,
+    title: expectation.title,
+    url: expectation.url,
+  });
+  return {
+    ...receipt,
+    receiptName: name,
+    receiptSha256: sha256(bytes),
+    fileIdentity: {
+      device: metadata.dev,
+      inode: metadata.ino,
+      changeTimeMs: metadata.ctimeMs,
+      modifiedTimeMs: metadata.mtimeMs,
+    },
+  };
+}
+
+function readLaunchEvidence(state, launchNumber, timing = {}) {
+  const screenshot = readLaunchScreenshot(state, launchNumber);
+  return {
+    ...screenshot,
+    browser: readBrowserReceipt(state, launchNumber, screenshot, timing),
+  };
+}
+
 function captureLaunchScreenshot(state, launchNumber) {
   const app = state.app;
   const actualSidecar = app?.sidecarIdentity ? processIdentity(app.sidecarIdentity.pid) : null;
@@ -1270,13 +1337,19 @@ function captureLaunchScreenshot(state, launchNumber) {
   if (owners.length !== 1 || owners[0] !== app.sidecarIdentity.pid) {
     throw new Error(`Launch ${launchNumber} screenshot was not validated against the exclusively owned sidecar.`);
   }
-  const expectedNames = launchNumber === 1 ? ["browser-launch-1.png"] : ["browser-launch-1.png", "browser-launch-2.png"];
-  const names = screenshotNames(state);
+  const expectedNames =
+    launchNumber === 1
+      ? ["browser-launch-1.json", "browser-launch-1.png"]
+      : ["browser-launch-1.json", "browser-launch-1.png", "browser-launch-2.json", "browser-launch-2.png"];
+  const names = launchEvidenceNames(state);
   if (JSON.stringify(names) !== JSON.stringify(expectedNames)) {
     throw new Error(`Launch ${launchNumber} must contain exactly ${expectedNames.join(", ")} at its validation point.`);
   }
   return {
-    ...readLaunchScreenshot(state, launchNumber),
+    ...readLaunchEvidence(state, launchNumber, {
+      earliestObservedAtMs: app.launchedAtMs,
+      latestObservedAtMs: Date.now(),
+    }),
     validatedDuringLaunch: launchNumber,
     validatedAt: new Date().toISOString(),
     appPid: app.child.pid,
@@ -1285,7 +1358,7 @@ function captureLaunchScreenshot(state, launchNumber) {
 }
 
 function screenshotEvidence(state, captured) {
-  const current = distinctLaunchScreenshots([readLaunchScreenshot(state, 1), readLaunchScreenshot(state, 2)]);
+  const current = distinctLaunchScreenshots([readLaunchEvidence(state, 1), readLaunchEvidence(state, 2)]);
   const locked = distinctLaunchScreenshots(captured);
   for (let index = 0; index < locked.length; index += 1) {
     assertScreenshotEvidenceUnchanged(locked[index], current[index]);
@@ -1384,7 +1457,7 @@ async function main() {
     const jianduBefore = snapshotJianduProcesses();
     await startProvider(state, providerPort);
 
-    if (screenshotNames(state).length !== 0) {
+    if (launchEvidenceNames(state).length !== 0) {
       throw new Error("Screenshot evidence must be empty before the first managed launch.");
     }
     const launchOne = await startBodhi(state, build, appPort, 1);
@@ -1392,10 +1465,13 @@ async function main() {
     const launchOneScreenshot = await pauseForVisualEvidence(state, 1, appPort);
     firstStop = await stopBodhi(state);
 
-    if (JSON.stringify(screenshotNames(state)) !== JSON.stringify(["browser-launch-1.png"])) {
-      throw new Error("Only the locked first-launch screenshot may exist before the second managed launch.");
+    if (
+      JSON.stringify(launchEvidenceNames(state)) !==
+      JSON.stringify(["browser-launch-1.json", "browser-launch-1.png"])
+    ) {
+      throw new Error("Only the locked first-launch screenshot and browser receipt may exist before the second managed launch.");
     }
-    assertScreenshotEvidenceUnchanged(launchOneScreenshot, readLaunchScreenshot(state, 1));
+    assertScreenshotEvidenceUnchanged(launchOneScreenshot, readLaunchEvidence(state, 1));
     const launchTwo = await startBodhi(state, build, appPort, 2);
     if (launchTwo.appPid === launchOne.appPid || launchTwo.sidecarPid === launchOne.sidecarPid) {
       throw new Error("Second launch must have fresh Bodhi and managed Bamboo process identities.");
@@ -1526,7 +1602,8 @@ The command is opt-in and macOS-only. It builds the locked Lotus Next app bundle
 allocates isolated Bamboo/Jiandu/Project/provider state under one temporary root,
 then pauses during each real launch so visual evidence can be captured. Set
 BODHI_ACCEPTANCE_AUTO_CONTINUE=1 only for unattended contract diagnostics; a
-successful acceptance report still requires launch-1 and launch-2 PNG evidence.`);
+successful acceptance report still requires distinct launch-1 and launch-2 PNGs,
+each bound to an exact headless-browser URL/title/session receipt.`);
 } else if (process.argv.length !== 2) {
   console.error("Unknown arguments. Use --help for the opt-in acceptance contract.");
   process.exitCode = 2;

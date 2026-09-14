@@ -208,7 +208,7 @@ npm run dev
 
 当前服务参数以 `bamboo serve --help` 为准。
 
-真实桌面自动验收应使用一次性的 Bamboo/Jiandu 数据、配置和工作区根目录、隔离的 Foundation/用户主目录，以及未占用的 `BODHI_BACKEND_PORT`，并强制禁止读取用户真实 `.bamboo`、`.jiandu` 目录。直接启动编译后的测试 bundle，不安装或覆盖用户应用；通过真实 WebView 和托管 Bamboo 启动两次，验证相同产物、本地设置或 session 的保留，并在每次完整退出后确认托管子进程已经消失。不要用浏览器 mock 代替这个验收。
+真实桌面自动验收应使用一次性的 Bamboo/Jiandu 数据、配置和工作区根目录、隔离的 Foundation/用户主目录，以及未占用的 `BODHI_BACKEND_PORT`，并强制禁止读取用户真实 `.bamboo`、`.jiandu` 目录。直接启动编译后的测试 bundle，不安装或覆盖用户应用；真实启动应用及其托管 Bamboo 两次，验证应用的 WebView 导航日志、相同产物、本地设置或 session 的保留，并在每次完整退出后确认托管子进程已经消失。不要用仅运行前端的浏览器 mock 代替这个验收。
 
 可选的托管重启门禁把这套约束封装为一个本地 macOS 命令：
 
@@ -217,6 +217,8 @@ npm run test:managed-restart -- --help
 ```
 
 普通开发、构建、打包和 CI 入口都不会调用它。该命令要求 Bodhi 与 Bamboo 都是精确、干净的 Git 提交，校验仓库已提交的 Lotus Next 包锁，把所有可变的 Bamboo、Jiandu、Project、provider 数据放在同一个全新临时根目录中，真实启动编译后的 `.app` 两次，并在每次启动后暂停以采集视觉证据。重启前，确定性子代理必须通过 `session_note` 写入这个显式 Jiandu 根目录；重启后，Project memory 以及根/子 Session 身份必须仍可读取。门禁会拒绝脏源码和已占用端口，只记录合成且脱敏的 provider 元数据，并保留机器可读报告和截图供检查。
+
+视觉记录明确采用无头黑盒浏览器抓取当次运行的精确托管 URL，不会把它描述成原生 WebView 截图。每次启动都使用全新的 `agent-browser` 会话，并同时提供 `browser-launch-N.png` 和 `browser-launch-N.json`。回执把本次启动的随机 challenge、精确 URL、页面标题、浏览器会话、观察时间和 PNG SHA-256 绑定在一起。门禁在对应 Bodhi 应用及其独占端口的 Bamboo sidecar 仍存活时校验并锁定这两个文件，退出后再次验证未被替换；真实应用日志则独立证明其 WebView 导航到了同一个托管 URL。
 
 ### 运行时诊断环境变量
 
