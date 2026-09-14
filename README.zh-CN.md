@@ -220,6 +220,8 @@ npm run test:managed-restart -- --help
 
 视觉记录明确采用无头黑盒浏览器抓取当次运行的精确托管 URL，不会把它描述成原生 WebView 截图。每次启动都使用全新的 `agent-browser` 会话，并同时提供 `browser-launch-N.png` 和 `browser-launch-N.json`。回执把本次启动的随机 challenge、精确 URL、页面标题、浏览器会话、观察时间和 PNG SHA-256 绑定在一起。门禁在对应 Bodhi 应用及其独占端口的 Bamboo sidecar 仍存活时校验并锁定这两个文件，退出后再次验证未被替换；真实应用日志则独立证明其 WebView 导航到了同一个托管 URL。
 
+收到 `SIGINT` 或 `SIGTERM`（包括在任一截图提示处按 Ctrl-C）时，门禁会以非零状态中止、关闭提示、执行同一套有界且校验进程身份的应用/sidecar/provider 清理，并写入失败证据报告，不会静默返回成功。
+
 ### 运行时诊断环境变量
 
 > 以下变量在 `src-tauri/src/lib.rs` 中实际读取并生效。

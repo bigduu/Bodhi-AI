@@ -16,13 +16,16 @@ const {
   assertOwnedAbsolutePath,
   assertScreenshotEvidenceUnchanged,
   distinctLaunchScreenshots,
+  installInterruptHandlers,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
   pngEvidenceMetadata,
+  raceWithAbort,
   redactText,
   terminateOwnedChild,
   terminateVerifiedProcess,
   validateBrowserReceipt,
+  waitForInteractiveConfirmation,
   waitForCondition,
 } = require("./managed-restart-contract.cjs");
 const { NEXT_PACKAGE, resolveSource, sourceIdentity, verifyStaged } = require("./lotus-dist.cjs");
@@ -862,6 +865,11 @@ async function startBodhi(state, build, port, launchNumber) {
 async function stopBodhi(state) {
   const app = state.app;
   if (!app) return null;
+  if (!app.stopPromise) app.stopPromise = stopBodhiInstance(state, app);
+  return await app.stopPromise;
+}
+
+async function stopBodhiInstance(state, app) {
   const appPid = app.child.pid;
   let recoveryError = null;
   if (!app.sidecarIdentity) {
@@ -1175,7 +1183,7 @@ async function exerciseSecondLaunch(baseUrl, state, identities) {
   );
 }
 
-async function pauseForVisualEvidence(state, launchNumber, port) {
+async function pauseForVisualEvidence(state, launchNumber, port, interrupts) {
   if (state.browserExpectations[launchNumber]) {
     throw new Error(`Launch ${launchNumber} browser challenge was already allocated.`);
   }
@@ -1198,8 +1206,11 @@ async function pauseForVisualEvidence(state, launchNumber, port) {
       throw new Error("Interactive visual acceptance requires a TTY, or set BODHI_ACCEPTANCE_AUTO_CONTINUE=1 for unattended contract runs.");
     }
     const interface = readline.createInterface({ input: process.stdin, output: process.stdout });
-    await new Promise((resolve) => interface.question(`Capture launch ${launchNumber} evidence, then press Enter to continue… `, resolve));
-    interface.close();
+    await waitForInteractiveConfirmation(
+      interface,
+      `Capture launch ${launchNumber} evidence, then press Enter to continue… `,
+      interrupts,
+    );
   }
   return captureLaunchScreenshot(state, launchNumber);
 }
@@ -1407,6 +1418,11 @@ function canonicalSessionNoteEvidence(state, childSessionId, jianduFiles) {
 async function stopProvider(state) {
   if (!state.provider) return null;
   const provider = state.provider;
+  if (!provider.stopPromise) provider.stopPromise = stopProviderInstance(state, provider);
+  return await provider.stopPromise;
+}
+
+async function stopProviderInstance(state, provider) {
   const teardown = await terminateOwnedChild(provider.child, { graceMs: 2_000, killMs: 2_000 });
   writePrivateText(
     path.join(state.directories.logs, "provider.log"),
@@ -1428,42 +1444,48 @@ async function main() {
   const bodhiIdentity = repositoryIdentity(ROOT, expectedBodhi, "Bodhi");
   const bambooIdentity = repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo");
   const state = createRuntime(expectedBodhi, expectedBamboo);
-  const build = prepareApplication(bambooDirectory, artifactLock, state.directories.tmp);
-  repositoryIdentity(ROOT, expectedBodhi, "Bodhi after build");
-  repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo after build");
-  if (
-    build.identity.sourceRevision !== artifactLock.sourceRevision ||
-    build.identity.sourceDirty !== false ||
-    build.identity.artifactManifestSha256 !== artifactLock.manifestSha256 ||
-    build.identity.artifactResourcesSha256 !== artifactLock.resourcesSha256 ||
-    build.receipt.packageName !== artifactLock.packageName ||
-    build.receipt.version !== artifactLock.packageVersion
-  ) {
-    throw new Error("Compiled Bodhi inputs do not match the committed Lotus Next artifact lock.");
-  }
-
-  console.log(`Run-owned root: ${state.runRoot}`);
+  const interrupts = installInterruptHandlers(process);
+  const interruptible = (value) => raceWithAbort(value, interrupts.signal);
   let providerTeardown = null;
   let firstStop = null;
   let secondStop = null;
   try {
-    const [providerPort, appPort] = await Promise.all([allocateLoopbackPort(), allocateLoopbackPort()]);
+    interrupts.throwIfAborted();
+    const build = prepareApplication(bambooDirectory, artifactLock, state.directories.tmp);
+    interrupts.throwIfAborted();
+    repositoryIdentity(ROOT, expectedBodhi, "Bodhi after build");
+    repositoryIdentity(bambooDirectory, expectedBamboo, "Bamboo after build");
+    if (
+      build.identity.sourceRevision !== artifactLock.sourceRevision ||
+      build.identity.sourceDirty !== false ||
+      build.identity.artifactManifestSha256 !== artifactLock.manifestSha256 ||
+      build.identity.artifactResourcesSha256 !== artifactLock.resourcesSha256 ||
+      build.receipt.packageName !== artifactLock.packageName ||
+      build.receipt.version !== artifactLock.packageVersion
+    ) {
+      throw new Error("Compiled Bodhi inputs do not match the committed Lotus Next artifact lock.");
+    }
+
+    console.log(`Run-owned root: ${state.runRoot}`);
+    const [providerPort, appPort] = await interruptible(
+      Promise.all([allocateLoopbackPort(), allocateLoopbackPort()]),
+    );
     if (providerPort === appPort) throw new Error("Provider and Bodhi unexpectedly selected the same port.");
-    await assertLoopbackPortAvailable(providerPort);
-    await assertLoopbackPortAvailable(appPort);
+    await interruptible(assertLoopbackPortAvailable(providerPort));
+    await interruptible(assertLoopbackPortAvailable(appPort));
     writeRuntimeConfig(state, providerPort);
 
     const unrelatedBefore = snapshotRelevantProcesses();
     const jianduBefore = snapshotJianduProcesses();
-    await startProvider(state, providerPort);
+    await interruptible(startProvider(state, providerPort));
 
     if (launchEvidenceNames(state).length !== 0) {
       throw new Error("Screenshot evidence must be empty before the first managed launch.");
     }
-    const launchOne = await startBodhi(state, build, appPort, 1);
-    const identities = await exerciseFirstLaunch(`http://127.0.0.1:${appPort}`, state);
-    const launchOneScreenshot = await pauseForVisualEvidence(state, 1, appPort);
-    firstStop = await stopBodhi(state);
+    const launchOne = await interruptible(startBodhi(state, build, appPort, 1));
+    const identities = await interruptible(exerciseFirstLaunch(`http://127.0.0.1:${appPort}`, state));
+    const launchOneScreenshot = await interruptible(pauseForVisualEvidence(state, 1, appPort, interrupts));
+    firstStop = await interruptible(stopBodhi(state));
 
     if (
       JSON.stringify(launchEvidenceNames(state)) !==
@@ -1472,13 +1494,13 @@ async function main() {
       throw new Error("Only the locked first-launch screenshot and browser receipt may exist before the second managed launch.");
     }
     assertScreenshotEvidenceUnchanged(launchOneScreenshot, readLaunchEvidence(state, 1));
-    const launchTwo = await startBodhi(state, build, appPort, 2);
+    const launchTwo = await interruptible(startBodhi(state, build, appPort, 2));
     if (launchTwo.appPid === launchOne.appPid || launchTwo.sidecarPid === launchOne.sidecarPid) {
       throw new Error("Second launch must have fresh Bodhi and managed Bamboo process identities.");
     }
-    await exerciseSecondLaunch(`http://127.0.0.1:${appPort}`, state, identities);
-    const launchTwoScreenshot = await pauseForVisualEvidence(state, 2, appPort);
-    secondStop = await stopBodhi(state);
+    await interruptible(exerciseSecondLaunch(`http://127.0.0.1:${appPort}`, state, identities));
+    const launchTwoScreenshot = await interruptible(pauseForVisualEvidence(state, 2, appPort, interrupts));
+    secondStop = await interruptible(stopBodhi(state));
 
     const unrelatedAfter = snapshotRelevantProcesses();
     const jianduAfter = snapshotJianduProcesses();
@@ -1504,7 +1526,8 @@ async function main() {
     }
     const observations = providerObservations(state);
     const screenshots = screenshotEvidence(state, [launchOneScreenshot, launchTwoScreenshot]);
-    providerTeardown = await stopProvider(state);
+    providerTeardown = await interruptible(stopProvider(state));
+    interrupts.throwIfAborted();
 
     const report = {
       schemaVersion: 1,
@@ -1546,6 +1569,7 @@ async function main() {
       screenshots,
     };
     writePrivateJson(path.join(state.directories.evidence, "report.json"), report, [state.providerKey]);
+    interrupts.throwIfAborted();
     console.log(`\nBODHI_ACCEPTANCE_PASSED report=${path.join(state.directories.evidence, "report.json")}`);
   } catch (error) {
     try {
@@ -1588,6 +1612,7 @@ async function main() {
         // The main result already captures the failure.
       }
     }
+    interrupts.dispose();
   }
 }
 

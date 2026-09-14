@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
+const { EventEmitter } = require("node:events");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -15,13 +16,16 @@ const {
   assertOwnedAbsolutePath,
   assertScreenshotEvidenceUnchanged,
   distinctLaunchScreenshots,
+  installInterruptHandlers,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
   pngEvidenceMetadata,
+  raceWithAbort,
   redactText,
   terminateOwnedChild,
   terminateVerifiedProcess,
   validateBrowserReceipt,
+  waitForInteractiveConfirmation,
   waitForCondition,
 } = require("./managed-restart-contract.cjs");
 
@@ -338,6 +342,59 @@ test("browser receipt binds the live launch URL, title, challenge, session, and 
     () => validateBrowserReceipt({ ...receipt, unexpected: true }, expected),
     /exact evidence schema fields/,
   );
+});
+
+test("SIGINT and SIGTERM abort interactive confirmation and close its readline interface", async () => {
+  for (const signalName of ["SIGINT", "SIGTERM"]) {
+    const target = new EventEmitter();
+    const interrupts = installInterruptHandlers(target);
+    const interface = new EventEmitter();
+    let closed = false;
+    interface.close = () => {
+      closed = true;
+    };
+    interface.question = () => {};
+    const confirmation = waitForInteractiveConfirmation(interface, "continue? ", interrupts);
+    target.emit(signalName);
+    await assert.rejects(confirmation, new RegExp(`interrupted by ${signalName}`));
+    assert.equal(closed, true);
+    assert.equal(interrupts.signal.aborted, true);
+    assert.throws(() => interrupts.throwIfAborted(), new RegExp(signalName));
+    interrupts.dispose();
+    assert.equal(target.listenerCount("SIGINT"), 0);
+    assert.equal(target.listenerCount("SIGTERM"), 0);
+  }
+});
+
+test("readline Ctrl-C routes through the same abort controller", async () => {
+  const target = new EventEmitter();
+  const interrupts = installInterruptHandlers(target);
+  const interface = new EventEmitter();
+  let closed = false;
+  interface.close = () => {
+    closed = true;
+  };
+  interface.question = () => {};
+  const confirmation = waitForInteractiveConfirmation(interface, "continue? ", interrupts);
+  interface.emit("SIGINT");
+  await assert.rejects(confirmation, /interrupted by SIGINT/);
+  assert.equal(closed, true);
+  interrupts.dispose();
+});
+
+test("abort racing rejects immediately while retaining the underlying rejection handler", async () => {
+  const target = new EventEmitter();
+  const interrupts = installInterruptHandlers(target);
+  let rejectUnderlying;
+  const underlying = new Promise((resolve, reject) => {
+    rejectUnderlying = reject;
+  });
+  const raced = raceWithAbort(underlying, interrupts.signal);
+  target.emit("SIGTERM");
+  await assert.rejects(raced, /interrupted by SIGTERM/);
+  rejectUnderlying(new Error("late owned-child failure"));
+  await new Promise((resolve) => setImmediate(resolve));
+  interrupts.dispose();
 });
 
 test("evidence redaction removes every designated secret", () => {

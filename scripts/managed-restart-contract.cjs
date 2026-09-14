@@ -500,6 +500,81 @@ function validateBrowserReceipt(receipt, expected) {
   return receipt;
 }
 
+function interruptionError(signalName) {
+  const error = new Error(`Managed restart acceptance interrupted by ${signalName}.`);
+  error.name = "AbortError";
+  error.signal = signalName;
+  return error;
+}
+
+function installInterruptHandlers(target = process) {
+  if (typeof target?.on !== "function" || typeof target?.off !== "function") {
+    throw new Error("Interrupt target must support on/off signal listeners.");
+  }
+  const controller = new AbortController();
+  const interrupt = (signalName) => {
+    if (!controller.signal.aborted) controller.abort(interruptionError(signalName));
+  };
+  const handlers = {
+    SIGINT: () => interrupt("SIGINT"),
+    SIGTERM: () => interrupt("SIGTERM"),
+  };
+  for (const [signalName, handler] of Object.entries(handlers)) target.on(signalName, handler);
+  return {
+    dispose() {
+      for (const [signalName, handler] of Object.entries(handlers)) target.off(signalName, handler);
+    },
+    interrupt,
+    signal: controller.signal,
+    throwIfAborted() {
+      if (controller.signal.aborted) throw controller.signal.reason;
+    },
+  };
+}
+
+function raceWithAbort(value, signal) {
+  if (!signal) return Promise.resolve(value);
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(value).then(
+      (result) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(result);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function waitForInteractiveConfirmation(interface, prompt, interrupts) {
+  if (
+    typeof interface?.question !== "function" ||
+    typeof interface?.close !== "function" ||
+    typeof interface?.once !== "function" ||
+    typeof interface?.off !== "function" ||
+    typeof interrupts?.interrupt !== "function" ||
+    !interrupts?.signal
+  ) {
+    throw new Error("Interactive confirmation requires a readline interface and interrupt controller.");
+  }
+  const onReadlineInterrupt = () => interrupts.interrupt("SIGINT");
+  interface.once("SIGINT", onReadlineInterrupt);
+  try {
+    await raceWithAbort(
+      new Promise((resolve) => interface.question(prompt, resolve)),
+      interrupts.signal,
+    );
+  } finally {
+    interface.off("SIGINT", onReadlineInterrupt);
+    interface.close();
+  }
+}
+
 function redactText(value, secrets) {
   let redacted = String(value);
   for (const secret of secrets) {
@@ -530,12 +605,15 @@ module.exports = {
   assertScreenshotEvidenceUnchanged,
   assertTcpPort,
   distinctLaunchScreenshots,
+  installInterruptHandlers,
   isolatedChildEnvironment,
   managedSidecarTeardownComplete,
   pngEvidenceMetadata,
+  raceWithAbort,
   redactText,
   terminateOwnedChild,
   terminateVerifiedProcess,
   validateBrowserReceipt,
+  waitForInteractiveConfirmation,
   waitForCondition,
 };
