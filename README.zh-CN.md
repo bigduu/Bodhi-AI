@@ -115,7 +115,7 @@ graph TD
 
 ### Lotus Next 如何进入打包应用
 
-Bodhi 在本地开发时读取同级 `../lotus-next`，在 package 组装时读取 `@bigduu/lotus-next`。本地生产构建执行 Lotus Next 自身的 build 与 package-content 校验，再验证生产首页、asset-manifest 引用和所有文件哈希。package 组装还会在替换任何生成输出前，对照 `scripts/frontend-package-lock.json` 校验规范化 universal manifest、干净源码提交、完整文件清单、逐文件大小与 SHA-256、组合摘要和 manifest 哈希。当前锁定 `@bigduu/lotus-next@2026.9.14`，源码为 `ae17b50574ccd86395cbc226b50c9fb2f0f51e0f`。
+Bodhi 在本地开发时读取同级 `../lotus-next`，在 package 组装时读取 `@bigduu/lotus-next`。本地生产构建执行 Lotus Next 自身的 build 与 package-content 校验，再验证生产首页、asset-manifest 引用和所有文件哈希。package 组装还会在替换任何生成输出前，对照 `scripts/frontend-package-lock.json` 校验规范化 universal manifest、干净源码提交、完整文件清单、逐文件大小与 SHA-256、组合摘要和 manifest 哈希。当前锁定 `@bigduu/lotus-next@2026.9.16`，源码为 `0495772ecab37402c3915c10a6c945cf286a132b`。
 
 `.bodhi-frontend/receipt.json` 记录包名、版本、源码提交、dirty 标记、适用时的发布产物摘要、逐文件 SHA-256 和确定性的整体哈希。构建或装配期间身份变化会在替换已有生成输出前中止。本地有改动的检出仍可使用并明确标记 dirty；发布包必须来自干净源码且与提交锁完全一致。
 

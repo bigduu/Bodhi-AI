@@ -308,7 +308,7 @@ mod tests {
         let (original, receipt) = fixture();
         let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
         value["mode"] = "package".into();
-        value["version"] = "2026.9.14".into();
+        value["version"] = "2026.9.16".into();
         value["sourceDirty"] = false.into();
         value["artifactManifestSha256"] = hash_bytes(b"{}\n").into();
         value["artifactResourcesSha256"] = "a".repeat(64).into();
@@ -334,7 +334,7 @@ mod tests {
         let (temp, receipt) = fixture();
         let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
         value["mode"] = "package".into();
-        value["version"] = "2026.9.14".into();
+        value["version"] = "2026.9.16".into();
         value["artifactManifestSha256"] = "0".repeat(64).into();
         value["artifactResourcesSha256"] = "a".repeat(64).into();
         let package = serde_json::to_vec(&value).unwrap();

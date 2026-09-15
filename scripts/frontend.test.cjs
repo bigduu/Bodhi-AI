@@ -22,7 +22,7 @@ function installNextPackage(root, sourceDist) {
   const packageRoot = path.join(root, "node_modules/@bigduu/lotus-next");
   write(path.join(packageRoot, "package.json"), {
     name: frontend.NEXT_PACKAGE,
-    version: "2026.9.14",
+    version: "2026.9.16",
   });
   fs.cpSync(sourceDist, path.join(packageRoot, "dist"), { recursive: true });
   const dist = path.join(packageRoot, "dist");
@@ -37,7 +37,7 @@ function installNextPackage(root, sourceDist) {
   const manifest = {
     schemaVersion: 1,
     packageName: frontend.NEXT_PACKAGE,
-    packageVersion: "2026.9.14",
+    packageVersion: "2026.9.16",
     sourceRevision: "a".repeat(40),
     sourceDirty: false,
     entrypoint: "index.html",
@@ -317,7 +317,7 @@ test("package metadata and the committed artifact lock must agree", (t) => {
   });
   assert.throws(
     () => frontend.resolveSource({ LOTUS_SOURCE: "package" }, root),
-    /does not match the locked 2026\.9\.14/,
+    /does not match the locked 2026\.9\.16/,
   );
 });
 
