@@ -36,7 +36,7 @@ function artifactFixture() {
   const manifest = {
     schemaVersion: 1,
     packageName: "@bigduu/lotus-next",
-    packageVersion: "2026.9.14",
+    packageVersion: "2026.9.16",
     sourceRevision: "a".repeat(40),
     sourceDirty: false,
     entrypoint: "index.html",
