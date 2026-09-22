@@ -14,11 +14,11 @@ on:
       bamboo_ref:
         description: "Exact bigduu/Bamboo-agent ref used to build the managed sidecar"
         required: false
-        default: "39d40c2e4d014ac3fd0b5fe2164f59412ca706cd"
+        default: "d0e4dd8c56dba13977df18ab713c729a5882ac54"
       lotus_version:
         description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
-        default: "2026.9.16"
+        default: "2026.9.22"
       frontend_package:
         description: "Frontend package; legacy Lotus is the explicit rollback path"
         required: true
@@ -91,7 +91,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bigduu/Bamboo-agent
-          ref: ${{ github.event.inputs.bamboo_ref || '39d40c2e4d014ac3fd0b5fe2164f59412ca706cd' }}
+          ref: ${{ github.event.inputs.bamboo_ref || 'd0e4dd8c56dba13977df18ab713c729a5882ac54' }}
           path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
@@ -221,7 +221,7 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
             LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
           else
-            LOTUS_VERSION="2026.9.16"
+            LOTUS_VERSION="2026.9.22"
           fi
           echo "Using ${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
           npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
