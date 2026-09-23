@@ -11,7 +11,7 @@ env:
   LOTUS_SOURCE: package
   LOTUS_PACKAGE_NAME: "@bigduu/lotus-next"
   LOTUS_VERSION: "2026.9.22"
-  BAMBOO_REF: "d0e4dd8c56dba13977df18ab713c729a5882ac54"
+  BAMBOO_REF: "2387b796c89af0d720db2efbb893fca41cc668e3"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PROGRESS: "false"
