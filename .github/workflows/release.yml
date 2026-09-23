@@ -59,6 +59,7 @@ jobs:
             artifact_paths: |
               target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
               target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              target/x86_64-apple-darwin/release/bundle/macos/bodhi-x86_64-apple-darwin-distribution-receipt.json
           - platform: "macos-latest"
             target: "aarch64-apple-darwin"
             args: "--target aarch64-apple-darwin"
@@ -66,6 +67,7 @@ jobs:
             artifact_paths: |
               target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
               target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+              target/aarch64-apple-darwin/release/bundle/macos/bodhi-aarch64-apple-darwin-distribution-receipt.json
           - platform: "ubuntu-22.04"
             target: "x86_64-unknown-linux-gnu"
             args: "--target x86_64-unknown-linux-gnu"
@@ -106,6 +108,17 @@ jobs:
           node-version: lts/*
           cache: "npm"
           cache-dependency-path: package-lock.json
+
+      - name: Prepare Developer ID signing and notarization credentials
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+        run: bash scripts/prepare-macos-release-signing.sh
 
       - name: Verify migration boundary
         run: node scripts/verify-boundaries.cjs migration
@@ -254,13 +267,10 @@ jobs:
           BAMBOO_SIDECAR_SOURCE: local
           BAMBOO_LOCAL_PATH: ${{ github.workspace }}/bamboo-src
           BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
-          # Ad-hoc macOS signing: the runner keychain has no "Zenith Nova Code
-          # Signing" cert (no Apple secrets configured), so the real identity in
-          # tauri.conf can't be used and the build fails at codesign. "-" signs
-          # ad-hoc so macOS bundles build. TODO: for distribution + persistent
-          # TCC grants, add the cert as a secret, import it into the keychain
-          # here, and drop this override so the real identity is used.
-          APPLE_SIGNING_IDENTITY: "-"
+          # APPLE_SIGNING_IDENTITY and APPLE_API_KEY_PATH come from the macOS
+          # preparation step. Tauri notarizes/staples using these API credentials.
+          APPLE_API_KEY: ${{ contains(matrix.target, 'apple-darwin') && secrets.APPLE_API_KEY || '' }}
+          APPLE_API_ISSUER: ${{ contains(matrix.target, 'apple-darwin') && secrets.APPLE_API_ISSUER || '' }}
         with:
           # Draft tags are run-scoped, so no other dispatch can add or replace
           # assets in this run's unverified release.
@@ -282,12 +292,36 @@ jobs:
         shell: bash
         run: node scripts/browser-bundle-smoke.cjs "${{ matrix.target }}"
 
+      - name: Verify exact Developer ID and notarized macOS artifacts
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        env:
+          BODHI_RELEASE_VERSION: ${{ steps.release_version.outputs.version }}
+        run: node scripts/verify-macos-distribution.cjs "${{ matrix.target }}"
+
+      - name: Attach macOS verification receipt to draft release
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRAFT_TAG: bodhi-draft-v${{ steps.release_version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: gh release upload "$DRAFT_TAG" "target/${{ matrix.target }}/release/bundle/macos/bodhi-${{ matrix.target }}-distribution-receipt.json"
+
       - name: Upload Build Artifacts to Workflow
         uses: actions/upload-artifact@v7
         with:
           name: app-build-${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error
+
+      - name: Remove temporary Apple credentials
+        if: always() && contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          if [ -n "${BODHI_SIGNING_DIR:-}" ]; then
+            security delete-keychain "$BODHI_SIGNING_DIR/release.keychain-db" || true
+            rm -rf "$BODHI_SIGNING_DIR"
+          fi
 
   finalize-release:
     name: Publish fully verified release
