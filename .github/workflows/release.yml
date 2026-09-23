@@ -52,7 +52,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest"
+          - platform: "macos-15-intel"
             target: "x86_64-apple-darwin"
             args: "--target x86_64-apple-darwin"
             artifact_name: "macos-x64"
@@ -276,6 +276,11 @@ jobs:
       - name: Verify exact frontend and real target sidecar
         shell: bash
         run: npm run verify:assembly -- "${{ matrix.target }}"
+
+      - name: Exercise bundled browser DOM and screenshot
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: node scripts/browser-bundle-smoke.cjs "${{ matrix.target }}"
 
       - name: Upload Build Artifacts to Workflow
         uses: actions/upload-artifact@v7

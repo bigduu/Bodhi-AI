@@ -6,6 +6,10 @@
 # will have schema files for capabilities auto-completion
 /gen/schemas
 
+# Generated, target-specific browser runtime and verified download cache.
+/browser-runtime/
+/.browser-runtime-cache/
+
 .token
 
 # Runtime data directories
