@@ -67,10 +67,10 @@ hex = "0.4"
 rusqlite = "0.31"
 
 # Tauri
-tauri = { version = "2.5", features = ["macos-private-api"] }
+tauri = { version = "=2.11.1", features = ["macos-private-api"] }
 tauri-build = "2.5"
-tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
+tauri-plugin-dialog = "=2.7.1"
+tauri-plugin-fs = "=2.5.1"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-process = "2"

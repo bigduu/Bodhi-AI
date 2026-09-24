@@ -2,24 +2,24 @@
 # yarn lockfile v1
 
 
-"@tauri-apps/cli-darwin-arm64@2.5.0":
-  version "2.5.0"
-  resolved "https://registry.npmjs.org/@tauri-apps/cli-darwin-arm64/-/cli-darwin-arm64-2.5.0.tgz"
-  integrity sha512-VuVAeTFq86dfpoBDNYAdtQVLbP0+2EKCHIIhkaxjeoPARR0sLpFHz2zs0PcFU76e+KAaxtEtAJAXGNUc8E1PzQ==
+"@tauri-apps/cli-darwin-arm64@2.11.5":
+  version "2.11.5"
+  resolved "https://registry.npmjs.org/@tauri-apps/cli-darwin-arm64/-/cli-darwin-arm64-2.11.5.tgz"
+  integrity sha512-tggOiVOohjIHdiElbjeBfB41s6cmfsq+ZQ0PX0fEtCdsDdZ9cCi54e5gNK7tdPbR6JbdDe7RA4kbQdyyBUUk/Q==
 
-"@tauri-apps/cli@^2":
-  version "2.5.0"
-  resolved "https://registry.npmjs.org/@tauri-apps/cli/-/cli-2.5.0.tgz"
-  integrity sha512-rAtHqG0Gh/IWLjN2zTf3nZqYqbo81oMbqop56rGTjrlWk9pTTAjkqOjSL9XQLIMZ3RbeVjveCqqCA0s8RnLdMg==
+"@tauri-apps/cli@2.11.5":
+  version "2.11.5"
+  resolved "https://registry.npmjs.org/@tauri-apps/cli/-/cli-2.11.5.tgz"
+  integrity sha512-YbeJ6tctNoo40purO4u3Eeo3RVqmsjJr0NoKQRu+4pvO4gMLzkjta7x0k96SxSLmx+rQ+8um1ThOlw+HLpgFug==
   optionalDependencies:
-    "@tauri-apps/cli-darwin-arm64" "2.5.0"
-    "@tauri-apps/cli-darwin-x64" "2.5.0"
-    "@tauri-apps/cli-linux-arm-gnueabihf" "2.5.0"
-    "@tauri-apps/cli-linux-arm64-gnu" "2.5.0"
-    "@tauri-apps/cli-linux-arm64-musl" "2.5.0"
-    "@tauri-apps/cli-linux-riscv64-gnu" "2.5.0"
-    "@tauri-apps/cli-linux-x64-gnu" "2.5.0"
-    "@tauri-apps/cli-linux-x64-musl" "2.5.0"
-    "@tauri-apps/cli-win32-arm64-msvc" "2.5.0"
-    "@tauri-apps/cli-win32-ia32-msvc" "2.5.0"
-    "@tauri-apps/cli-win32-x64-msvc" "2.5.0"
+    "@tauri-apps/cli-darwin-arm64" "2.11.5"
+    "@tauri-apps/cli-darwin-x64" "2.11.5"
+    "@tauri-apps/cli-linux-arm-gnueabihf" "2.11.5"
+    "@tauri-apps/cli-linux-arm64-gnu" "2.11.5"
+    "@tauri-apps/cli-linux-arm64-musl" "2.11.5"
+    "@tauri-apps/cli-linux-riscv64-gnu" "2.11.5"
+    "@tauri-apps/cli-linux-x64-gnu" "2.11.5"
+    "@tauri-apps/cli-linux-x64-musl" "2.11.5"
+    "@tauri-apps/cli-win32-arm64-msvc" "2.11.5"
+    "@tauri-apps/cli-win32-ia32-msvc" "2.11.5"
+    "@tauri-apps/cli-win32-x64-msvc" "2.11.5"
