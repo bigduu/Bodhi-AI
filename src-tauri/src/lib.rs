@@ -1,4 +1,5 @@
 use crate::command::copy::copy_to_clipboard;
+use crate::command::image::read_local_image;
 use crate::command::notification::show_desktop_notification;
 use crate::command::window::{is_main_window_focused, set_window_theme};
 use std::time::Duration;
@@ -403,6 +404,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             copy_to_clipboard,
+            read_local_image,
             set_window_theme,
             show_desktop_notification,
             is_main_window_focused,
