@@ -46,7 +46,10 @@
       "../.bodhi-frontend/": "frontend/"
     },
     "macOS": {
-      "signingIdentity": "Zenith Nova Code Signing"
+      "signingIdentity": "Zenith Nova Code Signing",
+      "files": {
+        "Resources/BodhiBrowser": "./browser-runtime/"
+      }
     },
     "icon": [
       "icons/32x32.png",

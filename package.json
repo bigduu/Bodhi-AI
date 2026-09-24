@@ -30,6 +30,11 @@
     "tauri:build:internal": "node scripts/tauri-mode.cjs --mode=internal --target=build"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "2.11.5"
+  },
+  "overrides": {
+    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "2.7.1",
+    "@tauri-apps/plugin-fs": "2.5.1"
   }
 }
