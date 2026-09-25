@@ -91,7 +91,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          workspaces: ". -> target"
           shared-key: "bodhi-ci-${{ matrix.platform }}"
           cache-on-failure: true
 
@@ -103,7 +103,7 @@ jobs:
 
   build-tauri:
     name: Build Tauri App (${{ matrix.platform }})
-    needs: [test-frontend, test-backend]
+    needs: [test-frontend]
     strategy:
       fail-fast: false
       matrix:
@@ -176,7 +176,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: |
-            ./src-tauri -> target
+            . -> target
             ./bamboo-src -> target
           shared-key: "bodhi-ci-${{ matrix.target }}"
           cache-on-failure: true
