@@ -35,6 +35,7 @@ const ownsFrontend = frontend.packageName === NEXT_PACKAGE;
 const buildEnv = {
   ...process.env,
   BAMBOO_FRONTEND_BUILD_MODE: ownsFrontend ? "api-only" : "embedded",
+  BODHI_BROWSER_RUNTIME_RELEASE_BUILD: isDebug ? "0" : "1",
 };
 const run = (command, args, cwd) => execFileSync(command, args, { cwd, env: buildEnv, stdio: "inherit" });
 
@@ -150,3 +151,10 @@ try {
 }
 
 console.log(`✅ sidecar -> ${path.relative(BODHI, dest)}`);
+
+// The browser host is a separate child of Bamboo, but its executable and JS
+// dependencies are owned by this same desktop bundle. Build both from the
+// selected target before Tauri copies/signs the macOS app.
+if (triple.endsWith("-apple-darwin")) {
+  run(process.execPath, ["scripts/browser-runtime.cjs", triple], BODHI);
+}
