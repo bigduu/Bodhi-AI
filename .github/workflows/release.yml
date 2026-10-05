@@ -14,7 +14,7 @@ on:
       bamboo_ref:
         description: "Exact bigduu/Bamboo-agent ref used to build the managed sidecar"
         required: false
-        default: "d0e4dd8c56dba13977df18ab713c729a5882ac54"
+        default: "2387b796c89af0d720db2efbb893fca41cc668e3"
       lotus_version:
         description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
@@ -52,7 +52,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest"
+          - platform: "macos-15-intel"
             target: "x86_64-apple-darwin"
             args: "--target x86_64-apple-darwin"
             artifact_name: "macos-x64"
@@ -91,7 +91,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bigduu/Bamboo-agent
-          ref: ${{ github.event.inputs.bamboo_ref || 'd0e4dd8c56dba13977df18ab713c729a5882ac54' }}
+          ref: ${{ github.event.inputs.bamboo_ref || '2387b796c89af0d720db2efbb893fca41cc668e3' }}
           path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
@@ -276,6 +276,11 @@ jobs:
       - name: Verify exact frontend and real target sidecar
         shell: bash
         run: npm run verify:assembly -- "${{ matrix.target }}"
+
+      - name: Exercise bundled browser DOM and screenshot
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: node scripts/browser-bundle-smoke.cjs "${{ matrix.target }}"
 
       - name: Upload Build Artifacts to Workflow
         uses: actions/upload-artifact@v7

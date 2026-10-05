@@ -1,6 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { ROOT, verifyStaged } = require("./lotus-dist.cjs");
+const { ROOT, NEXT_PACKAGE, contentHash, inventory, verifyStaged } = require("./lotus-dist.cjs");
+const { STAGED, verifyRuntime } = require("./browser-runtime.cjs");
+const { execFileSync } = require("node:child_process");
 
 function readExact(descriptor, length, position, binary) {
   const buffer = Buffer.alloc(length);
@@ -129,13 +131,49 @@ function verifySidecar(root, target) {
 
 module.exports = { verifySidecar };
 
+function verifyBundledBrowser(root, target, appPath) {
+  const staged = verifyRuntime(STAGED, target);
+  const app = appPath
+    ? path.resolve(appPath)
+    : path.join(root, "target", target, "release", "bundle", "macos", "Bodhi AI.app");
+  const bundled = verifyRuntime(path.join(app, "Contents", "Resources", "BodhiBrowser"), target);
+  if (bundled.filesSha256 !== staged.filesSha256 || bundled.hostSha256 !== staged.hostSha256) {
+    throw new Error("The app bundle does not contain the exact staged browser runtime.");
+  }
+  execFileSync("codesign", ["--verify", "--deep", "--strict", app], { stdio: "pipe" });
+  return { app, ...bundled };
+}
+
+module.exports.verifyBundledBrowser = verifyBundledBrowser;
+
+function verifyBundledFrontend(app, receipt) {
+  const frontend = path.join(app, "Contents", "Resources", "frontend");
+  const bundledReceipt = JSON.parse(fs.readFileSync(path.join(frontend, "receipt.json"), "utf8"));
+  if (JSON.stringify(bundledReceipt) !== JSON.stringify(receipt)) {
+    throw new Error("The app bundle contains a different Lotus frontend receipt.");
+  }
+  if (receipt.packageName === NEXT_PACKAGE) {
+    const files = inventory(path.join(frontend, "dist"));
+    if (contentHash(files) !== receipt.contentHash ||
+        JSON.stringify(files) !== JSON.stringify(receipt.files)) {
+      throw new Error("The app bundle contains different Lotus frontend assets.");
+    }
+  }
+}
+
+module.exports.verifyBundledFrontend = verifyBundledFrontend;
+
 if (require.main === module) {
   try {
     const target = process.argv[2] || process.env.BAMBOO_SIDECAR_TARGET;
     const receipt = verifyStaged();
     const sidecar = verifySidecar(ROOT, target);
+    const browser = target.endsWith("-apple-darwin")
+      ? verifyBundledBrowser(ROOT, target, process.argv[3])
+      : null;
+    if (browser) verifyBundledFrontend(browser.app, receipt);
     console.log(
-      `Verified ${receipt.packageName}@${receipt.version} and real ${target} ${sidecar.architecture} sidecar (${sidecar.size} bytes).`,
+      `Verified ${receipt.packageName}@${receipt.version} and real ${target} ${sidecar.architecture} sidecar (${sidecar.size} bytes)${browser ? `, bundled Node ${browser.nodeVersion} / Chromium ${browser.chromiumVersion}` : ""}.`,
     );
   } catch (error) {
     console.error(`Assembly: ${error.message}`);

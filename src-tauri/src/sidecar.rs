@@ -22,6 +22,95 @@ use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
+#[cfg(target_os = "macos")]
+fn warn_if_browser_os_unsupported() {
+    let Ok(output) = std::process::Command::new("/usr/bin/sw_vers")
+        .arg("-productVersion")
+        .output()
+    else {
+        return;
+    };
+    let Ok(version) = std::str::from_utf8(&output.stdout) else {
+        return;
+    };
+    let mut parts = version
+        .trim()
+        .split('.')
+        .filter_map(|part| part.parse::<u32>().ok());
+    if let (Some(major), Some(minor)) = (parts.next(), parts.next()) {
+        if major < 13 || (major == 13 && minor < 5) {
+            log::warn!(
+                "Bundled browser requires macOS 13.5 or later (found {}); browser sessions will be unavailable, but Bodhi can still start.",
+                version.trim()
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn browser_runtime_paths<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<[std::path::PathBuf; 3], String> {
+    warn_if_browser_os_unsupported();
+    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let bundled = resources.join("BodhiBrowser");
+    let mut candidates = vec![bundled];
+    if cfg!(debug_assertions) {
+        if let Ok(override_dir) = std::env::var("BODHI_BROWSER_RUNTIME_DIR") {
+            candidates.push(std::path::PathBuf::from(override_dir));
+        }
+        candidates
+            .push(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("browser-runtime"));
+    }
+    let root = candidates
+        .iter()
+        .find(|candidate| candidate.join("receipt.json").is_file())
+        .ok_or("Bodhi's controlled browser runtime is missing; rebuild the macOS app")?
+        .canonicalize()
+        .map_err(|e| format!("resolve bundled browser runtime: {e}"))?;
+    let platform = match std::env::consts::ARCH {
+        "aarch64" => "mac-arm64",
+        "x86_64" => "mac-x64",
+        other => return Err(format!("unsupported macOS browser architecture: {other}")),
+    };
+    let paths = [
+        root.join("node/node"),
+        root.join("host.cjs"),
+        root.join(format!(
+            "chromium/chrome-headless-shell-{platform}/chrome-headless-shell"
+        )),
+    ];
+    for (index, path) in paths.iter().enumerate() {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|e| format!("bundled browser file {}: {e}", path.display()))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(format!(
+                "bundled browser path is not a regular file: {}",
+                path.display()
+            ));
+        }
+        if index != 1 {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o111 == 0 {
+                return Err(format!(
+                    "bundled browser file is not executable: {}",
+                    path.display()
+                ));
+            }
+        }
+        let resolved = path
+            .canonicalize()
+            .map_err(|e| format!("resolve bundled browser file {}: {e}", path.display()))?;
+        if !resolved.starts_with(&root) {
+            return Err(format!(
+                "bundled browser file escapes its runtime: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(paths)
+}
+
 /// Holds the running sidecar child so the app-exit handler can kill it.
 /// `None` until the child is spawned (or if an external backend was reused).
 #[derive(Default)]
@@ -187,6 +276,14 @@ pub fn spawn<R: Runtime>(
         .map_err(|e| format!("resolve bamboo sidecar: {e}"))?
         .args(args)
         .set_raw_out(true);
+    #[cfg(target_os = "macos")]
+    {
+        let [node, host, browser] = browser_runtime_paths(app)?;
+        command = command
+            .env("BAMBOO_BROWSER_NODE", node)
+            .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
+            .env("BAMBOO_BROWSER_EXECUTABLE", browser);
+    }
     if static_dir.is_some() {
         command = command.env(
             "RUST_LOG",
