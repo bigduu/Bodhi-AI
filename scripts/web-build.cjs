@@ -23,7 +23,7 @@ function buildFrontend(source = resolveSource()) {
 
 module.exports = { buildFrontend };
 
-if (require.main === module) {
+if (require.main === module) (async () => {
   try {
     const command = process.argv[2] || "build";
     const source = resolveSource();
@@ -31,10 +31,11 @@ if (require.main === module) {
     else if (["dev", "preview"].includes(command)) {
       if (source.mode !== "local") throw new Error(`${command} requires a local Lotus Next checkout; published release packages contain dist only.`);
       if (command === "preview") buildFrontend(source);
-      runNpm(source, ["run", command, "--", "--host", "127.0.0.1", "--port", "1420", "--strictPort", ...process.argv.slice(3)], localBuildEnvironment(source));
+      if (command === "dev") await require("./web-dev.cjs").runFrontend(source);
+      else runNpm(source, ["run", command, "--", "--host", "127.0.0.1", "--port", "1420", "--strictPort", ...process.argv.slice(3)], localBuildEnvironment(source));
     } else throw new Error(`Unknown command ${command}; use build, dev or preview.`);
   } catch (error) {
     console.error(`Frontend: ${error.message}`);
     process.exitCode = 1;
   }
-}
+})();

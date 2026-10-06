@@ -95,7 +95,7 @@ Bodhi 只有一种构建模式。`npm run tauri:dev` 和 `npm run tauri:build` �
 npm run tauri:dev
 ```
 
-`tauri:dev` 按 `beforeDevCommand` 构建并校验 Lotus Next、装配资源、从同级 Bamboo 编译 API-only debug sidecar，再在回环地址端口 `1420` 启动 Lotus Next Vite，端口冲突会失败。窗口使用 `devUrl: http://localhost:1420` 提供 HMR；设置 `BODHI_SIDECAR_FRONTEND` 后，也可在 debug 外壳中检验 sidecar 提供的同一份生产资源。
+`tauri:dev` 负责完整启动顺序。它在构建前检查 `1420`，占用时报告监听进程和当前检出路径，保留已有服务。随后构建并校验 Lotus Next、装配资源、从同级 Bamboo 编译 API-only debug sidecar，再在 `127.0.0.1:1420` 启动禁止自动换端口的 Vite。只有本次前端进程与源码身份校验通过才启动原生应用。窗口先显示不加载前端模块的启动页，等现有 managed sidecar 的健康和资源校验通过后再进入 Lotus Next HMR。正常退出、准备失败和中断都会清理本次拥有的开发命令。设置 `BODHI_SIDECAR_FRONTEND` 后，也可在 debug 外壳中检验 sidecar 提供的同一份生产资源。原生选项使用 `npm run tauri:dev -- <Tauri options>`；该入口保留 `--config`，避免覆盖受控启动钩子与地址。
 
 ### 构建
 

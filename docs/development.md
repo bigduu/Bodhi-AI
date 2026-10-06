@@ -95,7 +95,7 @@ Bodhi has one build mode. `npm run tauri:dev` and `npm run tauri:build` prepare 
 npm run tauri:dev
 ```
 
-`tauri:dev` follows `beforeDevCommand`: it builds and verifies Lotus Next, stages its resources, builds an API-only debug sidecar from sibling `../bamboo`, and starts Lotus Next's Vite server on loopback port `1420` with strict-port behavior. The window uses `devUrl: http://localhost:1420` for HMR. The same verified resources are available when `BODHI_SIDECAR_FRONTEND` is set to exercise sidecar-served assets in a debug shell.
+`tauri:dev` owns the startup sequence. It rejects an occupied `1420` before building, reports the listener and requested checkout, and leaves the existing service untouched. It then builds and verifies Lotus Next, stages its resources, builds an API-only debug sidecar from sibling `../bamboo`, and starts Vite on `127.0.0.1:1420` with strict-port behavior. Only this run's frontend process and source identity can release the native launch. The initial webview contains only a startup page; the existing managed-sidecar health and resource checks must pass before it navigates to Lotus Next for HMR. Normal exit, preparation failure, and interruption clean up owned development commands. The same verified resources are available when `BODHI_SIDECAR_FRONTEND` is set to exercise sidecar-served assets in a debug shell. Use `npm run tauri:dev -- <Tauri options>` for native options; this entrypoint reserves `--config` so its startup hook and URL cannot be replaced.
 
 ### Build
 

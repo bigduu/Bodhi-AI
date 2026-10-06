@@ -1,4 +1,4 @@
-const { spawn } = require("node:child_process");
+const { spawn, execFile } = require("node:child_process");
 const net = require("node:net");
 const path = require("node:path");
 const zlib = require("node:zlib");
@@ -318,6 +318,20 @@ async function terminateOwnedProcessGroup(child, options = {}) {
   const killMs = options.killMs ?? 2_000;
   if (!child || !Number.isInteger(child.pid) || child.pid < 1) {
     throw new Error("An exact spawned command process is required for teardown.");
+  }
+
+  if (process.platform === "win32" && child.exitCode === null && child.signalCode === null) {
+    // Windows has no POSIX process-group signals. Stop the exact owned tree,
+    // including npm/Cargo children, rather than killing only its root process.
+    await new Promise((resolve, reject) => {
+      execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], { timeout: graceMs + killMs }, (error) => {
+        if (error && child.exitCode === null && child.signalCode === null) reject(error);
+        else resolve();
+      });
+    });
+    const forced = await waitForChildExit(child, killMs);
+    if (!forced) throw new Error(`Owned command tree ${child.pid} did not exit after taskkill.`);
+    return { phase: "taskkill", ...forced };
   }
 
   const alreadyExited = await waitForOwnedProcessGroupExit(child, detached, 1);
@@ -775,20 +789,20 @@ function validateBrowserReceipt(receipt, expected) {
   return receipt;
 }
 
-function interruptionError(signalName) {
-  const error = new Error(`Managed restart acceptance interrupted by ${signalName}.`);
+function interruptionError(signalName, label) {
+  const error = new Error(`${label} interrupted by ${signalName}.`);
   error.name = "AbortError";
   error.signal = signalName;
   return error;
 }
 
-function installInterruptHandlers(target = process) {
+function installInterruptHandlers(target = process, label = "Managed restart acceptance") {
   if (typeof target?.on !== "function" || typeof target?.off !== "function") {
     throw new Error("Interrupt target must support on/off signal listeners.");
   }
   const controller = new AbortController();
   const interrupt = (signalName) => {
-    if (!controller.signal.aborted) controller.abort(interruptionError(signalName));
+    if (!controller.signal.aborted) controller.abort(interruptionError(signalName, label));
   };
   const handlers = {
     SIGINT: () => interrupt("SIGINT"),
@@ -887,6 +901,7 @@ module.exports = {
   redactText,
   runInterruptibleCommand,
   terminateOwnedChild,
+  terminateOwnedProcessGroup,
   terminateVerifiedProcess,
   throwIfAborted,
   validateBrowserReceipt,

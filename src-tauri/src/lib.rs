@@ -153,6 +153,27 @@ fn managed_backend_initialization(port: u16) -> String {
     format!("window.__BAMBOO_BACKEND_PORT__ = {port};")
 }
 
+fn ready_frontend_url(
+    sidecar_frontend: bool,
+    port: u16,
+    development_url: Option<&tauri::Url>,
+) -> Result<tauri::Url, String> {
+    if sidecar_frontend {
+        return format!("http://127.0.0.1:{port}")
+            .parse()
+            .map_err(|error| format!("bad sidecar url: {error}"));
+    }
+    let mut url = development_url
+        .cloned()
+        .ok_or("Missing development frontend URL. Use npm run tauri:dev.")?;
+    // The configured startup route serves only the splash. Keep the verified
+    // dev origin, and load Lotus modules only after managed backend readiness.
+    url.set_path("/");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let frontend = match frontend::resolve(app.handle()) {
         Ok(frontend) => frontend,
@@ -181,6 +202,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     app.manage(sidecar::SidecarState::default());
 
     let sidecar_app = app.handle().clone();
+    let development_url = app.config().build.dev_url.clone();
     tauri::async_runtime::spawn(async move {
         // Only the explicitly selected legacy rollback package retains
         // external-server reuse. Lotus Next source and package builds always own
@@ -206,9 +228,9 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             }
         };
 
-        // Once the backend is healthy, point the webview at it (the sidecar serves
-        // lotus). Release always navigates; in dev (debug) we keep the dev server
-        // unless BODHI_SIDECAR_FRONTEND forces the sidecar frontend (used in tests).
+        // The initial development URL is a module-free startup page. Release
+        // starts at its bundled splash. Both enter Lotus only after this same
+        // owned-sidecar readiness boundary, so bootstrap cannot race startup.
         if let Err(error) = sidecar::wait_for_health(
             port,
             60,
@@ -223,17 +245,15 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
         }
         let use_sidecar_frontend =
             !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
-        if use_sidecar_frontend {
-            if let Some(win) = sidecar_app.get_webview_window("main") {
-                match format!("http://127.0.0.1:{port}").parse::<tauri::Url>() {
-                    Ok(url) => match win.navigate(url) {
-                        Ok(()) => {
-                            log::info!("webview navigated to sidecar http://127.0.0.1:{port}")
-                        }
-                        Err(e) => log::error!("navigate to sidecar failed: {e}"),
-                    },
-                    Err(e) => log::error!("bad sidecar url: {e}"),
-                }
+        if let Some(win) = sidecar_app.get_webview_window("main") {
+            let result = ready_frontend_url(use_sidecar_frontend, port, development_url.as_ref())
+                .and_then(|url| {
+                    log::info!("Managed backend ready; navigating webview to {url}");
+                    win.navigate(url).map_err(|error| error.to_string())
+                });
+            if let Err(error) = result {
+                sidecar::kill(&sidecar_app);
+                show_startup_failure(&sidecar_app, &error);
             }
         }
     });
@@ -379,6 +399,24 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ready_navigation_keeps_the_dev_origin_and_removes_startup_only_identity() {
+        let startup = tauri::Url::parse("http://127.0.0.1:1420/__bodhi_startup?run=owned").unwrap();
+        assert_eq!(
+            super::ready_frontend_url(false, 9562, Some(&startup))
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:1420/"
+        );
+        assert!(super::ready_frontend_url(false, 9562, None).is_err());
+        assert_eq!(
+            super::ready_frontend_url(true, 19562, Some(&startup))
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:19562/"
+        );
+    }
+
     #[test]
     fn lotus_next_runtime_gets_only_its_numeric_managed_port() {
         assert_eq!(

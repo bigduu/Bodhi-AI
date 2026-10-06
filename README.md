@@ -96,7 +96,7 @@ npm ci
 npm run tauri:dev
 ```
 
-This uses sibling `../lotus-next` and `../bamboo`. The development command builds the real API-only Bamboo sidecar and frontend resources; it is not a UI-only preview. Lotus HMR uses port `1420`, and Bamboo uses `9562` by default.
+This uses sibling `../lotus-next` and `../bamboo`. The development command checks port `1420` before building the real API-only Bamboo sidecar and frontend resources, verifies its own Vite process, then starts the native app. The window stays on a startup page until its managed Bamboo is ready. Exiting the command stops its owned development processes. Lotus HMR uses port `1420`, and Bamboo uses `9562` by default; an existing listener is reported and left untouched.
 
 ```bash
 npm run tauri:build     # Assemble a production desktop bundle

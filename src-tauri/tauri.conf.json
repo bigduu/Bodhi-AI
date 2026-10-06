@@ -5,7 +5,7 @@
   "identifier": "com.bodhi.app",
   "build": {
     "beforeDevCommand": "npm run build:sidecar:dev && npm run web:dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420/__bodhi_startup",
     "beforeBuildCommand": "node scripts/build-sidecar.cjs",
     "frontendDist": "../bodhi-splash"
   },
