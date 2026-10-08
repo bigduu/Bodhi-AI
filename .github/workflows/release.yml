@@ -181,6 +181,7 @@ jobs:
           node -p "require('./src-tauri/tauri.conf.json').version"
 
       - name: Install Rust stable
+        id: rust_build
         uses: dtolnay/rust-toolchain@stable
 
       - name: Add Rust target
@@ -261,7 +262,20 @@ jobs:
       - name: Print Lotus source resolution
         run: npm run web:source:info
 
-      - uses: tauri-apps/tauri-action@v0
+      # Cache only compiler-validated target files for this exact source/target.
+      # Cargo still runs before each bundle and all original smoke gates remain.
+      - name: Restore exact Mac sidecar compilation
+        if: runner.os == 'macOS'
+        id: sidecar_cache
+        continue-on-error: true
+        uses: actions/cache/restore@v5
+        with:
+          path: bamboo-src/target/${{ matrix.target }}/release
+          key: bodhi-sidecar-v1-${{ matrix.target }}-${{ steps.rust_build.outputs.cachekey }}-${{ inputs.bamboo_ref || '16e98d94cd971b7341dbd82110dd056497090d26' }}-${{ env.LOTUS_PACKAGE_NAME }}-${{ hashFiles('bamboo-src/Cargo.lock', 'scripts/build-sidecar.cjs', 'scripts/frontend-package-lock.json') }}
+
+      - name: Build Tauri app
+        id: tauri_build
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Build the managed Bamboo sidecar from the selected exact source for
@@ -288,7 +302,50 @@ jobs:
           releaseDraft: true
           releaseCommitish: ${{ github.sha }}
           prerelease: false
-          args: ${{ matrix.args }}
+          args: ${{ matrix.args }} --verbose
+
+      - name: Save exact Mac sidecar compilation
+        if: always() && runner.os == 'macOS' && steps.sidecar_cache.outputs.cache-primary-key != '' && steps.sidecar_cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v5
+        with:
+          path: bamboo-src/target/${{ matrix.target }}/release
+          key: ${{ steps.sidecar_cache.outputs.cache-primary-key }}
+
+      - name: Diagnose failed Mac DMG assembly
+        if: failure() && runner.os == 'macOS' && steps.tauri_build.conclusion == 'failure'
+        continue-on-error: true
+        shell: bash
+        env:
+          BODHI_DIAGNOSTIC_TARGET: ${{ matrix.target }}
+          BODHI_DIAGNOSTIC_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP" .
+          /usr/bin/hdiutil info
+          node <<'NODE' > "$RUNNER_TEMP/dmg-failure-source.json"
+          const { execFileSync } = require('node:child_process');
+          const git = args => execFileSync('git', args, {encoding:'utf8'}).trim();
+          console.log(JSON.stringify({sourceSha:process.env.BODHI_DIAGNOSTIC_SOURCE,checkoutSha:git(['rev-parse','HEAD']),bambooSha:git(['-C','bamboo-src','rev-parse','HEAD']),target:process.env.BODHI_DIAGNOSTIC_TARGET,acceptance:false},null,2));
+          NODE
+          bundle="target/$BODHI_DIAGNOSTIC_TARGET/release/bundle"
+          if [ -d "$bundle/macos" ] && [ -d "$bundle/dmg" ]; then
+            # tar preserves the original executable modes, symlinks and signature.
+            tar -czf "$RUNNER_TEMP/dmg-failure-bundle.tar.gz" -C "$bundle" macos dmg
+          fi
+
+      - name: Retain failed Mac DMG assembly diagnostics
+        if: failure() && runner.os == 'macOS' && steps.tauri_build.conclusion == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: dmg-failure-${{ matrix.artifact_name }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dmg-failure-source.json
+            ${{ runner.temp }}/dmg-failure-bundle.tar.gz
+            target/${{ matrix.target }}/release/bundle/dmg/bundle_dmg.sh
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Verify exact frontend and real target sidecar
         shell: bash
