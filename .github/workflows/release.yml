@@ -3,6 +3,10 @@ name: "publish"
 on:
   workflow_dispatch:
     inputs:
+      expected_source_sha:
+        description: "Exact accepted Bodhi source commit selected by the release train"
+        required: true
+        type: string
       bodhi_version:
         description: "Bodhi app version to publish (default: keep current app version)"
         required: false
@@ -14,11 +18,11 @@ on:
       bamboo_ref:
         description: "Exact bigduu/Bamboo-agent ref used to build the managed sidecar"
         required: false
-        default: "82126fd713ee78fcd9a43bd1f367f2899f981fa7"
+        default: "16e98d94cd971b7341dbd82110dd056497090d26"
       lotus_version:
         description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
-        default: "2026.9.22"
+        default: "2026.10.8"
       frontend_package:
         description: "Frontend package; legacy Lotus is the explicit rollback path"
         required: true
@@ -84,6 +88,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Require the exact accepted release source
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        run: |
+          [[ "${EXPECTED_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_SHA}" = "${EXPECTED_SOURCE_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SOURCE_SHA}"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
       # The managed sidecar is built from source rather than accepting the inert
       # shell-build placeholder. Lotus Next is supplied once as an owned Tauri
       # resource; only the explicit legacy rollback selection is embedded.
@@ -91,7 +105,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bigduu/Bamboo-agent
-          ref: ${{ github.event.inputs.bamboo_ref || '82126fd713ee78fcd9a43bd1f367f2899f981fa7' }}
+          ref: ${{ github.event.inputs.bamboo_ref || '16e98d94cd971b7341dbd82110dd056497090d26' }}
           path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
@@ -179,7 +193,9 @@ jobs:
           workspaces: |
             . -> target
             ./bamboo-src -> target
-          shared-key: "bodhi-release-${{ matrix.target }}"
+          # Reuse the target/compiler/manifest-keyed CI dependency cache.
+          # Cargo still builds the selected exact sidecar and stamped shell.
+          shared-key: "bodhi-ci-${{ matrix.target }}"
           cache-on-failure: true
 
       - name: Cache node_modules
@@ -221,7 +237,7 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
             LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
           else
-            LOTUS_VERSION="2026.9.22"
+            LOTUS_VERSION="2026.10.8"
           fi
           echo "Using ${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
           npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
@@ -270,12 +286,28 @@ jobs:
           # Matrix jobs may upload only to a draft. The final job publishes it
           # after every target and post-build assembly gate has succeeded.
           releaseDraft: true
+          releaseCommitish: ${{ github.sha }}
           prerelease: false
           args: ${{ matrix.args }}
 
       - name: Verify exact frontend and real target sidecar
         shell: bash
         run: npm run verify:assembly -- "${{ matrix.target }}"
+
+      - name: Smoke native bundled sidecar actor transport
+        shell: bash
+        run: node scripts/sidecar-bundle-smoke.cjs "${{ matrix.target }}"
+
+      - name: Smoke bundled browser host
+        shell: bash
+        env:
+          BODHI_BROWSER_TARGET: ${{ matrix.target }}
+        run: |
+          runtime="src-tauri/browser-runtime"
+          if [[ "$BODHI_BROWSER_TARGET" == *apple-darwin ]]; then
+            runtime="target/$BODHI_BROWSER_TARGET/release/bundle/macos/Bodhi AI.app/Contents/Resources/browser-runtime"
+          fi
+          node scripts/browser-bundle-smoke.cjs "$BODHI_BROWSER_TARGET" "$runtime"
 
       - name: Upload Build Artifacts to Workflow
         uses: actions/upload-artifact@v7
@@ -292,6 +324,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+
+      - name: Require the exact accepted release source
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        run: |
+          [[ "${EXPECTED_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_SHA}" = "${EXPECTED_SOURCE_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SOURCE_SHA}"
+          test -z "$(git status --porcelain --untracked-files=all)"
 
       - name: Resolve verified release version
         id: release_version
@@ -316,7 +358,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DRAFT_TAG: bodhi-draft-v${{ steps.release_version.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
           RELEASE_TAG: app-v${{ steps.release_version.outputs.version }}
+          RELEASE_VERSION: ${{ steps.release_version.outputs.version }}
         run: |
+          node --input-type=module - <<'NODE'
+          import assert from "node:assert/strict"
+          import { execFileSync } from "node:child_process"
+          const repository = process.env.GITHUB_REPOSITORY
+          assert.equal(repository, "bigduu/Bodhi-AI")
+          const version = process.env.RELEASE_VERSION
+          assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
+          const release = JSON.parse(execFileSync("gh", ["api", `repos/${repository}/releases/tags/${process.env.DRAFT_TAG}`], { encoding: "utf8" }))
+          assert.equal(release.draft, true)
+          assert.equal(release.tag_name, process.env.DRAFT_TAG)
+          assert.equal(release.target_commitish, process.env.GITHUB_SHA, "Draft release must identify the accepted Bodhi source")
+          for (const architecture of ["aarch64", "x64"]) {
+            const name = `Bodhi.AI_${version}_${architecture}.dmg`
+            const matches = release.assets.filter((asset) => asset.name === name)
+            assert.equal(matches.length, 1, `Expected one complete Homebrew DMG: ${name}`)
+            const asset = matches[0]
+            assert.equal(asset.state, "uploaded")
+            assert.ok(Number.isSafeInteger(asset.size) && asset.size >= 1024 * 1024)
+            assert.match(asset.digest, /^sha256:[0-9a-f]{64}$/)
+            assert.equal(asset.browser_download_url, `https://github.com/${repository}/releases/download/${process.env.DRAFT_TAG}/${name}`)
+          }
+          console.log("Verified both complete Mac DMGs and the accepted draft source before publication")
+          NODE
           if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
             echo "::error::Refusing to replace existing release ${RELEASE_TAG}."
             exit 1

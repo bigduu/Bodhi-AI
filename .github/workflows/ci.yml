@@ -10,8 +10,8 @@ on:
 env:
   LOTUS_SOURCE: package
   LOTUS_PACKAGE_NAME: "@bigduu/lotus-next"
-  LOTUS_VERSION: "2026.9.22"
-  BAMBOO_REF: "82126fd713ee78fcd9a43bd1f367f2899f981fa7"
+  LOTUS_VERSION: "2026.10.8"
+  BAMBOO_REF: "16e98d94cd971b7341dbd82110dd056497090d26"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PROGRESS: "false"
@@ -227,6 +227,10 @@ jobs:
       - name: Verify exact frontend and real target sidecar
         shell: bash
         run: npm run verify:assembly -- "${{ matrix.target }}"
+
+      - name: Smoke native bundled sidecar actor transport
+        shell: bash
+        run: node scripts/sidecar-bundle-smoke.cjs "${{ matrix.target }}"
 
       - name: Smoke bundled browser host
         shell: bash
