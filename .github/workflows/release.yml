@@ -14,7 +14,7 @@ on:
       bamboo_ref:
         description: "Exact bigduu/Bamboo-agent ref used to build the managed sidecar"
         required: false
-        default: "64312ef3c2119dc103f79d780f2ba3be5c4da3dd"
+        default: "82126fd713ee78fcd9a43bd1f367f2899f981fa7"
       lotus_version:
         description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
@@ -52,7 +52,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-latest"
+          - platform: "macos-15-intel"
             target: "x86_64-apple-darwin"
             args: "--target x86_64-apple-darwin"
             artifact_name: "macos-x64"
@@ -91,7 +91,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bigduu/Bamboo-agent
-          ref: ${{ github.event.inputs.bamboo_ref || '64312ef3c2119dc103f79d780f2ba3be5c4da3dd' }}
+          ref: ${{ github.event.inputs.bamboo_ref || '82126fd713ee78fcd9a43bd1f367f2899f981fa7' }}
           path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
@@ -177,7 +177,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: |
-            ./src-tauri -> target
+            . -> target
             ./bamboo-src -> target
           shared-key: "bodhi-release-${{ matrix.target }}"
           cache-on-failure: true
