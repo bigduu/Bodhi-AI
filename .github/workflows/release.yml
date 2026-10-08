@@ -270,8 +270,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/restore@v5
         with:
-          path: bamboo-src/target/${{ matrix.target }}/release
-          key: bodhi-sidecar-v1-${{ matrix.target }}-${{ steps.rust_build.outputs.cachekey }}-${{ inputs.bamboo_ref || '16e98d94cd971b7341dbd82110dd056497090d26' }}-${{ env.LOTUS_PACKAGE_NAME }}-${{ hashFiles('bamboo-src/Cargo.lock', 'scripts/build-sidecar.cjs', 'scripts/frontend-package-lock.json') }}
+          path: |
+            bamboo-src/target/release
+            bamboo-src/target/${{ matrix.target }}/release
+          key: bodhi-sidecar-v2-${{ matrix.target }}-${{ steps.rust_build.outputs.cachekey }}-${{ inputs.bamboo_ref || '16e98d94cd971b7341dbd82110dd056497090d26' }}-${{ env.LOTUS_PACKAGE_NAME }}-${{ hashFiles('bamboo-src/Cargo.lock', 'scripts/build-sidecar.cjs', 'scripts/frontend-package-lock.json') }}
 
       - name: Build Tauri app
         id: tauri_build
@@ -309,7 +311,9 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@v5
         with:
-          path: bamboo-src/target/${{ matrix.target }}/release
+          path: |
+            bamboo-src/target/release
+            bamboo-src/target/${{ matrix.target }}/release
           key: ${{ steps.sidecar_cache.outputs.cache-primary-key }}
 
       - name: Diagnose failed Mac DMG assembly
