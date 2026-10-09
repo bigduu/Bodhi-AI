@@ -423,37 +423,67 @@ jobs:
         run: |
           node --input-type=module - <<'NODE'
           import assert from "node:assert/strict"
-          import { execFileSync } from "node:child_process"
+          import { execFileSync, spawnSync } from "node:child_process"
           const repository = process.env.GITHUB_REPOSITORY
           assert.equal(repository, "bigduu/Bodhi-AI")
           const version = process.env.RELEASE_VERSION
-          assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
-          const release = JSON.parse(execFileSync("gh", ["api", `repos/${repository}/releases/tags/${process.env.DRAFT_TAG}`], { encoding: "utf8" }))
-          assert.equal(release.draft, true)
-          assert.equal(release.tag_name, process.env.DRAFT_TAG)
-          assert.equal(release.target_commitish, process.env.GITHUB_SHA, "Draft release must identify the accepted Bodhi source")
-          for (const architecture of ["aarch64", "x64"]) {
-            const name = `Bodhi.AI_${version}_${architecture}.dmg`
-            const matches = release.assets.filter((asset) => asset.name === name)
-            assert.equal(matches.length, 1, `Expected one complete Homebrew DMG: ${name}`)
-            const asset = matches[0]
-            assert.equal(asset.state, "uploaded")
-            assert.ok(Number.isSafeInteger(asset.size) && asset.size >= 1024 * 1024)
-            assert.match(asset.digest, /^sha256:[0-9a-f]{64}$/)
-            assert.equal(asset.browser_download_url, `https://github.com/${repository}/releases/download/${process.env.DRAFT_TAG}/${name}`)
+          assert.match(version, /^[1-9][0-9]{3}\.(?:[1-9]|1[0-2])\.[1-9][0-9]*$/)
+          const api = (path, method = "GET", body) => {
+            const args = ["api", `repos/${repository}/${path}`, "--method", method]
+            if (body) args.push("--input", "-")
+            const result = spawnSync("gh", args, {encoding:"utf8", maxBuffer:16*1024*1024, input:body && JSON.stringify(body)})
+            if (result.error) throw result.error
+            if (result.status !== 0) {
+              if (method === "GET" && /HTTP 404/.test(result.stderr)) return null
+              throw new Error(`GitHub ${method} ${path} failed: ${result.stderr}`)
+            }
+            return JSON.parse(result.stdout)
           }
-          console.log("Verified both complete Mac DMGs and the accepted draft source before publication")
+          // GitHub's by-tag endpoint only returns published releases. Drafts are
+          // uniquely selected from the paginated list, then read and edited by ID.
+          const releases = JSON.parse(execFileSync("gh", ["api", "--paginate", "--slurp", `repos/${repository}/releases?per_page=100`], {encoding:"utf8", maxBuffer:16*1024*1024})).flat()
+          const matches = releases.filter((r) => r.tag_name === process.env.DRAFT_TAG)
+          assert.equal(matches.length, 1, "Expected one isolated original run/attempt draft")
+          assert.equal(releases.filter((r) => r.tag_name === process.env.RELEASE_TAG).length, 0, "Refusing to replace any existing final release")
+          const release = api(`releases/${matches[0].id}`)
+          assert.equal(release.id, matches[0].id)
+          assert.equal(release.draft, true)
+          assert.equal(release.prerelease, false)
+          assert.equal(release.tag_name, process.env.DRAFT_TAG)
+          assert.equal(release.target_commitish, process.env.GITHUB_SHA, "Draft must identify the accepted Bodhi source")
+          const expectedNames = [`Bodhi.AI-${version}-1.x86_64.rpm`, `Bodhi.AI_${version}_aarch64.dmg`, `Bodhi.AI_${version}_amd64.AppImage`, `Bodhi.AI_${version}_amd64.deb`, `Bodhi.AI_${version}_x64-setup.exe`, `Bodhi.AI_${version}_x64.dmg`, "Bodhi.AI_aarch64.app.tar.gz", "Bodhi.AI_x64.app.tar.gz"]
+          assert.deepEqual(release.assets.map((a) => a.name).sort(), expectedNames.sort())
+          assert.equal(new Set(release.assets.map((a) => a.id)).size, 8)
+          const prefixes = new Set()
+          for (const asset of release.assets) {
+            assert.equal(asset.state, "uploaded")
+            assert.ok(Number.isSafeInteger(asset.size) && asset.size >= 1024*1024)
+            assert.match(asset.digest, /^sha256:[0-9a-f]{64}$/)
+            assert.equal(asset.url, `https://api.github.com/repos/${repository}/releases/assets/${asset.id}`)
+            const url = new URL(asset.browser_download_url)
+            assert.equal(url.origin, "https://github.com")
+            assert.equal(url.search + url.hash, "")
+            const prefix = `/bigduu/Bodhi-AI/releases/download/`
+            assert.ok(url.pathname.startsWith(prefix) && url.pathname.endsWith(`/${asset.name}`))
+            const draftPath = url.pathname.slice(prefix.length, -(asset.name.length+1))
+            assert.ok(draftPath === process.env.DRAFT_TAG || /^untagged-[0-9a-f]+$/.test(draftPath))
+            prefixes.add(draftPath)
+          }
+          assert.equal(prefixes.size, 1)
+          const identity = (r) => r.assets.map(({id,name,size,digest,state}) => ({id,name,size,digest,state})).sort((a,b) => a.name.localeCompare(b.name))
+          const original = identity(release)
+          const fresh = api(`releases/${release.id}`)
+          assert.equal(fresh.draft, true)
+          assert.equal(fresh.tag_name, release.tag_name)
+          assert.equal(fresh.target_commitish, release.target_commitish)
+          assert.deepEqual(identity(fresh), original)
+          assert.equal(api(`git/ref/tags/${process.env.RELEASE_TAG}`), null, "Refusing to move an existing final tag")
+          const published = api(`releases/${release.id}`, "PATCH", {tag_name:process.env.RELEASE_TAG, target_commitish:process.env.GITHUB_SHA, name:`App v${version}`, draft:false, prerelease:false, make_latest:"true"})
+          assert.equal(published.id, release.id)
+          assert.equal(published.draft, false)
+          assert.equal(published.tag_name, process.env.RELEASE_TAG)
+          assert.equal(published.target_commitish, process.env.GITHUB_SHA)
+          assert.deepEqual(identity(published), original, "Preserve every original asset ID, size and digest")
+          for (const asset of published.assets) assert.equal(asset.browser_download_url, `https://github.com/${repository}/releases/download/${process.env.RELEASE_TAG}/${asset.name}`)
+          console.log(`Published verified original release ${published.id}: ${published.html_url}`)
           NODE
-          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
-            echo "::error::Refusing to replace existing release ${RELEASE_TAG}."
-            exit 1
-          fi
-          if [ "$(gh release view "${DRAFT_TAG}" --json isDraft --jq .isDraft)" != "true" ]; then
-            echo "::error::Expected isolated ${DRAFT_TAG} to remain a draft until all assembly gates passed."
-            exit 1
-          fi
-          gh release edit "${DRAFT_TAG}" \
-            --tag "${RELEASE_TAG}" \
-            --title "App v${{ steps.release_version.outputs.version }}" \
-            --draft=false \
-            --latest
