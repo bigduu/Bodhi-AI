@@ -1,6 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
-const { ROOT, verifyStaged } = require("./lotus-dist.cjs");
+const { execFileSync } = require("node:child_process");
+const { isDeepStrictEqual } = require("node:util");
+const { ROOT, NEXT_PACKAGE, contentHash, inventory, verifyStaged } = require("./lotus-dist.cjs");
 
 function readExact(descriptor, length, position, binary) {
   const buffer = Buffer.alloc(length);
@@ -127,14 +129,72 @@ function verifySidecar(root, target) {
   return { binary, size: metadata.size, architecture: expected.name };
 }
 
-module.exports = { verifySidecar, expectedArchitecture, elfCpuType, peCpuType };
+function verifyBundledFrontend(app, expected) {
+  const frontend = path.join(app, "Contents", "Resources", "frontend");
+  const directory = fs.lstatSync(frontend);
+  const receiptPath = path.join(frontend, "receipt.json");
+  const receiptFile = fs.lstatSync(receiptPath);
+  if (!directory.isDirectory() || directory.isSymbolicLink() ||
+      !receiptFile.isFile() || receiptFile.isSymbolicLink()) {
+    throw new Error("The bundled frontend must be an owned directory with a regular receipt.");
+  }
+  const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+  if (!isDeepStrictEqual(receipt, expected)) {
+    throw new Error("The app bundle contains a different Lotus frontend receipt.");
+  }
+  const dist = path.join(frontend, "dist");
+  if (expected.packageName === NEXT_PACKAGE) {
+    const files = inventory(dist);
+    if (contentHash(files) !== expected.contentHash || !isDeepStrictEqual(files, expected.files)) {
+      throw new Error("The app bundle contains different Lotus frontend assets.");
+    }
+  } else if (fs.existsSync(dist)) {
+    throw new Error("The legacy rollback bundle must not carry a second Tauri frontend.");
+  }
+}
+
+function verifyBundledRuntime(runtime, staged, target) {
+  const { verifyRuntime } = require("./browser-runtime.cjs");
+  verifyRuntime(staged, target);
+  const bundled = verifyRuntime(runtime, target);
+  // Bind the complete receipt, including the host/package lock and signing
+  // identity, to the selected build instead of accepting any valid old runtime.
+  if (!fs.readFileSync(path.join(runtime, "receipt.json"))
+      .equals(fs.readFileSync(path.join(staged, "receipt.json")))) {
+    throw new Error("The app bundle does not contain the exact staged browser runtime.");
+  }
+  return bundled;
+}
+
+function verifyMacosBundle(root, target, receipt, appPath) {
+  const app = appPath
+    ? path.resolve(appPath)
+    : path.join(root, "target", target, "release", "bundle", "macos", "Bodhi AI.app");
+  const metadata = fs.lstatSync(app);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("The macOS app bundle must be an owned directory.");
+  }
+  verifyBundledFrontend(app, receipt);
+  const browser = verifyBundledRuntime(
+    path.join(app, "Contents", "Resources", "browser-runtime"),
+    path.join(root, "src-tauri", "browser-runtime"), target,
+  );
+  execFileSync("codesign", ["--verify", "--deep", "--strict", app], { stdio: "pipe" });
+  return browser;
+}
+
+module.exports = { verifySidecar, expectedArchitecture, elfCpuType, peCpuType, verifyBundledFrontend, verifyBundledRuntime, verifyMacosBundle };
 
 if (require.main === module) {
   try {
     const target = process.argv[2] || process.env.BAMBOO_SIDECAR_TARGET;
     const receipt = verifyStaged();
     const sidecar = verifySidecar(ROOT, target);
-    require("./browser-runtime.cjs").verifyRuntime(path.join(ROOT, "src-tauri/browser-runtime"), target);
+    if (target.endsWith("-apple-darwin")) {
+      verifyMacosBundle(ROOT, target, receipt, process.argv[3]);
+    } else {
+      require("./browser-runtime.cjs").verifyRuntime(path.join(ROOT, "src-tauri/browser-runtime"), target);
+    }
     console.log(
       `Verified ${receipt.packageName}@${receipt.version} and real ${target} ${sidecar.architecture} sidecar (${sidecar.size} bytes).`,
     );
