@@ -22,7 +22,7 @@ on:
       lotus_version:
         description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
-        default: "2026.10.12"
+        default: "2026.10.15"
       frontend_package:
         description: "Frontend package; legacy Lotus is the explicit rollback path"
         required: true
@@ -238,7 +238,7 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
             LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
           else
-            LOTUS_VERSION="2026.10.12"
+            LOTUS_VERSION="2026.10.15"
           fi
           echo "Using ${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
           npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"

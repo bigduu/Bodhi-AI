@@ -10,7 +10,7 @@ on:
 env:
   LOTUS_SOURCE: package
   LOTUS_PACKAGE_NAME: "@bigduu/lotus-next"
-  LOTUS_VERSION: "2026.10.12"
+  LOTUS_VERSION: "2026.10.15"
   BAMBOO_REF: "430bf3b5a1e10305fd4226b81b13f6a2c28afa8e"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
