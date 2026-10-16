@@ -18,11 +18,11 @@ on:
       bamboo_ref:
         description: "Exact bigduu/Bamboo-agent ref used to build the managed sidecar"
         required: false
-        default: "430bf3b5a1e10305fd4226b81b13f6a2c28afa8e"
+        default: "dbafb74522794012fc8f0a61e761817b3913989a"
       lotus_version:
         description: "Selected frontend npm version; Lotus Next must match the committed artifact lock"
         required: false
-        default: "2026.10.12"
+        default: "2026.10.15"
       frontend_package:
         description: "Frontend package; legacy Lotus is the explicit rollback path"
         required: true
@@ -105,7 +105,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: bigduu/Bamboo-agent
-          ref: ${{ github.event.inputs.bamboo_ref || '430bf3b5a1e10305fd4226b81b13f6a2c28afa8e' }}
+          ref: ${{ github.event.inputs.bamboo_ref || 'dbafb74522794012fc8f0a61e761817b3913989a' }}
           path: bamboo-src
 
       - name: Install dependencies (Ubuntu only)
@@ -238,7 +238,7 @@ jobs:
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lotus_version }}" ]; then
             LOTUS_VERSION="${{ github.event.inputs.lotus_version }}"
           else
-            LOTUS_VERSION="2026.10.12"
+            LOTUS_VERSION="2026.10.15"
           fi
           echo "Using ${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
           npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
@@ -273,7 +273,7 @@ jobs:
           path: |
             bamboo-src/target/release
             bamboo-src/target/${{ matrix.target }}/release
-          key: bodhi-sidecar-v2-${{ matrix.target }}-${{ steps.rust_build.outputs.cachekey }}-${{ inputs.bamboo_ref || '430bf3b5a1e10305fd4226b81b13f6a2c28afa8e' }}-${{ env.LOTUS_PACKAGE_NAME }}-${{ hashFiles('bamboo-src/Cargo.lock', 'scripts/build-sidecar.cjs', 'scripts/frontend-package-lock.json') }}
+          key: bodhi-sidecar-v2-${{ matrix.target }}-${{ steps.rust_build.outputs.cachekey }}-${{ inputs.bamboo_ref || 'dbafb74522794012fc8f0a61e761817b3913989a' }}-${{ env.LOTUS_PACKAGE_NAME }}-${{ hashFiles('bamboo-src/Cargo.lock', 'scripts/build-sidecar.cjs', 'scripts/frontend-package-lock.json') }}
 
       - name: Build Tauri app
         id: tauri_build
