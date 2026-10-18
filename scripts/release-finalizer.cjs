@@ -81,11 +81,20 @@ function requireUnused(ctx, request = api, allowedId) {
   if (!allowedId) assert.equal(request(`git/ref/tags/${ctx.finalTag}`), null, "Refusing an existing final tag");
 }
 
+function workflowFile(runPath) {
+  assert.equal(typeof runPath, "string", "Missing original workflow path");
+  const separator = runPath.indexOf("@");
+  if (separator !== -1) assert.match(runPath.slice(separator + 1), /^\S+$/, "Invalid qualified workflow ref");
+  const file = separator === -1 ? runPath : runPath.slice(0, separator);
+  const ownPrefix = `${REPOSITORY}/`;
+  return file.startsWith(ownPrefix) ? file.slice(ownPrefix.length) : file;
+}
+
 function verifyBuild(run, jobs, ctx, recovery = false) {
   assert.equal(run?.id, ctx.runId);
   assert.equal(run.run_attempt, ctx.attempt, "Use the original build attempt");
   assert.equal(run.repository.full_name, REPOSITORY);
-  assert.equal(run.path, WORKFLOW);
+  assert.equal(workflowFile(run.path), WORKFLOW);
   assert.equal(run.event, "workflow_dispatch");
   assert.equal(run.head_sha, ctx.source);
   assert.equal(run.display_title, `Bodhi v${ctx.version} @ ${ctx.source}`, "Original run must bind the requested version and source");

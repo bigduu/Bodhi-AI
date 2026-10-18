@@ -110,6 +110,26 @@ test("original native build evidence is sufficient for snapshot and finalizer-on
   const recovery = fixture(true);
   assert.equal(finalizer.recoveryArtifact(ctx, mockApi(recovery)), 123);
 });
+for (const recovery of [false, true]) {
+  const phase = recovery ? "recovery" : "normal finalization";
+  const verify = (f) => recovery ? finalizer.recoveryArtifact(ctx, mockApi(f)) : finalizer.snapshot(ctx, mockApi(f));
+  for (const workflowPath of [".github/workflows/release.yml", ".github/workflows/release.yml@main",
+    ".github/workflows/release.yml@refs/tags/own-tag", "bigduu/Bodhi-AI/.github/workflows/release.yml@main"]) {
+    test(`${phase} accepts own exact workflow path ${workflowPath}`, () => {
+      const f = fixture(recovery); f.run.path = workflowPath;
+      assert.doesNotThrow(() => verify(f));
+    });
+  }
+  for (const workflowPath of [".github/workflows/ci.yml@main", "octocat/octo-repo/.github/workflows/release.yml@main",
+    "bigduu/Zenith/.github/workflows/release.yml@refs/tags/own-tag", "bigduu/Bodhi-AI-evil/.github/workflows/release.yml@main",
+    "bigduu/Bodhi-AI/.github/workflows/release.yml@"]) {
+    test(`${phase} rejects foreign or malformed workflow path ${workflowPath}`, () => {
+      const f = fixture(recovery); f.run.path = workflowPath;
+      assert.throws(() => verify(f));
+      assert.equal(patches(f).length, 0);
+    });
+  }
+}
 for (const [name, mutate] of [
   ["wrong source", f => { f.run.head_sha = "b".repeat(40); }],
   ["wrong version", f => { f.run.display_title = f.run.display_title.replace(ctx.version, "2026.10.18"); }],
