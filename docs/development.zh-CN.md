@@ -75,7 +75,7 @@ CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-n
 
 ### 锁定 Bamboo 发布资产
 
-`scripts/bamboo-sidecar-lock.json` 固定仓库、版本、完整源码 SHA、正常 embedded 前端模式、四个目标和 `bamboo-sidecars-v1.json` 的 SHA-256。该清单再固定各执行文件的目标、模式、文件名、哈希、大小，以及 browser host 归档及其三个文件的完整清单。所有文件只从 `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/` 下载，不支持 `latest`、任意下载地址或源码构建回退。release 的可选 `bamboo_version`、`bamboo_ref` 输入必须与锁完全一致。
+`scripts/bamboo-sidecar-lock.json` 固定仓库、版本、完整源码 SHA、正常 embedded 前端模式、四个目标和 `bamboo-sidecars-v1.json` 的 SHA-256。该清单再固定各执行文件的目标、模式、文件名、哈希、大小，以及 browser host 归档及其三个文件的完整清单。所有文件只从 `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/` 下载，不支持 `latest`、任意下载地址或源码构建回退。release 从已提交的 Bamboo 和 Lotus Next 锁读取精确身份，不提供 dispatch 覆盖值。
 
 平台资产为 `bamboo-aarch64-apple-darwin`、`bamboo-x86_64-apple-darwin`、`bamboo-x86_64-unknown-linux-gnu` 和 `bamboo-x86_64-pc-windows-msvc.exe`。`bamboo-browser-host-v1.tar.gz` 仅含三个普通 USTAR 文件：`browser-runtime/host.cjs`、`browser-runtime/package.json`、`browser-runtime/package-lock.json`。链接、目录穿越、多余或重复成员、特殊条目、损坏 header 和超限解压都会在写入前被拒绝。
 
@@ -85,7 +85,7 @@ CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-n
 
 已提交的锁记录了通过验收的官方发布。每次更新都必须先下载并核验真实发布版本、源码 SHA、清单和平台资产，再用独立提交接受新身份。`node scripts/bamboo-sidecar.cjs check-lock` 会拒绝不完整的身份。合成 fixture 测试不代表正式资产可用或原生运行验收。可执行 `node scripts/bamboo-sidecar.cjs install <target>` 预下载，或 `node scripts/bamboo-sidecar.cjs verify <target>` 检查；两者都不调用 Cargo。最终应用仍必须通过已有的 sidecar 和浏览器 smoke 门禁。
 
-Zenith release train 负责下游发布编排。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
+Bodhi 在本仓库中负责[独立发布与原始 attempt 恢复](releasing.md)，不再依赖 Zenith 发布编排。发布入口只接受明确的 Bodhi 版本与完整源码 SHA，保留四个平台的真实装配、actor 与 browser 门禁；恢复只复用原始运行的证据和资产，不重新构建。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
 
 ---
 
