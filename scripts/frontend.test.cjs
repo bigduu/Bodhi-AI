@@ -409,25 +409,25 @@ function assemble(f, mode, producerLayout = "crate", overrides = {}) {
   return { calls, bamboo };
 }
 
-test("local sidecar assembly forces API-only and never invokes the legacy embed builder", (t) => {
+test("local sidecar uses Bamboo's normal build mode without rebuilding the legacy frontend", (t) => {
   const f = fixture(t);
   const { calls, bamboo } = assemble(f, "local");
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0].args, ["scripts/browser-runtime.cjs", "x86_64-unknown-linux-gnu"]);
   assert.equal(calls[1].command, "cargo");
-  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "api-only");
+  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "auto");
   assert.ok(calls[1].args.includes("--locked"));
   assert.equal(fs.existsSync(path.join(bamboo, "frontend_package")), false);
   assert.equal(fs.readFileSync(path.join(f.root, "src-tauri/binaries/bamboo-x86_64-unknown-linux-gnu"), "utf8"), "fixture binary");
 });
 
-test("explicit local package sidecar assembly is API-only and carries no embedded UI", (t) => {
+test("explicit local package assembly uses the normal Bamboo build mode and owned Tauri resources", (t) => {
   const f = fixture(t);
   const { calls, bamboo } = assemble(f, "next-package");
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0].args, ["scripts/browser-runtime.cjs", "x86_64-unknown-linux-gnu"]);
   assert.equal(calls[1].command, "cargo");
-  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "api-only");
+  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "auto");
   assert.equal(fs.existsSync(path.join(bamboo, "frontend_package")), false);
   assert.equal(
     fs.existsSync(path.join(f.root, ".bodhi-frontend/dist/index.html")),
@@ -435,7 +435,7 @@ test("explicit local package sidecar assembly is API-only and carries no embedde
   );
 });
 
-test("production defaults to published api-only assets even with a Bamboo checkout available", (t) => {
+test("production defaults to the published full Bamboo binary even with a checkout available", (t) => {
   const f = fixture(t);
   const { calls } = assemble(f, "next-package", "crate", {
     BAMBOO_SIDECAR_SOURCE: "", BAMBOO_SIDECAR_TARGET: "aarch64-apple-darwin",
@@ -444,11 +444,12 @@ test("production defaults to published api-only assets even with a Bamboo checko
   assert.deepEqual(calls[0].args, ["scripts/bamboo-sidecar.cjs", "install", "aarch64-apple-darwin"]);
   assert.deepEqual(calls[1].args, ["scripts/browser-runtime.cjs", "aarch64-apple-darwin"]);
   assert.ok(calls.every((call) => call.env.BAMBOO_SIDECAR_SOURCE === "release"));
+  assert.ok(calls.every((call) => call.env.BAMBOO_FRONTEND_BUILD_MODE === "embedded"));
   assert.ok(calls.every((call) => call.command !== "cargo"));
 });
 
-test("release assets cannot silently become embedded rollback or unknown sources", (t) => {
-  assert.throws(() => assemble(fixture(t), "legacy-package", "crate", { BAMBOO_SIDECAR_SOURCE: "release" }), /require the verified Lotus Next/);
+test("full release reuse retains the locked Bodhi frontend and rejects unknown sources", (t) => {
+  assert.throws(() => assemble(fixture(t), "legacy-package", "crate", { BAMBOO_SIDECAR_SOURCE: "release" }), /retains the verified Lotus Next/);
   assert.throws(() => assemble(fixture(t), "local", "crate", { BAMBOO_SIDECAR_SOURCE: "fallback" }), /Unknown BAMBOO_SIDECAR_SOURCE/);
 });
 

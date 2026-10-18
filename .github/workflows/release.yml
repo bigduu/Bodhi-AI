@@ -176,7 +176,7 @@ jobs:
         shell: bash
         run: |
           if [ "${LOTUS_PACKAGE_NAME}" != "@bigduu/lotus-next" ]; then
-            echo "::error::Published api-only sidecars require Lotus Next Tauri resources. Embedded rollback is available only with an explicit local source build."
+            echo "::error::Full Bamboo binary reuse retains the locked Lotus Next Tauri resources and --static-dir. Legacy frontend rollback requires an explicit local source build."
             exit 1
           fi
           node scripts/bamboo-sidecar.cjs check-lock

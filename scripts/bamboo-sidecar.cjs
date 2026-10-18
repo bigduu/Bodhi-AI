@@ -63,7 +63,7 @@ function safeDirectory(root, directory) {
 
 function validateLock(lock, env = {}) {
   requireCondition(lock?.schemaVersion === 1 && lock.repository === REPOSITORY &&
-    lock.manifestAssetName === MANIFEST && lock.buildMode === "api-only" && lock.embeddedFrontend === false,
+    lock.manifestAssetName === MANIFEST && lock.buildMode === "embedded" && lock.embeddedFrontend === true,
   "Invalid Bamboo sidecar lock identity or build mode.");
   requireCondition(typeof lock.version === "string" && /^[1-9][0-9]*\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$/.test(lock.version) &&
     /^[0-9a-f]{40}$/.test(lock.sourceRevision || "") && SHA256.test(lock.manifestSha256 || ""),
@@ -94,9 +94,9 @@ function validateManifest(bytes, lock, target) {
   requireCondition(Array.isArray(manifest.artifacts) && isDeepStrictEqual(manifest.artifacts.map((item) => item.target), TARGETS),
     "Bamboo sidecar manifest has missing, duplicate, unexpected or unsorted targets.");
   for (const item of manifest.artifacts) {
-    requireCondition(item.buildMode === "api-only" && item.embeddedFrontend === false && item.format === "raw" &&
+    requireCondition(item.buildMode === "embedded" && item.embeddedFrontend === true && item.format === "raw" &&
       item.assetName === binaryName(item.target),
-    "Bamboo sidecar artifact must be the exact raw api-only executable with no embedded frontend.");
+    "Bamboo artifact must be the exact raw full executable with its standard embedded frontend.");
     requireDigest(item, MAX_BINARY, "sidecar artifact", 65536);
     if (item.binaryName !== undefined) requireCondition(item.binaryName === item.assetName, "Raw binaryName must equal assetName.");
     if (item.binarySha256 !== undefined) requireCondition(item.binarySha256 === item.sha256, "Raw binarySha256 must equal sha256.");
@@ -221,7 +221,7 @@ function installedRelease(root = ROOT, target, env = process.env) {
   require("./verify-assembly.cjs").verifySidecar(root, target);
   const receipt = JSON.parse(readRegular(`${binary}.json`, MAX_MANIFEST));
   requireCondition(isDeepStrictEqual(receipt, { schemaVersion: 1, version: lock.version, sourceRevision: lock.sourceRevision,
-    target, buildMode: "api-only", embeddedFrontend: false, manifestSha256: lock.manifestSha256,
+    target, buildMode: "embedded", embeddedFrontend: true, manifestSha256: lock.manifestSha256,
     assetName: artifact.assetName, sha256: artifact.sha256, sizeBytes: artifact.sizeBytes,
     browserHostSha256: manifest.browserHost.sha256 }), "Installed Bamboo receipt differs from the accepted release.");
   return { ...receipt, binary, hostDirectory };
@@ -253,7 +253,7 @@ function installRelease(root = ROOT, target, options = {}) {
     }
     const binary = path.join(binDir, binaryName(target));
     const receipt = { schemaVersion: 1, version: lock.version, sourceRevision: lock.sourceRevision, target,
-      buildMode: "api-only", embeddedFrontend: false, manifestSha256: lock.manifestSha256,
+      buildMode: "embedded", embeddedFrontend: true, manifestSha256: lock.manifestSha256,
       assetName: artifact.assetName, sha256: artifact.sha256, sizeBytes: artifact.sizeBytes,
       browserHostSha256: manifest.browserHost.sha256 };
     for (const file of [binary, `${binary}.json`]) {
@@ -284,7 +284,7 @@ if (require.main === module) {
     else {
       requireCondition(["install", "verify"].includes(command), "Usage: bamboo-sidecar.cjs check-lock | install <target> | verify <target>");
       const result = (command === "install" ? installRelease : installedRelease)(ROOT, process.argv[3]);
-      console.log(`Verified published Bamboo ${result.version} ${result.target} api-only (${result.sha256}).`);
+      console.log(`Verified published Bamboo ${result.version} ${result.target} embedded (${result.sha256}).`);
     }
   } catch (error) { console.error(`Bamboo release: ${error.message}`); process.exitCode = 1; }
 }

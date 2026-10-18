@@ -3,8 +3,8 @@
   "repository": "bigduu/Bamboo-agent",
   "version": null,
   "sourceRevision": null,
-  "buildMode": "api-only",
-  "embeddedFrontend": false,
+  "buildMode": "embedded",
+  "embeddedFrontend": true,
   "manifestAssetName": "bamboo-sidecars-v1.json",
   "manifestSha256": null,
   "targets": [

@@ -6,7 +6,7 @@
  *   profile: --release (default) | --debug
  *   source : BAMBOO_SIDECAR_SOURCE = release (production default) | local | none
  *
- * Production consumes locked, published API-only executables. Debug development
+ * Production consumes the standard full, published Bamboo executable. Debug development
  * defaults to a sibling checkout; local source builds remain explicit in release.
  *
  * NOTE: `cargo build` on its own does NOT run this — Tauri's `build.rs` writes a
@@ -34,7 +34,8 @@ function main() {
   const ownsFrontend = frontend.packageName === NEXT_PACKAGE;
   const buildEnv = {
     ...process.env,
-    BAMBOO_FRONTEND_BUILD_MODE: ownsFrontend ? "api-only" : "embedded",
+    BAMBOO_FRONTEND_BUILD_MODE: frontend.packageName === LEGACY_PACKAGE
+      ? "embedded" : (process.env.BAMBOO_FRONTEND_BUILD_MODE || "auto"),
     BODHI_BROWSER_RUNTIME_RELEASE_BUILD: isDebug ? "0" : "1",
   };
   const run = (command, args, cwd) => execFileSync(command, args, { cwd, env: buildEnv, stdio: "inherit" });
@@ -56,6 +57,7 @@ function main() {
     process.env.BAMBOO_SIDECAR_SOURCE || (isDebug ? (bambooExists() ? "local" : "none") : "release")
   ).toLowerCase();
   buildEnv.BAMBOO_SIDECAR_SOURCE = SOURCE;
+  if (SOURCE === "release") buildEnv.BAMBOO_FRONTEND_BUILD_MODE = "embedded";
   if (!["release", "local", "none"].includes(SOURCE)) {
     throw new Error(`Unknown BAMBOO_SIDECAR_SOURCE: ${SOURCE}. Use release, local or none.`);
   }
@@ -77,11 +79,11 @@ function main() {
   const dest = path.join(binDir, `bamboo-${triple}${ext}`);
 
   if (SOURCE === "release") {
-    if (!ownsFrontend) throw new Error("Published api-only Bamboo sidecars require the verified Lotus Next Tauri resource. Legacy embedded rollback requires explicit BAMBOO_SIDECAR_SOURCE=local.");
+    if (!ownsFrontend) throw new Error("Full Bamboo release reuse retains the verified Lotus Next Tauri resource and --static-dir. Legacy frontend rollback requires explicit BAMBOO_SIDECAR_SOURCE=local.");
     run(process.execPath, ["scripts/bamboo-sidecar.cjs", "install", triple], BODHI);
     buildFrontend(frontend);
     run(process.execPath, ["scripts/browser-runtime.cjs", triple], BODHI);
-    console.log(`✅ published api-only sidecar -> ${path.relative(BODHI, dest)}`);
+    console.log(`✅ published full Bamboo sidecar -> ${path.relative(BODHI, dest)}`);
     return;
   }
 

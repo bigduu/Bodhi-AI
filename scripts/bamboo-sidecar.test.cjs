@@ -51,7 +51,7 @@ function fixture(t) {
   const artifacts = sidecar.TARGETS.map((target) => {
     const data = binary(target), name = sidecar.binaryName(target);
     files.set(name, data);
-    return { target, buildMode: "api-only", embeddedFrontend: false, format: "raw", assetName: name,
+    return { target, buildMode: "embedded", embeddedFrontend: true, format: "raw", assetName: name,
       sha256: sidecar.sha256(data), sizeBytes: data.length };
   });
   const host = tar(entries);
@@ -60,7 +60,7 @@ function fixture(t) {
     browserHost: { assetName: "bamboo-browser-host-v1.tar.gz", sha256: sidecar.sha256(host), sizeBytes: host.length,
       files: entries.map(({ name, data }) => ({ path: name, sha256: sidecar.sha256(data), sizeBytes: Buffer.byteLength(data) })) } };
   const lock = { schemaVersion: 1, repository: sidecar.REPOSITORY, version: manifest.version,
-    sourceRevision: manifest.sourceRevision, buildMode: "api-only", embeddedFrontend: false,
+    sourceRevision: manifest.sourceRevision, buildMode: "embedded", embeddedFrontend: true,
     manifestAssetName: sidecar.MANIFEST, manifestSha256: "", targets: [...sidecar.TARGETS] };
   const refresh = () => {
     const bytes = Buffer.from(JSON.stringify(manifest));
@@ -86,8 +86,8 @@ for (const target of sidecar.TARGETS) test(`installs verified raw ${target} and 
   const f = fixture(t);
   const result = sidecar.installRelease(f.root, target, { env: {}, download: f.download });
   assert.equal(path.basename(result.binary), sidecar.binaryName(target));
-  assert.equal(result.buildMode, "api-only");
-  assert.equal(result.embeddedFrontend, false);
+  assert.equal(result.buildMode, "embedded");
+  assert.equal(result.embeddedFrontend, true);
   assert.equal(f.requests.length, 3);
   assert.deepEqual(fs.readFileSync(result.binary), binary(target));
   assert.equal(fs.existsSync(path.join(f.root, "bamboo-src")), false);
@@ -131,9 +131,9 @@ test("the actual preflight CLI accepts exact dispatch identity and rejects misma
 for (const [name, mutate, pattern] of [
   ["wrong version", (f) => { f.manifest.version = "2026.10.17"; }, /version or sourceRevision/],
   ["wrong source", (f) => { f.manifest.sourceRevision = "b".repeat(40); }, /version or sourceRevision/],
-  ["wrong mode", (f) => { f.manifest.artifacts[0].buildMode = "embedded"; }, /api-only/],
-  ["embedded frontend", (f) => { f.manifest.artifacts[0].embeddedFrontend = true; }, /api-only/],
-  ["archive in place of raw", (f) => { f.manifest.artifacts[0].format = "tar.gz"; }, /raw api-only/],
+  ["api-only variant", (f) => { f.manifest.artifacts[0].buildMode = "api-only"; }, /raw full/],
+  ["missing embedded frontend", (f) => { f.manifest.artifacts[0].embeddedFrontend = false; }, /raw full/],
+  ["archive in place of raw", (f) => { f.manifest.artifacts[0].format = "tar.gz"; }, /raw full/],
   ["unsafe asset name", (f) => { f.manifest.artifacts[0].assetName = "../../bamboo"; }, /exact raw/],
   ["missing target", (f) => { f.manifest.artifacts.pop(); }, /targets/],
   ["duplicate target", (f) => { f.manifest.artifacts[1] = f.manifest.artifacts[0]; }, /targets/],
@@ -155,7 +155,7 @@ test("dispatch version, source, target and invalid lock identities fail closed",
   for (const env of [{ BAMBOO_RELEASE_VERSION: "latest" }, { BAMBOO_RELEASE_SOURCE_REVISION: "b".repeat(40) }, { TAURI_ENV_TARGET_TRIPLE: "x86_64-apple-darwin" }]) {
     assert.throws(() => f.install({ env }), /differs|match the Tauri/);
   }
-  for (const change of [{ repository: "other/repo" }, { version: "latest" }, { manifestAssetName: "../manifest.json" }, { targets: [f.target] }]) {
+  for (const change of [{ repository: "other/repo" }, { version: "latest" }, { buildMode: "api-only", embeddedFrontend: false }, { manifestAssetName: "../manifest.json" }, { targets: [f.target] }]) {
     assert.throws(() => sidecar.validateLock({ ...f.lock, ...change }, {}), /Invalid|not accepted|four desktop/);
   }
   assert.throws(() => sidecar.installRelease(f.root, "../escape", { env: {} }), /Unsupported/);
