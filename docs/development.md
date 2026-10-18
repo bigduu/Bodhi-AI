@@ -51,7 +51,7 @@ Bodhi consumes sibling `../lotus-next` for local development and `@bigduu/lotus-
 
 `.bodhi-frontend/receipt.json` records the package name/version, source revision, dirty-source flag, published-artifact digests where applicable, per-file SHA-256 hashes and a deterministic combined hash. A source identity change during build or staging aborts before the prior generated output is replaced. Dirty local checkouts remain usable and are labeled as dirty; published artifacts must be clean and match the committed lock exactly.
 
-The verified dist is staged in `.lotus-dist/` for inspection and `.bodhi-frontend/dist/` for Tauri resources. Only the latter is bundled at `frontend/dist`; `frontendDist` remains the small splash. The executable pins the exact receipt at compilation and checks resource identity and all file hashes on startup. Missing files, changed bytes, unexpected files and symlinks fail visibly. The resolved resource directory is passed to Bamboo through its existing `--static-dir` option, so moving the app away from the checkout preserves startup. Lotus Next sidecars are compiled with `BAMBOO_FRONTEND_BUILD_MODE=api-only`, avoiding a second embedded UI.
+The verified dist is staged in `.lotus-dist/` for inspection and `.bodhi-frontend/dist/` for Tauri resources. Only the latter is bundled at `frontend/dist`; `frontendDist` remains the small splash. The executable pins the exact receipt at compilation and checks resource identity and all file hashes on startup. Missing files, changed bytes, unexpected files and symlinks fail visibly. The resolved resource directory is passed to Bamboo through its existing `--static-dir` option, so moving the app away from the checkout preserves startup. Published Lotus Next sidecars must declare `buildMode=api-only` and `embeddedFrontend=false` in the locked release manifest; explicit local builds set `BAMBOO_FRONTEND_BUILD_MODE=api-only`. Both avoid a second embedded UI.
 
 Before Tauri copies resources, the build script replaces only the generated `<Cargo profile>/frontend` directory, after validating its Cargo output ancestry. This prevents deleted hashed assets from surviving a later dev/build copy and falsely failing startup verification. Other build resources and any symlink targets are preserved.
 
@@ -62,13 +62,26 @@ Local production artifacts explicitly clear `VITE_BACKEND_BASE_URL`, including v
 | `LOTUS_SOURCE` | `local` | Local Lotus Next source; `package` selects a published package. `auto` is rejected |
 | `LOTUS_LOCAL_PATH` | `../lotus-next` | Lotus Next Git checkout root; missing or mismatched source fails without fallback |
 | `LOTUS_PACKAGE_NAME` | `@bigduu/lotus-next` | Package mode defaults to the locked Lotus Next artifact; explicit `@bigduu/lotus` selects the rollback embed |
-| `BAMBOO_LOCAL_PATH` | `../bamboo` | Source of the managed sidecar; required for every Lotus Next Tauri build |
+| `BAMBOO_SIDECAR_SOURCE` | `release` in production; `local` in debug when available | Download an accepted executable, or explicitly build local Bamboo source |
+| `BAMBOO_LOCAL_PATH` | `../bamboo` | Bamboo checkout used only by explicit local builds and debug development |
+| `BAMBOO_SIDECAR_TARGET` | Tauri target, then Rust host | Must equal the Tauri build target; only the four locked release targets are accepted for downloads |
+| `BAMBOO_SIDECAR_OFFLINE` | unset | `1` requires the exact verified Bamboo manifest, executable and host archive in the cache |
 
 ### Published-package and rollback boundary
 
-CI and release jobs default to `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` and the exact version in the committed lock. They carry the verified dist as the sole frontend, build a real API-only Bamboo sidecar for each declared target, and reject placeholder or wrong-architecture binaries. Package/version mismatch, malformed manifests, corrupt bytes and incomplete bundle output fail closed. Dispatches for the same version are serialized without cancelling an active assembly. Each run uploads only to its own draft tag; after every target and post-build assembly gate succeeds, the final job refuses to overwrite an existing public version and promotes only that run's isolated draft.
+CI and release jobs default to `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` and the exact version in the committed lock. They carry the verified dist as the sole frontend, download the accepted API-only Bamboo executable for each declared target, and reject placeholder or wrong-architecture binaries. They neither checkout Bamboo source nor compile it; Cargo builds the Tauri shell only. Package/version mismatch, malformed manifests, corrupt bytes and incomplete bundle output fail closed. Dispatches for the same version are serialized without cancelling an active assembly. Each run uploads only to its own draft tag; after every target and post-build assembly gate succeeds, the final job refuses to overwrite an existing public version and promotes only that run's isolated draft.
 
-The release workflow exposes one `frontend_package` choice for the rollback window. Selecting `@bigduu/lotus` explicitly installs the pinned rollback version `2026.8.28` into Bodhi and Bamboo and retains the prior embedded assembly checks; stale, partial, ambiguous or symlinked producer output is rejected. This path is not an automatic fallback and will be removed only after [Zenith #187](https://github.com/bigduu/Zenith/issues/187) completes its rollback window.
+The legacy `@bigduu/lotus@2026.8.28` rollback remains available with explicit `BAMBOO_SIDECAR_SOURCE=local`. Published API-only executables cannot provide its embedded frontend: the release workflow rejects that frontend choice before compilation. Local rollback retains its stale, partial, ambiguous and symlinked producer-output checks. It is never an automatic fallback; its removal is tracked by [Zenith #187](https://github.com/bigduu/Zenith/issues/187).
+
+### Accepted Bamboo release assets
+
+`scripts/bamboo-sidecar-lock.json` fixes the Bamboo repository, release version, full source revision, API-only mode, four targets and SHA-256 of `bamboo-sidecars-v1.json`. That manifest fixes every executable's target, mode, name, SHA-256 and byte size, plus the browser host archive and its exact three-file inventory. Assets come only from `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/`; moving `latest`, custom download URLs and source-build fallbacks are not supported. Optional release dispatch `bamboo_version` and `bamboo_ref` values must exactly match the lock.
+
+The four executable assets are `bamboo-aarch64-apple-darwin`, `bamboo-x86_64-apple-darwin`, `bamboo-x86_64-unknown-linux-gnu` and `bamboo-x86_64-pc-windows-msvc.exe`. `bamboo-browser-host-v1.tar.gz` contains only `browser-runtime/host.cjs`, `browser-runtime/package.json` and `browser-runtime/package-lock.json` as ordinary USTAR files. Links, traversal paths, extra or duplicate members, special entries, corrupt headers and oversized decompression are rejected before staging.
+
+The content-addressed `src-tauri/.bamboo-sidecar-cache/` is checked on every reuse, including offline builds. Downloads require HTTPS redirects and bounded sizes, disable ambient curl configuration and supply no credentials. Verified executables are staged atomically at Tauri's `src-tauri/binaries/bamboo-<target>[.exe]`; the adjacent JSON receipt binds the release and browser host. Assembly rechecks that receipt, binary and host bytes before accepting a bundle. A missing or mismatched asset stops the build.
+
+The initial lock deliberately has `null` release identities because no official API-only assets have yet been accepted. `node scripts/bamboo-sidecar.cjs check-lock` fails until a focused change records the real published version, source revision and manifest hash. Fixture tests do not establish release availability or native runtime acceptance. After accepting a real release, prefetch with `node scripts/bamboo-sidecar.cjs install <target>` and inspect with `node scripts/bamboo-sidecar.cjs verify <target>`; neither command invokes Cargo. Existing bundled sidecar and browser smoke gates remain required for the final app.
 
 The Zenith release train owns downstream release orchestration. A successful Bodhi assembly alone does not publish Lotus Next or certify broader root/child Jiandu persistence. Historical or manual Bamboo checkouts with a rollback embed output symlink fail closed; the existing link and target are left untouched.
 
@@ -76,7 +89,7 @@ The Zenith release train owns downstream release orchestration. A successful Bod
 
 ### Bundled browser runtime
 
-Bodhi has one build mode. `npm run tauri:dev` and `npm run tauri:build` prepare a pinned Node executable, `playwright-core`, Chromium headless shell and the browser host from the selected Bamboo checkout. The generated `src-tauri/browser-runtime/` directory is bundled as an application resource and supplied to the managed sidecar with absolute paths. First builds download verified archives; later builds reuse the download cache and refresh changed host resources automatically. No separate browser dependency installation is needed. macOS source builds require 13.5 or newer, matching the bundled Node binary. Node, Playwright and Chromium license notices are retained in the runtime resource. macOS builds sign nested browser code using the same identity as the application. Linux machines still need Chromium system libraries; install them with the pinned Playwright CLI on the build runner.
+`npm run tauri:dev` and `npm run tauri:build` prepare a pinned Node executable, `playwright-core`, Chromium headless shell and browser host. Release builds obtain the host from the accepted Bamboo release archive; explicit local builds obtain it from the selected Bamboo checkout. The generated `src-tauri/browser-runtime/` directory is bundled as an application resource and supplied to the managed sidecar with absolute paths. First builds download verified archives; later builds reuse the download cache and refresh changed host resources automatically. No separate browser dependency installation is needed. macOS source builds require 13.5 or newer, matching the bundled Node binary. Node, Playwright and Chromium license notices are retained in the runtime resource. macOS builds sign nested browser code using the same identity as the application. Linux machines still need Chromium system libraries; install them with the pinned Playwright CLI on the build runner.
 
 ## Quick Start & Development
 
@@ -100,10 +113,11 @@ npm run tauri:dev
 ### Build
 
 ```bash
-npm run tauri:build           # production bundle (bundle.targets: all)
+npm run tauri:build           # production bundle using accepted published Bamboo
+BAMBOO_SIDECAR_SOURCE=local npm run tauri:build  # explicit source build
 ```
 
-`tauri:build` runs `scripts/build-sidecar.cjs` through `beforeBuildCommand`: verified Lotus Next resources plus a release-mode API-only Bamboo sidecar. Tauri bundles the splash, resources and executable. Bare `cargo build` still supports CI shell compilation with inert placeholders; those are not runnable local app assembly.
+`tauri:build` runs `scripts/build-sidecar.cjs` through `beforeBuildCommand`: verified Lotus Next resources plus a locked, downloaded API-only Bamboo sidecar. The production default remains `release` even if a sibling Bamboo checkout exists. Tauri bundles the splash, resources and executable. Bare `cargo build` still supports CI shell compilation with inert placeholders; those are not runnable local app assembly.
 
 ### Build or preview the selected frontend
 

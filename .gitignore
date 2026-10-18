@@ -49,3 +49,6 @@ src-tauri/binaries/
 src-tauri/browser-runtime/
 src-tauri/.browser-runtime-cache/
 src-tauri/.browser-runtime-stage-*/
+
+# Exact published Bamboo assets and generated host staging
+src-tauri/.bamboo-sidecar-cache/

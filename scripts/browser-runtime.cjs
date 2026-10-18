@@ -343,7 +343,9 @@ module.exports = { LOCK, STAGED, browserPaths, machCpuTypes, machFiles, sha256Fi
 if (require.main === module) {
   try {
     const target = process.argv[2] || process.env.BAMBOO_SIDECAR_TARGET;
-    const bambooSource = path.resolve(ROOT, process.env.BAMBOO_LOCAL_PATH || "../bamboo");
+    const bambooSource = process.env.BAMBOO_SIDECAR_SOURCE === "release"
+      ? require("./bamboo-sidecar.cjs").installedRelease(ROOT, target).hostDirectory
+      : path.resolve(ROOT, process.env.BAMBOO_LOCAL_PATH || "../bamboo");
     stageRuntime(target, bambooSource);
   } catch (error) {
     console.error(`Browser runtime: ${error.message}`);

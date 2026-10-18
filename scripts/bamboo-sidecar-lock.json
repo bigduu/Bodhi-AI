@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "repository": "bigduu/Bamboo-agent",
+  "version": null,
+  "sourceRevision": null,
+  "buildMode": "api-only",
+  "embeddedFrontend": false,
+  "manifestAssetName": "bamboo-sidecars-v1.json",
+  "manifestSha256": null,
+  "targets": [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu"
+  ]
+}

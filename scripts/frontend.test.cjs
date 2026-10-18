@@ -368,7 +368,7 @@ function assemble(f, mode, producerLayout = "crate", overrides = {}) {
       packageName: frontend.LEGACY_PACKAGE,
     };
   }
-  const env = { BAMBOO_LOCAL_PATH: bamboo, BAMBOO_FRONTEND_BUILD_MODE: producerLayout === "root" ? "api-only" : "auto", ...overrides };
+  const env = { BAMBOO_SIDECAR_SOURCE: "local", BAMBOO_LOCAL_PATH: bamboo, BAMBOO_FRONTEND_BUILD_MODE: producerLayout === "root" ? "api-only" : "auto", ...overrides };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "build-sidecar.cjs"), "utf8"), {
     __dirname: path.join(f.root, "scripts"),
     console: { log() {}, warn() {}, error() {} },
@@ -386,6 +386,7 @@ function assemble(f, mode, producerLayout = "crate", overrides = {}) {
         execFileSync(command, args, options) {
           if (command === "rustc") return "host: x86_64-unknown-linux-gnu\n";
           calls.push({ command, args: [...args], env: { ...options.env } });
+          if (args[0] === "scripts/bamboo-sidecar.cjs" && f.downloadFailure) throw f.downloadFailure;
           if (command === "cargo") {
             const profile = args.includes("--release") ? "release" : "debug";
             const targetIndex = args.indexOf("--target");
@@ -420,7 +421,7 @@ test("local sidecar assembly forces API-only and never invokes the legacy embed 
   assert.equal(fs.readFileSync(path.join(f.root, "src-tauri/binaries/bamboo-x86_64-unknown-linux-gnu"), "utf8"), "fixture binary");
 });
 
-test("locked package sidecar assembly is API-only and carries no embedded UI", (t) => {
+test("explicit local package sidecar assembly is API-only and carries no embedded UI", (t) => {
   const f = fixture(t);
   const { calls, bamboo } = assemble(f, "next-package");
   assert.equal(calls.length, 2);
@@ -432,6 +433,38 @@ test("locked package sidecar assembly is API-only and carries no embedded UI", (
     fs.existsSync(path.join(f.root, ".bodhi-frontend/dist/index.html")),
     true,
   );
+});
+
+test("production defaults to published api-only assets even with a Bamboo checkout available", (t) => {
+  const f = fixture(t);
+  const { calls } = assemble(f, "next-package", "crate", {
+    BAMBOO_SIDECAR_SOURCE: "", BAMBOO_SIDECAR_TARGET: "aarch64-apple-darwin",
+  });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].args, ["scripts/bamboo-sidecar.cjs", "install", "aarch64-apple-darwin"]);
+  assert.deepEqual(calls[1].args, ["scripts/browser-runtime.cjs", "aarch64-apple-darwin"]);
+  assert.ok(calls.every((call) => call.env.BAMBOO_SIDECAR_SOURCE === "release"));
+  assert.ok(calls.every((call) => call.command !== "cargo"));
+});
+
+test("release assets cannot silently become embedded rollback or unknown sources", (t) => {
+  assert.throws(() => assemble(fixture(t), "legacy-package", "crate", { BAMBOO_SIDECAR_SOURCE: "release" }), /require the verified Lotus Next/);
+  assert.throws(() => assemble(fixture(t), "local", "crate", { BAMBOO_SIDECAR_SOURCE: "fallback" }), /Unknown BAMBOO_SIDECAR_SOURCE/);
+});
+
+test("a failed published asset install stops the hook before browser staging or Cargo", (t) => {
+  const f = fixture(t);
+  f.downloadFailure = new Error("fixture: published asset missing");
+  assert.throws(() => assemble(f, "next-package", "crate", { BAMBOO_SIDECAR_SOURCE: "release" }), /published asset missing/);
+  assert.equal(fs.existsSync(path.join(f.temp, "bamboo/target")), false);
+  assert.equal(fs.existsSync(path.join(f.root, ".bodhi-frontend")), false);
+  assert.equal(fs.existsSync(path.join(f.root, "src-tauri/browser-runtime")), false);
+});
+
+test("debug development keeps the local source default", (t) => {
+  const { calls } = assemble(fixture(t), "local", "crate", { BAMBOO_SIDECAR_SOURCE: "", TAURI_ENV_DEBUG: "true" });
+  assert.equal(calls[1].command, "cargo");
+  assert.equal(calls[1].args.includes("--release"), false);
 });
 
 test("Tauri hook target and debug profile control both sidecar and browser assembly", (t) => {
