@@ -1,0 +1,62 @@
+# Publish Bodhi independently
+
+Bodhi's only publishing entrypoint is this repository's [release.yml](../.github/workflows/release.yml). It accepts an explicit unused app version and the full Bodhi source SHA selected by the workflow ref. Zenith is an optional integration checkout; its gitlinks, configuration, credentials and workflows are not release prerequisites. Bamboo and Lotus Next publish separately, and Bodhi consumes their accepted artifacts.
+
+## Prepare and dispatch
+
+Land source and lock updates through Bodhi's normal reviewed pull-request flow. Keep source manifest versions at `0.0.0`; the workflow stamps the requested app version only in temporary publishing checkouts. Use numeric `YYYY.M.N`, with month 1–12 and counter 1–65535, without leading zeros. The app version is independent of both upstream versions.
+
+The committed identities are authoritative:
+
+| Lock | What remains fixed |
+|---|---|
+| `scripts/bamboo-sidecar-lock.json` | Published Bamboo version, full source SHA, embedded mode, all four native targets and manifest SHA-256; the manifest binds executable and browser host assets |
+| `scripts/frontend-package-lock.json` | Exact `@bigduu/lotus-next` version, clean source SHA, universal manifest and resource digests |
+
+There are no upstream version overrides, `latest` resolution, source-build fallback, Bamboo crates.io check or Zenith source tag requirement. Accept a new upstream identity in a separate reviewed lock update after verifying its real published bytes and native compatibility.
+
+Select a merged Bodhi commit, then dispatch directly (replace `YYYY.M.N` with the unused version):
+
+```sh
+source_sha="$(gh api repos/bigduu/Bodhi-AI/commits/main --jq .sha)"
+gh workflow run release.yml -R bigduu/Bodhi-AI --ref main \
+  -f expected_source_sha="$source_sha" -f bodhi_version=YYYY.M.N
+```
+
+If `main` moves before dispatch, the source check stops before native builds. Select the current reviewed commit and dispatch again. A Bodhi-owned immutable branch/tag ref may also be selected with its matching full SHA; no Zenith tag is needed. Release and recovery workflows share a per-version concurrency group and do not cancel an active assembly.
+
+## Acceptance and publication
+
+Preflight checks the exact clean source, version, both committed locks and absence of the final release/tag before starting the matrix. Every native job then downloads the accepted Bamboo executable and browser host, installs the locked Lotus Next package, builds the Tauri shell and passes the existing assembly, bundled actor/HTTP/static-dir and bundled browser gates:
+
+| Runner | Target |
+|---|---|
+| `macos-15-intel` | `x86_64-apple-darwin` |
+| `macos-latest` | `aarch64-apple-darwin` |
+| `ubuntu-22.04` | `x86_64-unknown-linux-gnu` |
+| `windows-latest` | `x86_64-pc-windows-msvc` |
+
+Jobs upload only to `bodhi-draft-v<VERSION>-<RUN_ID>-<ATTEMPT>`. After all four pass, finalization independently reads that exact attempt's successful gates and verifies one matching source-bound draft with all eight original assets: two DMGs, two macOS app archives, AppImage, deb, rpm and Windows NSIS installer. It checks unique asset IDs, uploaded state, minimum sizes, SHA-256 digests and GitHub download URLs.
+
+Before publishing, it uploads `bodhi-release-evidence-<RUN_ID>-<ATTEMPT>` containing the exact version, source, run, attempt, release ID and every asset ID/size/digest. It promotes only that original release ID to `app-v<VERSION>` and confirms its unchanged assets and source tag. A different existing release or tag is refused. A lost PATCH response triggers readback of that exact publication, never a blind write retry. Signing and the four native acceptance gates are unchanged.
+
+Watch the Bodhi run directly and verify the final release:
+
+```sh
+gh run watch <RUN_ID> -R bigduu/Bodhi-AI --exit-status
+gh release view app-v<VERSION> -R bigduu/Bodhi-AI
+```
+
+## Recover finalization without rebuilding
+
+Use [recover-release.yml](../.github/workflows/recover-release.yml) only when all four original native jobs passed and **Publish the completed draft** was the only failing finalizer step, after the original evidence artifact was uploaded. Use the original run, attempt, SHA and version:
+
+```sh
+gh workflow run recover-release.yml -R bigduu/Bodhi-AI --ref main \
+  -f release_run_id=<ORIGINAL_RUN_ID> -f release_attempt=<ORIGINAL_ATTEMPT> \
+  -f expected_source_sha=<ORIGINAL_FULL_SHA> -f bodhi_version=<ORIGINAL_VERSION>
+```
+
+Recovery verifies the original run/version/source and all four gates, rejects missing, expired or duplicate evidence, and downloads the single immutable artifact by ID from that original run and attempt. It checks the evidence against the unchanged original draft/assets before publishing. If GitHub already published that identical release after a lost response, recovery confirms it without another PATCH. Conflicting IDs, source, assets or final tag stop recovery. The artifact is retained for 90 days, subject to repository retention limits.
+
+Do not use a later failed-jobs rerun or a new build's assets to repair finalization. If native builds failed, or finalization never retained evidence, fix the cause and dispatch a fresh full four-platform run with the still-unused version. This recovery contract applies to runs produced by this workflow format; historical train runs without its version-bound run identity and original evidence artifact cannot be recovered through it.

@@ -75,7 +75,7 @@ The legacy `@bigduu/lotus@2026.8.28` rollback remains available with explicit `B
 
 ### Accepted Bamboo release assets
 
-`scripts/bamboo-sidecar-lock.json` fixes the Bamboo repository, release version, full source revision, standard embedded frontend mode, four targets and SHA-256 of `bamboo-sidecars-v1.json`. That manifest fixes every executable's target, mode, name, SHA-256 and byte size, plus the browser host archive and its exact three-file inventory. Assets come only from `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/`; moving `latest`, custom download URLs and source-build fallbacks are not supported. Optional release dispatch `bamboo_version` and `bamboo_ref` values must exactly match the lock.
+`scripts/bamboo-sidecar-lock.json` fixes the Bamboo repository, release version, full source revision, standard embedded frontend mode, four targets and SHA-256 of `bamboo-sidecars-v1.json`. That manifest fixes every executable's target, mode, name, SHA-256 and byte size, plus the browser host archive and its exact three-file inventory. Assets come only from `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/`; moving `latest`, custom download URLs and source-build fallbacks are not supported. Release derives Bamboo and Lotus Next identities from the committed locks, without dispatch overrides.
 
 The four executable assets are `bamboo-aarch64-apple-darwin`, `bamboo-x86_64-apple-darwin`, `bamboo-x86_64-unknown-linux-gnu` and `bamboo-x86_64-pc-windows-msvc.exe`. `bamboo-browser-host-v1.tar.gz` contains only `browser-runtime/host.cjs`, `browser-runtime/package.json` and `browser-runtime/package-lock.json` as ordinary USTAR files. Links, traversal paths, extra or duplicate members, special entries, corrupt headers and oversized decompression are rejected before staging.
 
@@ -85,7 +85,7 @@ The native bundled-sidecar gate also launches the full executable with `serve --
 
 The committed lock records an accepted official release. Each update requires a focused acceptance commit after downloading and verifying the real published version, source revision, manifest and platform assets. `node scripts/bamboo-sidecar.cjs check-lock` rejects incomplete identities. Fixture tests do not establish release availability or native runtime acceptance. Prefetch with `node scripts/bamboo-sidecar.cjs install <target>` and inspect with `node scripts/bamboo-sidecar.cjs verify <target>`; neither command invokes Cargo. Existing bundled sidecar and browser smoke gates remain required for the final app.
 
-The Zenith release train owns downstream release orchestration. A successful Bodhi assembly alone does not publish Lotus Next or certify broader root/child Jiandu persistence. Historical or manual Bamboo checkouts with a rollback embed output symlink fail closed; the existing link and target are left untouched.
+Bodhi owns [independent publishing and original-attempt recovery](releasing.md) in this repository. Zenith is not a release prerequisite. A successful Bodhi assembly alone does not publish Lotus Next or certify broader root/child Jiandu persistence. Historical or manual Bamboo checkouts with a rollback embed output symlink fail closed; the existing link and target are left untouched.
 
 ---
 

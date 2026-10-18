@@ -74,7 +74,7 @@ Bodhi packages a startup page, verified frontend resources and a standalone `bam
 
 ## Source checkout versus released app
 
-The README describes the Zenith-pinned source. As checked on 2026-10-03:
+The following table records the historical documentation audit on 2026-10-03. Current Bodhi builds use this repository's committed Bamboo and Lotus Next locks; a Zenith gitlink is an optional integration snapshot.
 
 | Layer | Identity | Frontend selection |
 |---|---|---|
@@ -82,14 +82,14 @@ The README describes the Zenith-pinned source. As checked on 2026-10-03:
 | Zenith-pinned Bodhi source | `6d85036` | Lotus Next `2026.9.22` in the package lock |
 | Upstream `main` observed | `d0e40e8` | Contains changes after the Zenith pin |
 
-A newer npm frontend does not update an already released desktop installer. Source manifests use `0.0.0` intentionally; the release workflow supplies the app version. See [evidence and limits](docs/readme-audit.md). Features on other branches are not advertised as released here.
+A newer npm frontend does not update an already released desktop installer. Source manifests use `0.0.0` intentionally; Bodhi's own workflow supplies the explicit app version and retains four-platform acceptance. See [independent publishing and recovery](docs/releasing.md), and the historical [evidence and limits](docs/readme-audit.md). Features on other branches are not advertised as released here.
 
-## Develop from Zenith
+## Develop from source
 
-Initialize Zenith's submodules at its recorded pins, then install both UI and shell dependencies. Current macOS source builds require macOS 13.5+. Use Node.js 22.12+ (Lotus Next's declared minimum), npm, Rust 1.95+ (the pinned Bamboo requirement) and the platform-specific Tauri prerequisites.
+Check out Bodhi, Bamboo and Lotus Next as sibling directories, or use an existing Zenith checkout, then install both UI and shell dependencies. Current macOS source builds require macOS 13.5+. Use Node.js 22.12+ (Lotus Next's declared minimum), npm, Rust 1.95+ (the pinned Bamboo requirement) and the platform-specific Tauri prerequisites.
 
 ```bash
-# From the Zenith checkout
+# From the directory containing bodhi/, bamboo/ and lotus-next/
 (cd lotus-next && npm ci)
 cd bodhi
 npm ci

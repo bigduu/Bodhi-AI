@@ -66,7 +66,7 @@ Bodhi 打包启动页、经过校验的前端资源和独立的 `bamboo serve` s
 
 ## 源码与已发布应用的区别
 
-本 README 说明 Zenith 固定的源码。2026-10-03 核对结果：
+下表是 2026-10-03 的历史文档核对记录。当前 Bodhi 构建使用本仓库提交的 Bamboo 与 Lotus Next 版本锁；Zenith gitlink 仅是可选的集成快照。
 
 | 层次 | 标识 | 前端选择 |
 |---|---|---|
@@ -74,14 +74,14 @@ Bodhi 打包启动页、经过校验的前端资源和独立的 `bamboo serve` s
 | Zenith 固定的 Bodhi 源码 | `6d85036` | 包锁选择 Lotus Next `2026.9.22` |
 | 观察到的上游 `main` | `d0e40e8` | 包含 Zenith pin 之后的改动 |
 
-新的 npm 前端不会自动更新已经发布的桌面安装包。源码 manifest 中的 `0.0.0` 是有意保留的占位值，应用版本由发布流程注入。详见[核对证据与限制](docs/readme-audit.md)。其他分支上的功能不在这里宣传为已发布能力。
+新的 npm 前端不会自动更新已经发布的桌面安装包。源码 manifest 中的 `0.0.0` 是有意保留的占位值，应用版本由 Bodhi 自己的发布流程明确注入，并保留四平台验收。详见[独立发布与恢复](docs/releasing.md)和历史[核对证据与限制](docs/readme-audit.md)。其他分支上的功能不在这里宣传为已发布能力。
 
-## 从 Zenith 开发
+## 从源码开发
 
-按 Zenith 记录的 pin 初始化子模块，再安装界面和外壳依赖。当前 macOS 源码构建需要 macOS 13.5+。需要 Node.js 22.12+（Lotus Next 声明的最低版本）、npm、Rust 1.95+（固定的 Bamboo 要求）以及对应平台的 Tauri 前置依赖。
+将 Bodhi、Bamboo 和 Lotus Next 检出为同级目录，也可以使用现有 Zenith 检出，再安装界面和外壳依赖。当前 macOS 源码构建需要 macOS 13.5+。需要 Node.js 22.12+（Lotus Next 声明的最低版本）、npm、Rust 1.95+（固定的 Bamboo 要求）以及对应平台的 Tauri 前置依赖。
 
 ```bash
-# 从 Zenith 检出目录开始
+# 从包含 bodhi/、bamboo/、lotus-next/ 的目录开始
 (cd lotus-next && npm ci)
 cd bodhi
 npm ci

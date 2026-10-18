@@ -1,0 +1,64 @@
+name: Recover original Bodhi release
+run-name: Recover Bodhi v${{ inputs.bodhi_version }} from ${{ inputs.release_run_id }} attempt ${{ inputs.release_attempt }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: "Original release.yml run whose four native builds passed"
+        required: true
+        type: string
+      release_attempt:
+        description: "Original build attempt; never substitute a later rerun"
+        required: true
+        type: string
+      expected_source_sha:
+        description: "Full exact Bodhi source SHA of that original run"
+        required: true
+        type: string
+      bodhi_version:
+        description: "Original YYYY.M.N Bodhi app version"
+        required: true
+        type: string
+
+# This is the same version lock as release.yml, including across workflows.
+concurrency:
+  group: bodhi-release-${{ inputs.bodhi_version }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      RELEASE_VERSION: ${{ inputs.bodhi_version }}
+      ORIGINAL_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+      ORIGINAL_RELEASE_ATTEMPT: ${{ inputs.release_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Verify original native gates and evidence artifact
+        id: original
+        run: node scripts/release-finalizer.cjs check-recovery
+
+      - name: Download that immutable original evidence
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.release_run_id }}
+          artifact-ids: ${{ steps.original.outputs.artifact_id }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/bodhi-original-release
+
+      - name: Recover the same verified draft or confirm its publication
+        env:
+          ORIGINAL_EVIDENCE_ARTIFACT_ID: ${{ steps.original.outputs.artifact_id }}
+        run: node scripts/release-finalizer.cjs recover "${{ runner.temp }}/bodhi-original-release/bodhi-release-evidence.json"
