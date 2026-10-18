@@ -83,7 +83,7 @@ CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-n
 
 原生 bundled-sidecar 门禁还会使用临时数据目录，真实运行完整执行文件的 `serve --static-dir`，核对 CLI 与 HTTP 版本、Bodhi 健康接口、外部首页与资源字节、SPA fallback，以及仅存在于外部目录中的随机文件，证明显式目录优先于 embedded 前端。JS HTTP fixture 只验证门禁逻辑与清理行为；真实发布执行文件通过该门禁才构成原生兼容证据。
 
-初始锁的正式发布身份故意保留 `null`，因为尚未接受官方完整 Bamboo 平台资产。`node scripts/bamboo-sidecar.cjs check-lock` 会失败，直到后续独立改动填入真实已发布版本、源码 SHA 和清单哈希。合成 fixture 测试不代表正式资产可用或原生运行验收。接受真实发布后可执行 `node scripts/bamboo-sidecar.cjs install <target>` 预下载，或 `node scripts/bamboo-sidecar.cjs verify <target>` 检查；两者都不调用 Cargo。最终应用仍必须通过已有的 sidecar 和浏览器 smoke 门禁。
+已提交的锁记录了通过验收的官方发布。每次更新都必须先下载并核验真实发布版本、源码 SHA、清单和平台资产，再用独立提交接受新身份。`node scripts/bamboo-sidecar.cjs check-lock` 会拒绝不完整的身份。合成 fixture 测试不代表正式资产可用或原生运行验收。可执行 `node scripts/bamboo-sidecar.cjs install <target>` 预下载，或 `node scripts/bamboo-sidecar.cjs verify <target>` 检查；两者都不调用 Cargo。最终应用仍必须通过已有的 sidecar 和浏览器 smoke 门禁。
 
 Zenith release train 负责下游发布编排。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
 
