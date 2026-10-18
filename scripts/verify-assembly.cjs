@@ -190,6 +190,9 @@ if (require.main === module) {
     const target = process.argv[2] || process.env.BAMBOO_SIDECAR_TARGET;
     const receipt = verifyStaged();
     const sidecar = verifySidecar(ROOT, target);
+    if (process.env.BAMBOO_SIDECAR_SOURCE === "release") {
+      require("./bamboo-sidecar.cjs").installedRelease(ROOT, target);
+    }
     if (target.endsWith("-apple-darwin")) {
       verifyMacosBundle(ROOT, target, receipt, process.argv[3]);
     } else {

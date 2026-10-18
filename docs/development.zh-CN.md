@@ -51,7 +51,7 @@ Bodhi 在本地开发时读取同级 `../lotus-next`，在 package 组装时读�
 
 `.bodhi-frontend/receipt.json` 记录包名、版本、源码提交、dirty 标记、适用时的发布产物摘要、逐文件 SHA-256 和确定性的整体哈希。构建或装配期间身份变化会在替换已有生成输出前中止。本地有改动的检出仍可使用并明确标记 dirty；发布包必须来自干净源码且与提交锁完全一致。
 
-校验后的 dist 同时装配到 `.lotus-dist/`（便于检查）和 `.bodhi-frontend/dist/`（Tauri 资源）。仅后者以 `frontend/dist` 打包；`frontendDist` 仍是小型启动页。外壳在编译时固定校验记录，启动时核对包内记录及所有文件；缺失、损坏、多余文件或符号链接都会产生可见失败。应用把自己解析出的资源目录通过现有 `--static-dir` 参数交给 Bamboo，因此应用移离源码目录后仍可启动。所有 Lotus Next sidecar 都强制以 `BAMBOO_FRONTEND_BUILD_MODE=api-only` 编译，避免第二份内嵌 UI。
+校验后的 dist 同时装配到 `.lotus-dist/`（便于检查）和 `.bodhi-frontend/dist/`（Tauri 资源）。仅后者以 `frontend/dist` 打包；`frontendDist` 仍是小型启动页。外壳在编译时固定校验记录，启动时核对包内记录及所有文件；缺失、损坏、多余文件或符号链接都会产生可见失败。应用把自己解析出的资源目录通过现有 `--static-dir` 参数交给 Bamboo，因此应用移离源码目录后仍可启动。Bodhi 直接复用标准完整 Bamboo 执行文件，包含其正常内嵌前端；发布清单必须准确声明 `buildMode=embedded` 和 `embeddedFrontend=true`。Bamboo 优先使用显式 `--static-dir`，因此 Bodhi 继续使用自己锁定的 Lotus Next 资源和现有界面。本地构建沿用 Bamboo 正常前端模式（默认 `auto`），不再要求专用 sidecar 变体。
 
 Tauri 复制资源前，构建脚本先验证 Cargo 输出路径层级，再只替换生成的 `<Cargo profile>/frontend` 目录。这样连续 dev/build 不会保留上一次已经删除的哈希资源，避免正常重建被启动校验误判为损坏；其他构建资源和符号链接目标均保留。
 
@@ -62,13 +62,28 @@ Tauri 复制资源前，构建脚本先验证 Cargo 输出路径层级，再只�
 | `LOTUS_SOURCE` | `local` | 默认使用本地 Lotus Next；`package` 选择已发布包，`auto` 被拒绝 |
 | `LOTUS_LOCAL_PATH` | `../lotus-next` | Lotus Next Git 检出根目录；缺失或身份不符时停止，不自动回退 |
 | `LOTUS_PACKAGE_NAME` | `@bigduu/lotus-next` | package 模式默认使用锁定的 Lotus Next；显式 `@bigduu/lotus` 选择回滚 embed |
-| `BAMBOO_LOCAL_PATH` | `../bamboo` | 托管 sidecar 源码路径；所有 Lotus Next Tauri 构建都必须提供真实检出 |
+| `BAMBOO_SIDECAR_SOURCE` | 生产为 `release`；debug 有源码时为 `local` | 下载已接受的执行文件，或显式编译本地 Bamboo |
+| `BAMBOO_LOCAL_PATH` | `../bamboo` | 仅用于显式本地编译和 debug 开发的 Bamboo 源码路径 |
+| `BAMBOO_SIDECAR_TARGET` | Tauri 目标，其次 Rust host | 必须等于 Tauri 目标；下载仅支持锁定的四个平台 |
+| `BAMBOO_SIDECAR_OFFLINE` | 未设置 | `1` 要求缓存中已有完整且校验通过的清单、执行文件和 host 归档 |
 
 ### 已发布包与回滚边界
 
-CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` 并使用提交锁中的精确版本。它们只携带一份经过校验的 dist，为每个声明目标构建真实的 API-only Bamboo sidecar，并拒绝占位或 CPU 架构错误的二进制。包名或版本不匹配、manifest 异常、文件损坏和 bundle 输出不完整都会关闭式失败。同一版本的 dispatch 会串行执行，且不会取消正在组装的任务；每次运行只写入自己的独立 draft 标签。待所有目标与构建后组装门禁都通过，最后的 job 会拒绝覆盖已有公开版本，并且只提升本次运行的 draft。
+CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-next` 并使用提交锁中的精确版本。它们只携带一份经过校验的 dist，为每个声明目标下载已接受的完整 Bamboo 执行文件，并拒绝占位或 CPU 架构错误的二进制。打包不再 checkout 或编译 Bamboo；Cargo 只构建 Tauri 外壳。包名或版本不匹配、manifest 异常、文件损坏和 bundle 输出不完整都会关闭式失败。同一版本的 dispatch 会串行执行，且不会取消正在组装的任务；每次运行只写入自己的独立 draft 标签。待所有目标与构建后组装门禁都通过，最后的 job 会拒绝覆盖已有公开版本，并且只提升本次运行的 draft。
 
-release workflow 在回滚窗口内暴露唯一的 `frontend_package` 选择。只有显式选择 `@bigduu/lotus` 才会把锁定的回滚版本 `2026.8.28` 安装到 Bodhi 与 Bamboo，并保留原有 embedded 组装检查；旧产物、半成品、歧义输出或符号链接都会被拒绝。它不是自动回退，只会在 [Zenith #187](https://github.com/bigduu/Zenith/issues/187) 的回滚窗口完成后移除。
+旧 `@bigduu/lotus@2026.8.28` 回滚仍可通过显式 `BAMBOO_SIDECAR_SOURCE=local` 使用。共享的完整 Bamboo 携带自己的正常前端，与锁定的旧版回滚包并非同一产物。因此发布复用仍保留 Bodhi 锁定的 Lotus Next Tauri 资源，并在编译前拒绝旧前端选择。本地回滚保留旧产物、半成品、歧义输出和符号链接检查，绝不自动回退；移除由 [Zenith #187](https://github.com/bigduu/Zenith/issues/187) 跟踪。
+
+### 锁定 Bamboo 发布资产
+
+`scripts/bamboo-sidecar-lock.json` 固定仓库、版本、完整源码 SHA、正常 embedded 前端模式、四个目标和 `bamboo-sidecars-v1.json` 的 SHA-256。该清单再固定各执行文件的目标、模式、文件名、哈希、大小，以及 browser host 归档及其三个文件的完整清单。所有文件只从 `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/` 下载，不支持 `latest`、任意下载地址或源码构建回退。release 的可选 `bamboo_version`、`bamboo_ref` 输入必须与锁完全一致。
+
+平台资产为 `bamboo-aarch64-apple-darwin`、`bamboo-x86_64-apple-darwin`、`bamboo-x86_64-unknown-linux-gnu` 和 `bamboo-x86_64-pc-windows-msvc.exe`。`bamboo-browser-host-v1.tar.gz` 仅含三个普通 USTAR 文件：`browser-runtime/host.cjs`、`browser-runtime/package.json`、`browser-runtime/package-lock.json`。链接、目录穿越、多余或重复成员、特殊条目、损坏 header 和超限解压都会在写入前被拒绝。
+
+每次复用 `src-tauri/.bamboo-sidecar-cache/` 都会重新校验，包括离线构建。下载限制 HTTPS 重定向与文件大小，禁用用户 curl 配置且不传凭据。验证后的执行文件原子装配到 `src-tauri/binaries/bamboo-<target>[.exe]`，相邻 JSON 收据绑定版本与 host；组装门禁重新核对收据及二进制、host 字节。缺资产或身份、哈希不符都会停止构建。
+
+原生 bundled-sidecar 门禁还会使用临时数据目录，真实运行完整执行文件的 `serve --static-dir`，核对 CLI 与 HTTP 版本、Bodhi 健康接口、外部首页与资源字节、SPA fallback，以及仅存在于外部目录中的随机文件，证明显式目录优先于 embedded 前端。JS HTTP fixture 只验证门禁逻辑与清理行为；真实发布执行文件通过该门禁才构成原生兼容证据。
+
+已提交的锁记录了通过验收的官方发布。每次更新都必须先下载并核验真实发布版本、源码 SHA、清单和平台资产，再用独立提交接受新身份。`node scripts/bamboo-sidecar.cjs check-lock` 会拒绝不完整的身份。合成 fixture 测试不代表正式资产可用或原生运行验收。可执行 `node scripts/bamboo-sidecar.cjs install <target>` 预下载，或 `node scripts/bamboo-sidecar.cjs verify <target>` 检查；两者都不调用 Cargo。最终应用仍必须通过已有的 sidecar 和浏览器 smoke 门禁。
 
 Zenith release train 负责下游发布编排。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
 
@@ -76,7 +91,7 @@ Zenith release train 负责下游发布编排。Bodhi 装配通过本身不等�
 
 ### 内置浏览器 runtime
 
-Bodhi 只有一种构建模式。`npm run tauri:dev` 和 `npm run tauri:build` 自动准备固定版本的 Node、`playwright-core`、Chromium headless shell，以及所选 Bamboo 检出的浏览器 host。生成的 `src-tauri/browser-runtime/` 作为应用资源打包，启动时用绝对路径传给 sidecar。首次构建下载并校验归档，后续复用下载缓存，并自动更新变化的 host 资源，无需另行安装浏览器依赖。macOS 源码构建要求 13.5 或更新版本，与内置 Node 一致。runtime 资源保留 Node、Playwright 和 Chromium 的许可证。macOS 中的浏览器代码使用与应用相同的身份签名。Linux 仍需 Chromium 系统库，构建机器应通过固定版本的 Playwright CLI 安装。
+`npm run tauri:dev` 和 `npm run tauri:build` 自动准备固定版本的 Node、`playwright-core`、Chromium headless shell 和浏览器 host。release 从已接受的 Bamboo 发布归档获取 host，显式本地构建从所选 Bamboo 检出获取。生成的 `src-tauri/browser-runtime/` 作为应用资源打包，启动时用绝对路径传给 sidecar。首次构建下载并校验归档，后续复用下载缓存，并自动更新变化的 host 资源，无需另行安装浏览器依赖。macOS 源码构建要求 13.5 或更新版本，与内置 Node 一致。runtime 资源保留 Node、Playwright 和 Chromium 的许可证。macOS 中的浏览器代码使用与应用相同的身份签名。Linux 仍需 Chromium 系统库，构建机器应通过固定版本的 Playwright CLI 安装。
 
 ## 快速开始与开发
 
@@ -95,15 +110,16 @@ Bodhi 只有一种构建模式。`npm run tauri:dev` 和 `npm run tauri:build` �
 npm run tauri:dev
 ```
 
-`tauri:dev` 负责完整启动顺序。它在构建前检查 `1420`，占用时报告监听进程和当前检出路径，保留已有服务。随后构建并校验 Lotus Next、装配资源、从同级 Bamboo 编译 API-only debug sidecar，再在 `127.0.0.1:1420` 启动禁止自动换端口的 Vite。只有本次前端进程与源码身份校验通过才启动原生应用。窗口先显示不加载前端模块的启动页，等现有 managed sidecar 的健康和资源校验通过后再进入 Lotus Next HMR。正常退出、准备失败和中断都会清理本次拥有的开发命令。设置 `BODHI_SIDECAR_FRONTEND` 后，也可在 debug 外壳中检验 sidecar 提供的同一份生产资源。原生选项使用 `npm run tauri:dev -- <Tauri options>`；该入口保留 `--config`，避免覆盖受控启动钩子与地址。
+`tauri:dev` 负责完整启动顺序。它在构建前检查 `1420`，占用时报告监听进程和当前检出路径，保留已有服务。随后构建并校验 Lotus Next、装配资源、从同级 Bamboo 编译正常的 Bamboo debug sidecar，再在 `127.0.0.1:1420` 启动禁止自动换端口的 Vite。只有本次前端进程与源码身份校验通过才启动原生应用。窗口先显示不加载前端模块的启动页，等现有 managed sidecar 的健康和资源校验通过后再进入 Lotus Next HMR。正常退出、准备失败和中断都会清理本次拥有的开发命令。设置 `BODHI_SIDECAR_FRONTEND` 后，也可在 debug 外壳中检验 sidecar 提供的同一份生产资源。原生选项使用 `npm run tauri:dev -- <Tauri options>`；该入口保留 `--config`，避免覆盖受控启动钩子与地址。
 
 ### 构建
 
 ```bash
-npm run tauri:build           # 生产打包（bundle.targets: all）
+npm run tauri:build           # 使用已接受的 Bamboo 平台资产打包
+BAMBOO_SIDECAR_SOURCE=local npm run tauri:build  # 显式源码构建
 ```
 
-`tauri:build` 通过 `beforeBuildCommand` 运行 `scripts/build-sidecar.cjs`，得到经过校验的 Lotus Next 资源和 release 模式的 API-only Bamboo。Tauri 将启动页、资源和可执行文件一起打包。单独 `cargo build` 仍允许 CI 使用无功能占位文件检查外壳编译，但它不构成可运行的本地应用组装。
+`tauri:build` 通过 `beforeBuildCommand` 运行 `scripts/build-sidecar.cjs`，得到经过校验的 Lotus Next 资源和锁定下载的完整 Bamboo 执行文件。即使同级有 Bamboo 源码，生产默认也保持 `release`。Tauri 将启动页、资源和可执行文件一起打包。单独 `cargo build` 仍允许 CI 使用无功能占位文件检查外壳编译，但它不构成可运行的本地应用组装。
 
 ### 构建或预览前端
 

@@ -11,7 +11,7 @@ env:
   LOTUS_SOURCE: package
   LOTUS_PACKAGE_NAME: "@bigduu/lotus-next"
   LOTUS_VERSION: "2026.10.15"
-  BAMBOO_REF: "dbafb74522794012fc8f0a61e761817b3913989a"
+  BAMBOO_SIDECAR_SOURCE: release
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PROGRESS: "false"
@@ -139,13 +139,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Checkout pinned Bamboo source for the real sidecar
-        uses: actions/checkout@v6
-        with:
-          repository: bigduu/Bamboo-agent
-          ref: ${{ env.BAMBOO_REF }}
-          path: bamboo-src
-
       - name: Install dependencies (Ubuntu only)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
@@ -165,16 +158,27 @@ jobs:
       - name: Verify docs boundary
         run: node scripts/verify-boundaries.cjs docs-boundary
 
-      - name: Install Rust stable
-        id: rust_build
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Prepare crates.io build (strip patch, resolve bamboo-agent)
-        # Plain CI has no release version, so the placeholder bamboo-agent
-        # requirement is rewritten to "*" (latest published). See
-        # scripts/prepare-crates-io-build.cjs.
+      - name: Require the accepted published Bamboo contract
         shell: bash
-        run: node scripts/prepare-crates-io-build.cjs
+        run: |
+          if [ "${LOTUS_PACKAGE_NAME}" != "@bigduu/lotus-next" ]; then
+            echo "::error::Full Bamboo binary reuse retains the locked Lotus Next Tauri resources and --static-dir. Legacy frontend rollback requires an explicit local source build."
+            exit 1
+          fi
+          node scripts/bamboo-sidecar.cjs check-lock
+
+      - name: Cache exact published Bamboo assets
+        uses: actions/cache@v5
+        with:
+          path: src-tauri/.bamboo-sidecar-cache
+          key: bodhi-bamboo-assets-v1-${{ matrix.target }}-${{ hashFiles('scripts/bamboo-sidecar-lock.json') }}
+
+      - name: Download and verify the accepted platform sidecar
+        shell: bash
+        run: node scripts/bamboo-sidecar.cjs install "${{ matrix.target }}"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Add Rust target
         shell: bash
@@ -183,9 +187,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: |
-            . -> target
-            ./bamboo-src -> target
+          workspaces: ". -> target"
           shared-key: "bodhi-ci-${{ matrix.target }}"
           cache-on-failure: true
 
@@ -210,26 +212,12 @@ jobs:
           npm run web:build
           node scripts/lotus-dist.cjs verify-staged
 
-      # Cache only compiler-validated target files for this exact source/target.
-      # Cargo still runs before each bundle and all original smoke gates remain.
-      - name: Restore exact Mac sidecar compilation
-        if: runner.os == 'macOS'
-        id: sidecar_cache
-        continue-on-error: true
-        uses: actions/cache/restore@v5
-        with:
-          path: |
-            bamboo-src/target/release
-            bamboo-src/target/${{ matrix.target }}/release
-          key: bodhi-sidecar-v2-${{ matrix.target }}-${{ steps.rust_build.outputs.cachekey }}-${{ env.BAMBOO_REF }}-${{ env.LOTUS_PACKAGE_NAME }}-${{ hashFiles('bamboo-src/Cargo.lock', 'scripts/build-sidecar.cjs', 'scripts/frontend-package-lock.json') }}
-
       - name: Build Tauri app
         id: tauri_build
         uses: tauri-apps/tauri-action@v0.5.10
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BAMBOO_SIDECAR_SOURCE: local
-          BAMBOO_LOCAL_PATH: ${{ github.workspace }}/bamboo-src
+          BAMBOO_SIDECAR_SOURCE: release
           BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
           # CI bundles aren't distributed, so sign the macOS app ad-hoc instead of
           # requiring the "Zenith Nova Code Signing" cert (which isn't in the CI
@@ -238,16 +226,6 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         with:
           args: ${{ matrix.args }} --verbose
-
-      - name: Save exact Mac sidecar compilation
-        if: always() && runner.os == 'macOS' && steps.sidecar_cache.outputs.cache-primary-key != '' && steps.sidecar_cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v5
-        with:
-          path: |
-            bamboo-src/target/release
-            bamboo-src/target/${{ matrix.target }}/release
-          key: ${{ steps.sidecar_cache.outputs.cache-primary-key }}
 
       - name: Diagnose failed Mac DMG assembly
         if: failure() && runner.os == 'macOS' && steps.tauri_build.conclusion == 'failure'
@@ -263,7 +241,7 @@ jobs:
           node <<'NODE' > "$RUNNER_TEMP/dmg-failure-source.json"
           const { execFileSync } = require('node:child_process');
           const git = args => execFileSync('git', args, {encoding:'utf8'}).trim();
-          console.log(JSON.stringify({sourceSha:process.env.BODHI_DIAGNOSTIC_SOURCE,checkoutSha:git(['rev-parse','HEAD']),bambooSha:git(['-C','bamboo-src','rev-parse','HEAD']),target:process.env.BODHI_DIAGNOSTIC_TARGET,acceptance:false},null,2));
+          console.log(JSON.stringify({sourceSha:process.env.BODHI_DIAGNOSTIC_SOURCE,checkoutSha:git(['rev-parse','HEAD']),bambooRelease:require('./scripts/bamboo-sidecar.cjs').installedRelease(process.cwd(),process.env.BODHI_DIAGNOSTIC_TARGET),target:process.env.BODHI_DIAGNOSTIC_TARGET,acceptance:false},null,2));
           NODE
           bundle="target/$BODHI_DIAGNOSTIC_TARGET/release/bundle"
           if [ -d "$bundle/macos" ] && [ -d "$bundle/dmg" ]; then
