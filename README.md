@@ -28,8 +28,8 @@ Next interface.
 
 | Platform | How |
 |---|---|
-| macOS (recommended) | `brew tap bigduu/tap && brew trust bigduu/tap && brew install --cask bigduu/tap/bodhi` |
-| macOS (manual) | Apple Silicon or Intel `.dmg` from [Releases](https://github.com/bigduu/Bodhi-AI/releases/latest); not notarized yet, so run the [self-sign script](./scripts/self-sign-macos-app.sh) or use Homebrew |
+| macOS Apple Silicon (recommended) | `brew tap bigduu/tap && brew trust bigduu/tap && brew install --cask bigduu/tap/bodhi` |
+| macOS (manual) | Apple Silicon `.dmg` from [Releases](https://github.com/bigduu/Bodhi-AI/releases/latest); not notarized yet, so run the [self-sign script](./scripts/self-sign-macos-app.sh) or use Homebrew |
 | Windows x64 | `-setup.exe` (unsigned; SmartScreen may warn) |
 | Linux x64 | `.AppImage`, `.deb` or `.rpm` (needs a graphical session and WebKitGTK runtime) |
 
@@ -39,7 +39,7 @@ small sample project before asking for file changes. A model provider is still
 required: local execution does not mean the model runs locally or that requests
 never leave your machine.
 
-The table reflects [app-v2026.9.20](https://github.com/bigduu/Bodhi-AI/releases/tag/app-v2026.9.20), the latest public release on 2026-10-04. It is an artifact inventory, not a claim that every OS was tested in this documentation refresh. For source builds, follow the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
+This release supports Apple Silicon macOS, Windows x64 and Linux x64; Intel macOS packaging is excluded. Platform support does not substitute for each release's source-bound asset and native acceptance evidence. For source builds, follow the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ### Homebrew details
 
@@ -49,7 +49,7 @@ brew trust bigduu/tap
 brew install --cask bigduu/tap/bodhi
 ```
 
-`brew trust` explicitly trusts this third-party tap, including future packages from it, so Homebrew can load the cask's formula dependencies. The [Bodhi cask](https://github.com/bigduu/homebrew-tap) selects the Apple Silicon or Intel DMG and installs the **Jiandu** and **Nova** command-line tools. Bodhi already bundles its Bamboo engine. Installing Jiandu and Nova does not configure an MCP host; Nova also needs macOS permissions for computer control.
+`brew trust` explicitly trusts this third-party tap, including future packages from it, so Homebrew can load the cask's formula dependencies. The [Bodhi cask](https://github.com/bigduu/homebrew-tap) installs the Apple Silicon DMG; Intel Macs are not supported by this cask. It installs the **Jiandu** and **Nova** command-line tools. Bodhi already bundles its Bamboo engine. Installing Jiandu and Nova does not configure an MCP host; Nova also needs macOS permissions for computer control.
 
 **Current macOS signing:** the published DMG is ad-hoc signed and is not Developer ID notarized. During Homebrew installation, the cask automatically removes quarantine from the installed app, re-signs it locally with an ad-hoc signature while preserving the hardened runtime, and verifies the signature. No manual self-sign step is needed for this installation path. This does not provide Developer ID trust or notarization, and macOS privacy permissions may need to be granted again after upgrades. Direct DMG installations can use [the self-sign script](./scripts/self-sign-macos-app.sh); formal signing is tracked in [Bodhi #75](https://github.com/bigduu/Bodhi-AI/issues/75).
 
@@ -82,7 +82,7 @@ The following table records the historical documentation audit on 2026-10-03. Cu
 | Zenith-pinned Bodhi source | `6d85036` | Lotus Next `2026.9.22` in the package lock |
 | Upstream `main` observed | `d0e40e8` | Contains changes after the Zenith pin |
 
-A newer npm frontend does not update an already released desktop installer. Source manifests use `0.0.0` intentionally; Bodhi's own workflow supplies the explicit app version and retains four-platform acceptance. See [independent publishing and recovery](docs/releasing.md), and the historical [evidence and limits](docs/readme-audit.md). Features on other branches are not advertised as released here.
+A newer npm frontend does not update an already released desktop installer. Source manifests use `0.0.0` intentionally; Bodhi's own workflow supplies the explicit app version and retains acceptance for Apple Silicon macOS, Linux x64 and Windows x64. See [independent publishing and recovery](docs/releasing.md), and the historical [evidence and limits](docs/readme-audit.md). Features on other branches are not advertised as released here.
 
 ## Develop from source
 

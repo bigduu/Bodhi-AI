@@ -6,9 +6,10 @@ const assert = require("node:assert/strict");
 const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
-const { readLock, TARGETS } = require("./bamboo-sidecar.cjs");
+const { readLock } = require("./bamboo-sidecar.cjs");
 const { readArtifactLock } = require("./lotus-next-artifact.cjs");
 
+const NATIVE_TARGETS = Object.freeze(["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]);
 const REPOSITORY = "bigduu/Bodhi-AI";
 const ROOT = path.resolve(__dirname, "..");
 const WORKFLOW = ".github/workflows/release.yml";
@@ -100,7 +101,7 @@ function verifyBuild(run, jobs, ctx, recovery = false) {
   assert.equal(run.display_title, `Bodhi v${ctx.version} @ ${ctx.source}`, "Original run must bind the requested version and source");
   assert.equal(run.status, recovery ? "completed" : "in_progress");
   assert.equal(run.conclusion, recovery ? "failure" : null, "Recovery requires a failed finalizer, not a failed native build");
-  assert.equal(jobs.length, 6, "Require preflight, all four native targets and one finalizer");
+  assert.equal(jobs.length, NATIVE_TARGETS.length + 2, "Require preflight, all three supported native targets and one finalizer");
   function jobNamed(name, conclusion) {
     const matches = jobs.filter((job) => job.name === name);
     assert.equal(matches.length, 1, `Missing or ambiguous job: ${name}`);
@@ -119,7 +120,7 @@ function verifyBuild(run, jobs, ctx, recovery = false) {
     }
   }
   passed(jobNamed("Validate independent release", "success"), ["Validate source, locked inputs and unused version"]);
-  for (const target of TARGETS) passed(jobNamed(`Build Bodhi (${target})`, "success"), NATIVE_GATES);
+  for (const target of NATIVE_TARGETS) passed(jobNamed(`Build Bodhi (${target})`, "success"), NATIVE_GATES);
   const finalizer = jobNamed("Publish fully verified release", recovery ? "failure" : null);
   if (recovery) {
     passed(finalizer, FINALIZER_GATES);
@@ -138,8 +139,8 @@ function readBuild(ctx, request = api, recovery = false) {
 
 function expectedNames(version) {
   return [`Bodhi.AI-${version}-1.x86_64.rpm`, `Bodhi.AI_${version}_aarch64.dmg`, `Bodhi.AI_${version}_amd64.AppImage`,
-    `Bodhi.AI_${version}_amd64.deb`, `Bodhi.AI_${version}_x64-setup.exe`, `Bodhi.AI_${version}_x64.dmg`,
-    "Bodhi.AI_aarch64.app.tar.gz", "Bodhi.AI_x64.app.tar.gz"].sort();
+    `Bodhi.AI_${version}_amd64.deb`, `Bodhi.AI_${version}_x64-setup.exe`,
+    "Bodhi.AI_aarch64.app.tar.gz"].sort();
 }
 
 function verifyRelease(release, ctx, releaseId, published = false) {
@@ -149,8 +150,8 @@ function verifyRelease(release, ctx, releaseId, published = false) {
   assert.equal(release.prerelease, false);
   assert.equal(release.tag_name, published ? ctx.finalTag : ctx.draftTag);
   assert.equal(release.target_commitish, ctx.source, "Release must bind the exact Bodhi source");
-  assert.deepEqual(release.assets.map((asset) => asset.name).sort(), expectedNames(ctx.version), "All eight original platform assets are required");
-  assert.equal(new Set(release.assets.map((asset) => asset.id)).size, 8);
+  assert.deepEqual(release.assets.map((asset) => asset.name).sort(), expectedNames(ctx.version), "All six original supported-platform assets are required");
+  assert.equal(new Set(release.assets.map((asset) => asset.id)).size, expectedNames(ctx.version).length);
   const prefixes = new Set();
   for (const asset of release.assets) {
     positiveId(asset.id, "asset ID");
@@ -175,7 +176,7 @@ function verifyEvidence(evidence, ctx) {
   for (const key of ["repository", "version", "source", "runId", "attempt", "draftTag"]) assert.equal(evidence[key], ctx[key], `Original evidence differs: ${key}`);
   positiveId(evidence.releaseId, "release ID");
   assert.deepEqual(evidence.assets.map((asset) => asset.name).sort(), expectedNames(ctx.version));
-  assert.equal(new Set(evidence.assets.map((asset) => asset.id)).size, 8);
+  assert.equal(new Set(evidence.assets.map((asset) => asset.id)).size, expectedNames(ctx.version).length);
 }
 
 function snapshot(ctx, request = api) {
@@ -280,7 +281,7 @@ function main() {
   console.log(`Verified original Bodhi release ${published.id}: ${published.html_url}`);
 }
 
-module.exports = { REPOSITORY, NATIVE_GATES, FINALIZER_GATES, context, requireSource, api, requireUnused,
+module.exports = { REPOSITORY, NATIVE_TARGETS, NATIVE_GATES, FINALIZER_GATES, context, requireSource, api, requireUnused,
   verifyBuild, verifyRelease, verifyEvidence, assetIdentity, snapshot, publish, recoveryArtifact };
 if (require.main === module) {
   try { main(); } catch (error) { console.error(`Bodhi release: ${error.message}`); process.exitCode = 1; }

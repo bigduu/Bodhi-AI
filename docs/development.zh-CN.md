@@ -47,7 +47,7 @@
 
 ### Lotus Next 如何进入打包应用
 
-Bodhi 在本地开发时读取同级 `../lotus-next`，在 package 组装时读取 `@bigduu/lotus-next`。本地生产构建执行 Lotus Next 自身的 build 与 package-content 校验，再验证生产首页、asset-manifest 引用和所有文件哈希。package 组装还会在替换任何生成输出前，对照 `scripts/frontend-package-lock.json` 校验规范化 universal manifest、干净源码提交、完整文件清单、逐文件大小与 SHA-256、组合摘要和 manifest 哈希。当前锁定 `@bigduu/lotus-next@2026.10.15`，源码为 `58920d5b58b98847ef10f70e60b8f8c23afb9df4`。
+Bodhi 在本地开发时读取同级 `../lotus-next`，在 package 组装时读取 `@bigduu/lotus-next`。本地生产构建执行 Lotus Next 自身的 build 与 package-content 校验，再验证生产首页、asset-manifest 引用和所有文件哈希。package 组装还会在替换任何生成输出前，对照 `scripts/frontend-package-lock.json` 校验规范化 universal manifest、干净源码提交、完整文件清单、逐文件大小与 SHA-256、组合摘要和 manifest 哈希。当前锁定 `@bigduu/lotus-next@2026.10.19`，源码为 `4eaec0e7b14243e453878d9ff82ec1efee49e012`。
 
 `.bodhi-frontend/receipt.json` 记录包名、版本、源码提交、dirty 标记、适用时的发布产物摘要、逐文件 SHA-256 和确定性的整体哈希。构建或装配期间身份变化会在替换已有生成输出前中止。本地有改动的检出仍可使用并明确标记 dirty；发布包必须来自干净源码且与提交锁完全一致。
 
@@ -85,7 +85,7 @@ CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-n
 
 已提交的锁记录了通过验收的官方发布。每次更新都必须先下载并核验真实发布版本、源码 SHA、清单和平台资产，再用独立提交接受新身份。`node scripts/bamboo-sidecar.cjs check-lock` 会拒绝不完整的身份。合成 fixture 测试不代表正式资产可用或原生运行验收。可执行 `node scripts/bamboo-sidecar.cjs install <target>` 预下载，或 `node scripts/bamboo-sidecar.cjs verify <target>` 检查；两者都不调用 Cargo。最终应用仍必须通过已有的 sidecar 和浏览器 smoke 门禁。
 
-Bodhi 在本仓库中负责[独立发布与原始 attempt 恢复](releasing.md)，不再依赖 Zenith 发布编排。发布入口只接受明确的 Bodhi 版本与完整源码 SHA，保留四个平台的真实装配、actor 与 browser 门禁；恢复只复用原始运行的证据和资产，不重新构建。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
+Bodhi 在本仓库中负责[独立发布与原始 attempt 恢复](releasing.md)，不再依赖 Zenith 发布编排。发布入口只接受明确的 Bodhi 版本与完整源码 SHA，保留 Apple Silicon macOS、Linux x64、Windows x64 三个平台的真实装配、actor 与 browser 门禁；本次不包含 Intel macOS 安装包，上游四目标 Bamboo 下载合同不变；恢复只复用原始运行的证据和资产，不重新构建。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
 
 ---
 

@@ -7,7 +7,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { execFileSync, spawnSync } = require("node:child_process");
 const finalizer = require("./release-finalizer.cjs");
-const { TARGETS } = require("./bamboo-sidecar.cjs");
+const { NATIVE_TARGETS } = finalizer;
 const env = { GITHUB_REPOSITORY: "bigduu/Bodhi-AI", RELEASE_VERSION: "2026.10.17", EXPECTED_SOURCE_SHA: "a".repeat(40),
   GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "1" };
 const ctx = finalizer.context(env);
@@ -19,13 +19,13 @@ function fixture(recovery = false) {
   const job = (name, names, conclusion = "success") => ({ name, head_sha: ctx.source, run_attempt: ctx.attempt,
     status: conclusion === null ? "in_progress" : "completed", conclusion, steps: names.map((name) => ({ name, conclusion: "success" })) });
   const jobs = [job("Validate independent release", ["Validate source, locked inputs and unused version"]),
-    ...TARGETS.map((target) => job(`Build Bodhi (${target})`, finalizer.NATIVE_GATES)),
+    ...NATIVE_TARGETS.map((target) => job(`Build Bodhi (${target})`, finalizer.NATIVE_GATES)),
     job("Publish fully verified release", finalizer.FINALIZER_GATES, recovery ? "failure" : null)];
   if (recovery) jobs.at(-1).steps.push({ name: "Publish the completed draft", conclusion: "failure" });
   const version = ctx.version;
   const names = [`Bodhi.AI-${version}-1.x86_64.rpm`, `Bodhi.AI_${version}_aarch64.dmg`, `Bodhi.AI_${version}_amd64.AppImage`,
-    `Bodhi.AI_${version}_amd64.deb`, `Bodhi.AI_${version}_x64-setup.exe`, `Bodhi.AI_${version}_x64.dmg`,
-    "Bodhi.AI_aarch64.app.tar.gz", "Bodhi.AI_x64.app.tar.gz"];
+    `Bodhi.AI_${version}_amd64.deb`, `Bodhi.AI_${version}_x64-setup.exe`,
+    "Bodhi.AI_aarch64.app.tar.gz"];
   const draft = { id: 99, url: `https://api.github.com/repos/${ctx.repository}/releases/99`, draft: true,
     prerelease: false, tag_name: ctx.draftTag, target_commitish: ctx.source,
     assets: names.map((name, index) => ({ id: index + 1, name, state: "uploaded", size: 2e6,
@@ -106,7 +106,7 @@ test("original native build evidence is sufficient for snapshot and finalizer-on
   const receipt = finalizer.snapshot(ctx, mockApi(normal));
   assert.equal(receipt.releaseId, 99);
   assert.equal(receipt.attempt, 1);
-  assert.equal(receipt.assets.length, 8);
+  assert.equal(receipt.assets.length, 6);
   const recovery = fixture(true);
   assert.equal(finalizer.recoveryArtifact(ctx, mockApi(recovery)), 123);
 });
@@ -137,18 +137,21 @@ for (const [name, mutate] of [
   ["wrong workflow", f => { f.run.path = ".github/workflows/ci.yml"; }],
   ["another repository", f => { f.run.repository.full_name = "bigduu/Zenith"; }],
   ["missing ARM platform", f => { f.jobs.splice(1, 1); }],
+  ["missing Linux platform", f => { f.jobs.splice(2, 1); }],
+  ["missing Windows platform", f => { f.jobs.splice(3, 1); }],
+  ["unexpected Intel platform", f => { f.jobs.splice(1, 0, { ...structuredClone(f.jobs[1]), name: "Build Bodhi (x86_64-apple-darwin)" }); }],
   ["duplicate platform", f => { f.jobs[2].name = f.jobs[1].name; }],
   ["failed native platform", f => { f.jobs[3].conclusion = "failure"; }],
   ["wrong native job attempt", f => { f.jobs[3].run_attempt = 2; }],
   ["skipped actor gate", f => { f.jobs[1].steps.find(s => s.name === "Smoke native bundled sidecar actor transport").conclusion = "skipped"; }],
   ["missing browser gate", f => { f.jobs[2].steps = f.jobs[2].steps.filter(s => s.name !== "Smoke bundled browser host"); }],
-  ["duplicate assembly gate", f => { f.jobs[4].steps.push(f.jobs[4].steps.find(s => s.name === "Verify exact frontend and real target sidecar")); }],
+  ["duplicate assembly gate", f => { f.jobs[3].steps.push(f.jobs[3].steps.find(s => s.name === "Verify exact frontend and real target sidecar")); }],
   ["missing preflight", f => { f.jobs[0].steps = []; }],
   ["incomplete original run", f => { f.run.status = "in_progress"; }],
   ["successful original run", f => { f.run.conclusion = "success"; }],
-  ["failed source finalizer gate", f => { f.jobs[5].steps[0].conclusion = "failure"; }],
-  ["failed evidence upload", f => { f.jobs[5].steps[2].conclusion = "failure"; }],
-  ["failed other finalizer step", f => { f.jobs[5].steps.push({ name: "Resolve identity", conclusion: "failure" }); }],
+  ["failed source finalizer gate", f => { f.jobs.at(-1).steps[0].conclusion = "failure"; }],
+  ["failed evidence upload", f => { f.jobs.at(-1).steps[2].conclusion = "failure"; }],
+  ["failed other finalizer step", f => { f.jobs.at(-1).steps.push({ name: "Resolve identity", conclusion: "failure" }); }],
 ]) test(`recovery refuses ${name}`, () => {
   const f = fixture(true); mutate(f);
   assert.throws(() => finalizer.recoveryArtifact(ctx, mockApi(f)));
@@ -159,9 +162,10 @@ for (const [name, mutate] of [
   ["wrong attempt draft", f => { f.draft.tag_name = ctx.draftTag.replace(/-1$/, "-2"); }],
   ["wrong source draft", f => { f.draft.target_commitish = "c".repeat(40); }],
   ["prerelease draft", f => { f.draft.prerelease = true; }],
-  ["missing Intel DMG", f => { f.draft.assets = f.draft.assets.filter(a => !a.name.endsWith("_x64.dmg")); }],
+  ["missing ARM DMG", f => { f.draft.assets = f.draft.assets.filter(a => !a.name.endsWith("_aarch64.dmg")); }],
   ["missing Windows installer", f => { f.draft.assets = f.draft.assets.filter(a => !a.name.endsWith(".exe")); }],
   ["unexpected asset", f => { f.draft.assets[0].name = "extra.rpm"; }],
+  ["unexpected Intel DMG", f => { f.draft.assets.push({ ...structuredClone(f.draft.assets[0]), id: 999, name: `Bodhi.AI_${ctx.version}_x64.dmg` }); }],
   ["duplicate asset ID", f => { f.draft.assets[1].id = f.draft.assets[0].id; }],
   ["invalid content digest", f => { f.draft.assets[0].digest = null; }],
   ["unfinished upload", f => { f.draft.assets[0].state = "new"; }],
@@ -329,4 +333,17 @@ test("workflows bind independent inputs, original evidence and unchanged native 
   for (const text of ["scripts/release-finalizer.cjs check-recovery", "scripts/release-finalizer.cjs recover",
     "artifact-ids: ${{ steps.original.outputs.artifact_id }}", "run-id: ${{ inputs.release_run_id }}", "ORIGINAL_RELEASE_ATTEMPT: ${{ inputs.release_attempt }}"]) assert.ok(recovery.includes(text));
   for (const body of [workflow, recovery]) assert.match(body, /group: bodhi-release-\$\{\{ inputs.bodhi_version \}\}\n  cancel-in-progress: false/);
+});
+
+// Bamboo publishes four reusable targets; this Bodhi release supports three.
+test("both native matrices match supported finalizer targets and exclude Intel packaging", () => {
+  assert.deepEqual(NATIVE_TARGETS, ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]);
+  assert.equal(require("./bamboo-sidecar.cjs").TARGETS.length, 4);
+  for (const name of ["ci.yml", "release.yml"]) {
+    const body = fs.readFileSync(path.join(__dirname, "../.github/workflows", name), "utf8");
+    const targets = [...body.matchAll(/^            target: "?([a-z0-9_-]+)"?$/gm)].map(match => match[1]);
+    assert.deepEqual(targets.sort(), [...NATIVE_TARGETS].sort());
+    assert.doesNotMatch(body, /macos-15-intel|x86_64-apple-darwin/);
+    for (const gate of ["Verify exact frontend and real target sidecar", "Smoke native bundled sidecar actor transport", "Smoke bundled browser host"]) assert.ok(body.includes(`- name: ${gate}`));
+  }
 });
