@@ -41,8 +41,34 @@ findings are repaired or that the upstream security audit passes. Reuse was
 explicitly accepted after disclosure. No security check, repository protection
 or certificate-verification rule is disabled. Asset integrity, architecture,
 version, native/static-dir compatibility and all existing Bodhi assembly gates
-remain required. The TLS repair continues separately without changing any
-published Bamboo 14 asset or tag.
+remain required. The later package delivers the TLS repair separately without
+changing any published Bamboo 14 asset or tag.
+
+## Second package using the published Bamboo 15 repairs
+
+The second package selects [Bamboo `2026.10.15`](https://github.com/bigduu/Bamboo-agent/releases/tag/v2026.10.15),
+source `d4e79947805957418b0ed18d4b05ac7bcbb1dc2d`, with manifest SHA-256
+`d4886964a66a483afd42294668fcfce965c2c5a3aa1f29e526fea7141bbbdd5c`.
+The Lotus Next `2026.10.19` lock remains unchanged. The upstream original F2,
+normal release/main promotion, main-push CI and four-platform executable
+publication all passed their respective source-bound gates.
+
+This runtime contains the accepted TLS dependency/default-trust repair, versioned
+Root/exact-owner/Ask handling, Child finalization, bounded connector recovery,
+Project/Sprint planning and RootActor/history-writer/retained-output repairs.
+Configuration sharing, unpublished summary changes and unfinished automation
+are excluded. It does not certify the user's deployed company Retry/source/endpoint
+case or compression efficiency.
+
+The real consumer verified all four published executable architectures,
+checksums/sizes and offline installs. The actual ARM executable passed exact
+CLI/HTTP version, health/API, index/asset/SPA and external-only `--static-dir`
+checks against the locked Lotus19 resources with isolated data and no provider
+credentials. Bodhi's normal three-platform assembly gates remain required for
+the new app package; earlier Bodhi18 results are not relabeled as this version's
+execution. The separate upstream Docker run failed in its cargo-chef path-patch
+layer; no Docker image is used by these native/Bodhi workflows, and that failure
+is not reported as repaired or passed.
 
 ## Acceptance and publication
 
