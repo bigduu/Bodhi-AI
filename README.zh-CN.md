@@ -22,8 +22,8 @@
 
 | 平台 | 方式 |
 |---|---|
-| macOS（推荐） | `brew tap bigduu/tap && brew trust bigduu/tap && brew install --cask bigduu/tap/bodhi` |
-| macOS（手动） | 从 [Releases](https://github.com/bigduu/Bodhi-AI/releases/latest) 下载 Apple Silicon 或 Intel 的 `.dmg`；暂未公证，需要运行[自签脚本](./scripts/self-sign-macos-app.sh)，或者改用 Homebrew |
+| macOS Apple Silicon（推荐） | `brew tap bigduu/tap && brew trust bigduu/tap && brew install --cask bigduu/tap/bodhi` |
+| macOS（手动） | 从 [Releases](https://github.com/bigduu/Bodhi-AI/releases/latest) 下载 Apple Silicon 的 `.dmg`；暂未公证，需要运行[自签脚本](./scripts/self-sign-macos-app.sh)，或者改用 Homebrew |
 | Windows x64 | `-setup.exe`（未签名，SmartScreen 可能会提示） |
 | Linux x64 | `.AppImage`、`.deb` 或 `.rpm`（需要图形会话和 WebKitGTK 运行时） |
 
@@ -31,7 +31,7 @@
 再提一个小改进。”* 建议先用一个小的示例项目，再让它修改文件。AI 回复仍需要模型服务商：本地执行
 不代表模型在本地运行，也不代表请求不会离开你的电脑。
 
-表格对应截至 2026-10-04 的最新公开版本 [app-v2026.9.20](https://github.com/bigduu/Bodhi-AI/releases/tag/app-v2026.9.20)，表示有这些发布产物，不表示本次文档更新实测了所有平台。源码构建请遵循 [Tauri 平台前置要求](https://v2.tauri.app/start/prerequisites/)。
+当前发布支持 Apple Silicon macOS、Windows x64 与 Linux x64，不包含 Intel macOS 安装包。支持范围不能代替每次发布绑定精确源码的产物与原生验收证据。源码构建仍需遵循 [Tauri 平台前置条件](https://v2.tauri.app/start/prerequisites/)。
 
 ### Homebrew 安装说明
 
@@ -41,7 +41,7 @@ brew trust bigduu/tap
 brew install --cask bigduu/tap/bodhi
 ```
 
-`brew trust` 会明确信任这个第三方 tap，包括它未来发布的包，使 Homebrew 能加载 Bodhi cask 依赖的 formula。[Bodhi cask](https://github.com/bigduu/homebrew-tap) 会按 Apple Silicon 或 Intel 机型选择 DMG，并安装 **Jiandu** 和 **Nova** 命令行工具；Bodhi 已内置 Bamboo 引擎。安装 Jiandu 和 Nova 不会自动配置 MCP host；Nova 的电脑控制功能还需要相应的 macOS 权限。
+`brew trust` 会明确信任这个第三方 tap，包括它未来发布的包，使 Homebrew 能加载 Bodhi cask 依赖的 formula。[Bodhi cask](https://github.com/bigduu/homebrew-tap) 仅提供 Apple Silicon DMG，不支持 Intel Mac，并安装 **Jiandu** 和 **Nova** 命令行工具；Bodhi 已内置 Bamboo 引擎。安装 Jiandu 和 Nova 不会自动配置 MCP host；Nova 的电脑控制功能还需要相应的 macOS 权限。
 
 **当前 macOS 签名方式：** 已发布的 DMG 使用 ad-hoc 签名，尚未取得 Developer ID 公证。通过 Homebrew 安装时，cask 会自动移除已安装应用的 quarantine 标记，在保留 hardened runtime 的同时进行本机 ad-hoc 自签，并校验签名；此安装方式无需手动执行自签脚本。这不等于获得 Developer ID 信任或公证，升级后也可能需要重新授予 macOS 隐私权限。直接安装 DMG 时可使用[自签脚本](./scripts/self-sign-macos-app.sh)；正式签名与公证进度见 [Bodhi #75](https://github.com/bigduu/Bodhi-AI/issues/75)。
 
@@ -74,7 +74,7 @@ Bodhi 打包启动页、经过校验的前端资源和独立的 `bamboo serve` s
 | Zenith 固定的 Bodhi 源码 | `6d85036` | 包锁选择 Lotus Next `2026.9.22` |
 | 观察到的上游 `main` | `d0e40e8` | 包含 Zenith pin 之后的改动 |
 
-新的 npm 前端不会自动更新已经发布的桌面安装包。源码 manifest 中的 `0.0.0` 是有意保留的占位值，应用版本由 Bodhi 自己的发布流程明确注入，并保留四平台验收。详见[独立发布与恢复](docs/releasing.md)和历史[核对证据与限制](docs/readme-audit.md)。其他分支上的功能不在这里宣传为已发布能力。
+新的 npm 前端不会自动更新已经发布的桌面安装包。源码 manifest 中的 `0.0.0` 是有意保留的占位值，应用版本由 Bodhi 自己的发布流程明确注入，并保留 Apple Silicon macOS、Linux x64 和 Windows x64 三平台验收。详见[独立发布与恢复](docs/releasing.md)和历史[核对证据与限制](docs/readme-audit.md)。其他分支上的功能不在这里宣传为已发布能力。
 
 ## 从源码开发
 

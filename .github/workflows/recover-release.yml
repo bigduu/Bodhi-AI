@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       release_run_id:
-        description: "Original release.yml run whose four native builds passed"
+        description: "Original release.yml run whose three supported native builds passed"
         required: true
         type: string
       release_attempt:

@@ -85,7 +85,7 @@ CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-n
 
 已提交的锁记录了通过验收的官方发布。每次更新都必须先下载并核验真实发布版本、源码 SHA、清单和平台资产，再用独立提交接受新身份。`node scripts/bamboo-sidecar.cjs check-lock` 会拒绝不完整的身份。合成 fixture 测试不代表正式资产可用或原生运行验收。可执行 `node scripts/bamboo-sidecar.cjs install <target>` 预下载，或 `node scripts/bamboo-sidecar.cjs verify <target>` 检查；两者都不调用 Cargo。最终应用仍必须通过已有的 sidecar 和浏览器 smoke 门禁。
 
-Bodhi 在本仓库中负责[独立发布与原始 attempt 恢复](releasing.md)，不再依赖 Zenith 发布编排。发布入口只接受明确的 Bodhi 版本与完整源码 SHA，保留四个平台的真实装配、actor 与 browser 门禁；恢复只复用原始运行的证据和资产，不重新构建。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
+Bodhi 在本仓库中负责[独立发布与原始 attempt 恢复](releasing.md)，不再依赖 Zenith 发布编排。发布入口只接受明确的 Bodhi 版本与完整源码 SHA，保留 Apple Silicon macOS、Linux x64、Windows x64 三个平台的真实装配、actor 与 browser 门禁；本次不包含 Intel macOS 安装包，上游四目标 Bamboo 下载合同不变；恢复只复用原始运行的证据和资产，不重新构建。Bodhi 装配通过本身不等于发布 Lotus Next，也不代表完成更广泛的根/子 agent Jiandu 持久化验收。历史或手动 Bamboo 检出的回滚 embed 输出若为符号链接会关闭式失败，原有链接及目标保持不变。
 
 ---
 
