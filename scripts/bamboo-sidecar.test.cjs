@@ -277,7 +277,7 @@ for (const name of ["ci.yml", "release.yml"]) test(`${name} consumes assets befo
   assert.doesNotMatch(body, /bamboo-src|repository:\s*bigduu\/Bamboo-agent|BAMBOO_SIDECAR_SOURCE:\s*local|sidecar_cache/);
   assert.doesNotMatch(body, /cargo update/);
   const targets = [...body.matchAll(/^\s+target:\s*["']?([a-z0-9_-]+)["']?\s*$/gm)].map((match) => match[1]).sort();
-  assert.deepEqual(targets, [...sidecar.TARGETS]);
+  assert.deepEqual(targets, [...require("./release-finalizer.cjs").NATIVE_TARGETS].sort());
   const preflight = body.indexOf("node scripts/bamboo-sidecar.cjs check-lock");
   const download = body.indexOf('node scripts/bamboo-sidecar.cjs install "${{ matrix.target }}"');
   const rust = body.indexOf("- name: Install Rust stable");

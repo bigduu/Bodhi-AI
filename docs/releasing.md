@@ -31,14 +31,13 @@ Preflight checks the exact clean source, version, both committed locks and absen
 
 | Runner | Target |
 |---|---|
-| `macos-15-intel` | `x86_64-apple-darwin` |
 | `macos-latest` | `aarch64-apple-darwin` |
 | `ubuntu-22.04` | `x86_64-unknown-linux-gnu` |
 | `windows-latest` | `x86_64-pc-windows-msvc` |
 
-Jobs upload only to `bodhi-draft-v<VERSION>-<RUN_ID>-<ATTEMPT>`. After all four pass, finalization independently reads that exact attempt's successful gates and verifies one matching source-bound draft with all eight original assets: two DMGs, two macOS app archives, AppImage, deb, rpm and Windows NSIS installer. It checks unique asset IDs, uploaded state, minimum sizes, SHA-256 digests and GitHub download URLs.
+Jobs upload only to `bodhi-draft-v<VERSION>-<RUN_ID>-<ATTEMPT>`. After all three supported platforms pass, finalization independently reads that exact attempt's successful gates and verifies one matching source-bound draft with all six original assets: the ARM64 DMG and macOS app archive, AppImage, deb, rpm and Windows NSIS installer. It checks unique asset IDs, uploaded state, minimum sizes, SHA-256 digests and GitHub download URLs.
 
-Before publishing, it uploads `bodhi-release-evidence-<RUN_ID>-<ATTEMPT>` containing the exact version, source, run, attempt, release ID and every asset ID/size/digest. It promotes only that original release ID to `app-v<VERSION>` and confirms its unchanged assets and source tag. A different existing release or tag is refused. A lost PATCH response triggers readback of that exact publication, never a blind write retry. Signing and the four native acceptance gates are unchanged.
+Before publishing, it uploads `bodhi-release-evidence-<RUN_ID>-<ATTEMPT>` containing the exact version, source, run, attempt, release ID and every asset ID/size/digest. It promotes only that original release ID to `app-v<VERSION>` and confirms its unchanged assets and source tag. A different existing release or tag is refused. A lost PATCH response triggers readback of that exact publication, never a blind write retry. Signing and the native acceptance gates for ARM64 macOS, Linux x86_64 and Windows x64 are unchanged. Intel macOS is excluded from this release and its Homebrew cask remains ARM-only. The Bamboo upstream manifest still validates all four available sidecar targets; its target contract is separate from the Bodhi packaging matrix.
 
 Watch the Bodhi run directly and verify the final release:
 
@@ -49,7 +48,7 @@ gh release view app-v<VERSION> -R bigduu/Bodhi-AI
 
 ## Recover finalization without rebuilding
 
-Use [recover-release.yml](../.github/workflows/recover-release.yml) only when all four original native jobs passed and **Publish the completed draft** was the only failing finalizer step, after the original evidence artifact was uploaded. Use the original run, attempt, SHA and version:
+Use [recover-release.yml](../.github/workflows/recover-release.yml) only when all three original native jobs passed and **Publish the completed draft** was the only failing finalizer step, after the original evidence artifact was uploaded. Use the original run, attempt, SHA and version:
 
 ```sh
 gh workflow run recover-release.yml -R bigduu/Bodhi-AI --ref main \
@@ -57,6 +56,6 @@ gh workflow run recover-release.yml -R bigduu/Bodhi-AI --ref main \
   -f expected_source_sha=<ORIGINAL_FULL_SHA> -f bodhi_version=<ORIGINAL_VERSION>
 ```
 
-Recovery verifies the original run/version/source and all four gates, rejects missing, expired or duplicate evidence, and downloads the single immutable artifact by ID from that original run and attempt. It checks the evidence against the unchanged original draft/assets before publishing. If GitHub already published that identical release after a lost response, recovery confirms it without another PATCH. Conflicting IDs, source, assets or final tag stop recovery. The artifact is retained for 90 days, subject to repository retention limits.
+Recovery verifies the original run/version/source and all three gates, rejects missing, expired or duplicate evidence, and downloads the single immutable artifact by ID from that original run and attempt. It checks the evidence against the unchanged original draft/assets before publishing. If GitHub already published that identical release after a lost response, recovery confirms it without another PATCH. Conflicting IDs, source, assets or final tag stop recovery. The artifact is retained for 90 days, subject to repository retention limits.
 
-Do not use a later failed-jobs rerun or a new build's assets to repair finalization. If native builds failed, or finalization never retained evidence, fix the cause and dispatch a fresh full four-platform run with the still-unused version. This recovery contract applies to runs produced by this workflow format; historical train runs without its version-bound run identity and original evidence artifact cannot be recovered through it.
+Do not use a later failed-jobs rerun or a new build's assets to repair finalization. If native builds failed, or finalization never retained evidence, fix the cause and dispatch a fresh full three-platform run with the still-unused version. This recovery contract applies to runs produced by this workflow format; historical train runs without its version-bound run identity and original evidence artifact cannot be recovered through it.

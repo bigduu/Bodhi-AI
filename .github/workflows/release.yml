@@ -62,13 +62,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: "macos-15-intel"
-            target: "x86_64-apple-darwin"
-            args: "--target x86_64-apple-darwin"
-            artifact_name: "macos-x64"
-            artifact_paths: |
-              target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-              target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
           - platform: "macos-latest"
             target: "aarch64-apple-darwin"
             args: "--target aarch64-apple-darwin"

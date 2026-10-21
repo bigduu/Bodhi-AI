@@ -122,13 +122,6 @@ jobs:
             artifact_paths: |
               target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
               target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
-          - platform: macos-15-intel
-            target: x86_64-apple-darwin
-            args: "--target x86_64-apple-darwin"
-            artifact_name: "macos-x64"
-            artifact_paths: |
-              target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-              target/x86_64-apple-darwin/release/bundle/macos/*.app.tar.gz
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: "--target x86_64-pc-windows-msvc --bundles nsis"

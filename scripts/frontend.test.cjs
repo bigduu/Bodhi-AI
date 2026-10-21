@@ -595,7 +595,7 @@ test("workflow artifact uploads follow the root Cargo workspace target", () => {
     path.join(__dirname, "../.github/workflows/release.yml"),
     "utf8",
   );
-  for (const target of ["x86_64-apple-darwin", "aarch64-apple-darwin"]) {
+  for (const target of ["aarch64-apple-darwin"]) {
     assert.match(
       release,
       new RegExp(`target/${target}/release/bundle/dmg/\\*\\.dmg`),
