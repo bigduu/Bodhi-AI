@@ -25,6 +25,25 @@ gh workflow run release.yml -R bigduu/Bodhi-AI --ref main \
 
 If `main` moves before dispatch, the source check stops before native builds. Select the current reviewed commit and dispatch again. A Bodhi-owned immutable branch/tag ref may also be selected with its matching full SHA; no Zenith tag is needed. Release and recovery workflows share a per-version concurrency group and do not cancel an active assembly.
 
+## First package using the published Bamboo 14 baseline
+
+The first package in this two-release delivery consumes the unchanged, published
+Bamboo `2026.10.14`, source `0120712b2a509b955f45f3bf903bdb1f1a5f8186`,
+and Lotus Next `2026.10.19` from the committed locks. It does not contain later
+Bamboo work in #2092, #2107, #2108 or #2061, or the unfinished company Retry and
+text-summary changes. Those belong to a separate later package.
+
+This upstream Bamboo version has known TLS findings
+[RUSTSEC-2026-0381](https://rustsec.org/advisories/RUSTSEC-2026-0381.html) and
+[RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382.html).
+Its exact source lock fails the current audit; this package does not claim those
+findings are repaired or that the upstream security audit passes. Reuse was
+explicitly accepted after disclosure. No security check, repository protection
+or certificate-verification rule is disabled. Asset integrity, architecture,
+version, native/static-dir compatibility and all existing Bodhi assembly gates
+remain required. The TLS repair continues separately without changing any
+published Bamboo 14 asset or tag.
+
 ## Acceptance and publication
 
 Preflight checks the exact clean source, version, both committed locks and absence of the final release/tag before starting the matrix. Every native job then downloads the accepted Bamboo executable and browser host, installs the locked Lotus Next package, builds the Tauri shell and passes the existing assembly, bundled actor/HTTP/static-dir and bundled browser gates:
