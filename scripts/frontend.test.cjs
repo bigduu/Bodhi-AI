@@ -602,3 +602,11 @@ test("workflow artifact uploads follow the root Cargo workspace target", () => {
     );
   }
 });
+
+// The installed package must match the committed universal artifact lock.
+test("CI installs the committed frontend identity before exact staging", () => {
+  const lock = JSON.parse(fs.readFileSync(path.join(__dirname, "frontend-package-lock.json"), "utf8"));
+  const ci = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
+  assert.equal(ci.match(/^  LOTUS_VERSION: "([^"]+)"$/m)?.[1], lock.packageVersion);
+  assert.equal(ci.match(/^  LOTUS_PACKAGE_NAME: "([^"]+)"$/m)?.[1], lock.packageName);
+});
