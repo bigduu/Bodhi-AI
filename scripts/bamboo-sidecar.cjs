@@ -10,10 +10,14 @@ const { isDeepStrictEqual } = require("node:util");
 const ROOT = path.resolve(__dirname, "..");
 const REPOSITORY = "bigduu/Bamboo-agent";
 const MANIFEST = "bamboo-sidecars-v1.json";
+const MANIFEST_V2 = "bamboo-sidecars-v2.json";
 const HOST_ASSET = "bamboo-browser-host-v1.tar.gz";
 const TARGETS = Object.freeze([
   "aarch64-apple-darwin", "x86_64-apple-darwin",
   "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu",
+]);
+const V2_TARGETS = Object.freeze([
+  "aarch64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu",
 ]);
 const HOST_FILES = Object.freeze([
   "browser-runtime/host.cjs", "browser-runtime/package-lock.json", "browser-runtime/package.json",
@@ -31,6 +35,14 @@ const exists = (file) => {
 
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+// The lock container and installed receipt retain their v1 encoding. The exact
+// pinned asset name selects the independently versioned producer contract.
+function manifestContract(lock) {
+  if (lock.manifestAssetName === MANIFEST) return { schemaVersion: 1, assetName: MANIFEST, targets: TARGETS };
+  requireCondition(lock.manifestAssetName === MANIFEST_V2, "Invalid Bamboo sidecar manifest contract.");
+  return { schemaVersion: 2, assetName: MANIFEST_V2, targets: V2_TARGETS };
 }
 
 function readRegular(file, maxBytes) {
@@ -63,12 +75,15 @@ function safeDirectory(root, directory) {
 
 function validateLock(lock, env = {}) {
   requireCondition(lock?.schemaVersion === 1 && lock.repository === REPOSITORY &&
-    lock.manifestAssetName === MANIFEST && lock.buildMode === "embedded" && lock.embeddedFrontend === true,
+    [MANIFEST, MANIFEST_V2].includes(lock.manifestAssetName) && lock.buildMode === "embedded" && lock.embeddedFrontend === true,
   "Invalid Bamboo sidecar lock identity or build mode.");
   requireCondition(typeof lock.version === "string" && /^[1-9][0-9]*\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$/.test(lock.version) &&
     /^[0-9a-f]{40}$/.test(lock.sourceRevision || "") && SHA256.test(lock.manifestSha256 || ""),
   "Bamboo sidecar release is not accepted: pin the real published version, full sourceRevision and manifestSha256 in scripts/bamboo-sidecar-lock.json. No source-build fallback is permitted.");
-  requireCondition(isDeepStrictEqual(lock.targets, TARGETS), "Bamboo sidecar lock must cover the four desktop release targets in sorted order.");
+  const contract = manifestContract(lock);
+  requireCondition(isDeepStrictEqual(lock.targets, contract.targets), contract.schemaVersion === 1 ?
+    "Bamboo sidecar lock must cover the four desktop release targets in sorted order." :
+    "Bamboo sidecar lock must cover exactly the three v2 desktop release targets in sorted order.");
   for (const [key, value] of [["BAMBOO_RELEASE_VERSION", lock.version], ["BAMBOO_RELEASE_SOURCE_REVISION", lock.sourceRevision]]) {
     if (env[key]) requireCondition(env[key] === value, `${key} differs from the accepted Bamboo sidecar lock.`);
   }
@@ -86,12 +101,15 @@ function requireDigest(value, maxBytes, label, minimum = 1) {
 }
 
 function validateManifest(bytes, lock, target) {
-  requireCondition(TARGETS.includes(target), `Unsupported Bamboo sidecar target: ${target}`);
+  validateLock(lock);
+  const contract = manifestContract(lock);
+  requireCondition(contract.targets.includes(target), `Unsupported Bamboo sidecar target: ${target}`);
   requireCondition(bytes.length <= MAX_MANIFEST && sha256(bytes) === lock.manifestSha256, "Bamboo sidecar manifest SHA-256 mismatch.");
   const manifest = JSON.parse(bytes);
-  requireCondition(manifest.schemaVersion === 1 && manifest.version === lock.version && manifest.sourceRevision === lock.sourceRevision,
+  requireCondition(manifest.schemaVersion === contract.schemaVersion, "Bamboo sidecar manifest schema differs from the locked asset contract.");
+  requireCondition(manifest.version === lock.version && manifest.sourceRevision === lock.sourceRevision,
     "Bamboo sidecar manifest version or sourceRevision differs from the lock.");
-  requireCondition(Array.isArray(manifest.artifacts) && isDeepStrictEqual(manifest.artifacts.map((item) => item.target), TARGETS),
+  requireCondition(Array.isArray(manifest.artifacts) && isDeepStrictEqual(manifest.artifacts.map((item) => item.target), contract.targets),
     "Bamboo sidecar manifest has missing, duplicate, unexpected or unsorted targets.");
   for (const item of manifest.artifacts) {
     requireCondition(item.buildMode === "embedded" && item.embeddedFrontend === true && item.format === "raw" &&
@@ -111,7 +129,9 @@ function validateManifest(bytes, lock, target) {
 }
 
 function releaseUrl(lock, assetName) {
-  requireCondition(assetName === MANIFEST || assetName === HOST_ASSET || TARGETS.some((target) => binaryName(target) === assetName), "Unexpected Bamboo release asset name.");
+  validateLock(lock);
+  const contract = manifestContract(lock);
+  requireCondition(assetName === contract.assetName || assetName === HOST_ASSET || contract.targets.some((target) => binaryName(target) === assetName), "Unexpected Bamboo release asset name.");
   return `https://github.com/${REPOSITORY}/releases/download/v${lock.version}/${assetName}`;
 }
 
@@ -202,16 +222,17 @@ function verifyHost(root, directory, host) {
 
 function releaseContext(root, target, env) {
   const lock = readLock(root, env);
-  requireCondition(TARGETS.includes(target), `Unsupported Bamboo sidecar target: ${target}`);
+  const contract = manifestContract(lock);
+  requireCondition(contract.targets.includes(target), `Unsupported Bamboo sidecar target: ${target}`);
   if (env.TAURI_ENV_TARGET_TRIPLE) requireCondition(target === env.TAURI_ENV_TARGET_TRIPLE, "BAMBOO_SIDECAR_TARGET must match the Tauri build target.");
   const cache = path.join(root, "src-tauri", ".bamboo-sidecar-cache", lock.manifestSha256);
-  return { lock, cache };
+  return { lock, cache, contract };
 }
 
 function installedRelease(root = ROOT, target, env = process.env) {
-  const { lock, cache } = releaseContext(root, target, env);
+  const { lock, cache, contract } = releaseContext(root, target, env);
   safeDirectory(root, cache);
-  const manifestBytes = readRegular(path.join(cache, MANIFEST), MAX_MANIFEST);
+  const manifestBytes = readRegular(path.join(cache, contract.assetName), MAX_MANIFEST);
   const { manifest, artifact } = validateManifest(manifestBytes, lock, target);
   const hostDirectory = verifyHost(root, path.join(cache, "browser-host"), manifest.browserHost);
   const binary = path.join(root, "src-tauri/binaries", binaryName(target));
@@ -229,9 +250,9 @@ function installedRelease(root = ROOT, target, env = process.env) {
 
 function installRelease(root = ROOT, target, options = {}) {
   const env = options.env || process.env;
-  const { lock, cache } = releaseContext(root, target, env);
+  const { lock, cache, contract } = releaseContext(root, target, env);
   const settings = { ...options, offline: options.offline ?? env.BAMBOO_SIDECAR_OFFLINE === "1" };
-  const manifestBytes = cachedAsset(root, cache, lock, MANIFEST, lock.manifestSha256, null, settings);
+  const manifestBytes = cachedAsset(root, cache, lock, contract.assetName, lock.manifestSha256, null, settings);
   const { manifest, artifact } = validateManifest(manifestBytes, lock, target);
   const binaryBytes = cachedAsset(root, cache, lock, artifact.assetName, artifact.sha256, artifact.sizeBytes, settings);
   const hostArchive = cachedAsset(root, cache, lock, manifest.browserHost.assetName, manifest.browserHost.sha256, manifest.browserHost.sizeBytes, settings);

@@ -100,6 +100,61 @@ for (const target of v2Targets) test(`installs the locked v2 ${target} without c
     download() { assert.fail("offline v2 must not download"); } }).sha256, result.sha256);
 });
 
+test("locked manifest name, schema and complete target set cannot be mixed between v1 and v2", (t) => {
+  for (const manifestVersion of [1, 2]) {
+    const f = fixture(t, { manifestVersion });
+    assert.equal(sidecar.validateLock(f.lock), f.lock);
+    const otherName = manifestVersion === 1 ? "bamboo-sidecars-v2.json" : "bamboo-sidecars-v1.json";
+    assert.throws(() => sidecar.validateLock({ ...f.lock, manifestAssetName: otherName }), /targets/);
+    for (const name of ["bamboo-sidecars-v3.json", "bamboo-sidecars-v02.json", "../bamboo-sidecars-v2.json"]) {
+      assert.throws(() => sidecar.validateLock({ ...f.lock, manifestAssetName: name }), /Invalid/);
+    }
+    assert.throws(() => sidecar.validateLock({ ...f.lock, schemaVersion: 2 }), /Invalid/);
+    assert.throws(() => sidecar.releaseUrl(f.lock, otherName), /Unexpected/);
+    f.manifest.schemaVersion = manifestVersion === 1 ? 2 : 1; f.refresh();
+    assert.throws(() => f.install(), /manifest schema/);
+    assert.equal(f.requests.length, 1);
+    assert.equal(fs.existsSync(path.join(f.root, "src-tauri/binaries")), false);
+  }
+});
+
+test("v2 rejects Intel before cache creation or requests, and rejects missing, duplicate and unsorted manifest targets", (t) => {
+  const f = fixture(t, { manifestVersion: 2 });
+  assert.throws(() => sidecar.installRelease(f.root, "x86_64-apple-darwin", { env: {}, download: f.download }), /Unsupported/);
+  assert.throws(() => sidecar.releaseUrl(f.lock, sidecar.binaryName("x86_64-apple-darwin")), /Unexpected/);
+  assert.equal(f.requests.length, 0);
+  assert.equal(fs.existsSync(path.join(f.root, "src-tauri")), false);
+  const changes = [
+    ...v2Targets.map(target => manifest => { manifest.artifacts = manifest.artifacts.filter(item => item.target !== target); }),
+    manifest => { manifest.artifacts.push({ ...manifest.artifacts[0], target: "x86_64-apple-darwin" }); },
+    manifest => { manifest.artifacts[1] = manifest.artifacts[0]; },
+    manifest => { manifest.artifacts.reverse(); },
+  ];
+  for (const change of changes) {
+    const candidate = fixture(t, { manifestVersion: 2 }); change(candidate.manifest); candidate.refresh();
+    assert.throws(() => candidate.install(), /targets/);
+    assert.equal(candidate.requests.length, 1);
+    assert.equal(fs.existsSync(path.join(candidate.root, "src-tauri/binaries")), false);
+  }
+});
+
+test("v2 offline verification cannot substitute the legacy cache filename", (t) => {
+  const f = fixture(t, { manifestVersion: 2 }), accepted = f.install();
+  fs.renameSync(f.cache("bamboo-sidecars-v2.json"), f.cache("bamboo-sidecars-v1.json"));
+  assert.throws(() => f.install({ offline: true, download() { assert.fail("offline download"); } }), /Offline Bamboo cache is missing/);
+  assert.equal(f.requests.length, 3);
+  assert.deepEqual(fs.readFileSync(accepted.binary), binary(f.target));
+});
+
+test("v2 pinned manifest cannot mask the wrong native architecture", (t) => {
+  const f = fixture(t, { manifestVersion: 2 }), accepted = f.install();
+  const wrong = binary("x86_64-apple-darwin");
+  f.files.set(sidecar.binaryName(f.target), wrong);
+  f.manifest.artifacts[0].sha256 = sidecar.sha256(wrong); f.refresh();
+  assert.throws(() => f.install(), /CPU architecture/);
+  assert.deepEqual(fs.readFileSync(accepted.binary), binary(f.target));
+});
+
 for (const target of sidecar.TARGETS) test(`installs verified raw ${target} and exact browser host without a source checkout`, (t) => {
   const f = fixture(t);
   const result = sidecar.installRelease(f.root, target, { env: {}, download: f.download });

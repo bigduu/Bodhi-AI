@@ -75,7 +75,7 @@ CI/release 默认设置 `LOTUS_SOURCE=package LOTUS_PACKAGE_NAME=@bigduu/lotus-n
 
 ### 锁定 Bamboo 发布资产
 
-`scripts/bamboo-sidecar-lock.json` 固定仓库、版本、完整源码 SHA、正常 embedded 前端模式、四个目标和 `bamboo-sidecars-v1.json` 的 SHA-256。该清单再固定各执行文件的目标、模式、文件名、哈希、大小，以及 browser host 归档及其三个文件的完整清单。所有文件只从 `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/` 下载，不支持 `latest`、任意下载地址或源码构建回退。release 从已提交的 Bamboo 和 Lotus Next 锁读取精确身份，不提供 dispatch 覆盖值。
+`scripts/bamboo-sidecar-lock.json` 固定仓库、版本、完整源码 SHA、正常 embedded 前端模式、精确目标集合、清单文件名和 SHA-256。锁文件容器仍采用 schema 1：`bamboo-sidecars-v1.json` 对应冻结的四平台清单 schema 1，`bamboo-sidecars-v2.json` 对应 ARM macOS、Windows x64、Linux x64 三平台清单 schema 2。文件名、schema 和目标集合必须配对；v2 不接受 Intel，也不回退读取 v1 缓存文件名。所选清单再固定各执行文件的目标、模式、文件名、哈希、大小，以及未改变的 browser host 归档和三个文件的完整清单。所有文件只从 `https://github.com/bigduu/Bamboo-agent/releases/download/v<version>/` 下载，不支持 `latest`、任意下载地址或源码构建回退。release 从已提交的 Bamboo 和 Lotus Next 锁读取精确身份，不提供 dispatch 覆盖值。官方锁仅在新生产者真实发布字节和原生兼容性完成核验后更新。
 
 平台资产为 `bamboo-aarch64-apple-darwin`、`bamboo-x86_64-apple-darwin`、`bamboo-x86_64-unknown-linux-gnu` 和 `bamboo-x86_64-pc-windows-msvc.exe`。`bamboo-browser-host-v1.tar.gz` 仅含三个普通 USTAR 文件：`browser-runtime/host.cjs`、`browser-runtime/package.json`、`browser-runtime/package-lock.json`。链接、目录穿越、多余或重复成员、特殊条目、损坏 header 和超限解压都会在写入前被拒绝。
 

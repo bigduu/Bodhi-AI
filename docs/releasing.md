@@ -10,7 +10,7 @@ The committed identities are authoritative:
 
 | Lock | What remains fixed |
 |---|---|
-| `scripts/bamboo-sidecar-lock.json` | Published Bamboo version, full source SHA, embedded mode, all four native targets and manifest SHA-256; the manifest binds executable and browser host assets |
+| `scripts/bamboo-sidecar-lock.json` | Published Bamboo version, full source SHA, embedded mode, exact native target contract and manifest name/SHA-256; v1 has four targets and v2 has ARM macOS, Windows x64 and Linux x64. The manifest binds executable and browser host assets |
 | `scripts/frontend-package-lock.json` | Exact `@bigduu/lotus-next` version, clean source SHA, universal manifest and resource digests |
 
 There are no upstream version overrides, `latest` resolution, source-build fallback, Bamboo crates.io check or Zenith source tag requirement. Accept a new upstream identity in a separate reviewed lock update after verifying its real published bytes and native compatibility.
@@ -82,7 +82,7 @@ Preflight checks the exact clean source, version, both committed locks and absen
 
 Jobs upload only to `bodhi-draft-v<VERSION>-<RUN_ID>-<ATTEMPT>`. After all three supported platforms pass, finalization independently reads that exact attempt's successful gates and verifies one matching source-bound draft with all six original assets: the ARM64 DMG and macOS app archive, AppImage, deb, rpm and Windows NSIS installer. It checks unique asset IDs, uploaded state, minimum sizes, SHA-256 digests and GitHub download URLs.
 
-Before publishing, it uploads `bodhi-release-evidence-<RUN_ID>-<ATTEMPT>` containing the exact version, source, run, attempt, release ID and every asset ID/size/digest. It promotes only that original release ID to `app-v<VERSION>` and confirms its unchanged assets and source tag. A different existing release or tag is refused. A lost PATCH response triggers readback of that exact publication, never a blind write retry. Signing and the native acceptance gates for ARM64 macOS, Linux x86_64 and Windows x64 are unchanged. Intel macOS is excluded from this release and its Homebrew cask remains ARM-only. The Bamboo upstream manifest still validates all four available sidecar targets; its target contract is separate from the Bodhi packaging matrix.
+Before publishing, it uploads `bodhi-release-evidence-<RUN_ID>-<ATTEMPT>` containing the exact version, source, run, attempt, release ID and every asset ID/size/digest. It promotes only that original release ID to `app-v<VERSION>` and confirms its unchanged assets and source tag. A different existing release or tag is refused. A lost PATCH response triggers readback of that exact publication, never a blind write retry. Signing and the native acceptance gates for ARM64 macOS, Linux x86_64 and Windows x64 are unchanged. Intel macOS is excluded from this release and its Homebrew cask remains ARM-only. The locked Bamboo manifest is validated against its exact producer contract: historical v1 requires all four targets; v2 requires exactly ARM macOS, Linux x64 and Windows x64. This selection does not change Bodhi's existing three-platform packaging matrix or reopen any historical release.
 
 Watch the Bodhi run directly and verify the final release:
 
