@@ -128,11 +128,13 @@ async function runDevLifecycle(options = {}) {
   }
 }
 
-module.exports = { runDevLifecycle, describeListener };
-if (require.main === module) {
+function runDevCommand(args = process.argv.slice(2)) {
   const interrupts = installInterruptHandlers(process, "Bodhi development");
-  runDevLifecycle({ args: process.argv.slice(2), signal: interrupts.signal }).catch((error) => {
+  return runDevLifecycle({ args, signal: interrupts.signal }).catch((error) => {
     console.error(`Bodhi development failed: ${error.message}`);
     process.exitCode = error.signal === "SIGINT" ? 130 : error.signal === "SIGTERM" ? 143 : 1;
   }).finally(() => interrupts.dispose());
 }
+
+module.exports = { runDevLifecycle, runDevCommand, describeListener };
+if (require.main === module) runDevCommand();

@@ -17,8 +17,8 @@
     "verify:assembly": "node scripts/verify-assembly.cjs",
     "build:sidecar": "node scripts/build-sidecar.cjs",
     "build:sidecar:dev": "node scripts/build-sidecar.cjs --debug",
-    "tauri": "tauri",
-    "tauri:dev": "node scripts/tauri-dev.cjs",
+    "tauri": "node scripts/tauri.cjs",
+    "tauri:dev": "node scripts/tauri.cjs dev",
     "tauri:build": "tauri build"
   },
   "devDependencies": {

@@ -86,6 +86,7 @@ Bodhi 打包启动页、经过校验的前端资源和独立的 `bamboo serve` s
 cd bodhi
 npm ci
 npm run tauri:dev
+# 等价入口：npm run tauri dev
 ```
 
 默认读取同级 `../lotus-next` 和 `../bamboo`。开发命令会构建真实的 API-only Bamboo sidecar 和前端资源，并非仅预览 UI。Lotus HMR 使用端口 `1420`，Bamboo 默认使用 `9562`。
