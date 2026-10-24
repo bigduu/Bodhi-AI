@@ -32,10 +32,13 @@ function main() {
 
   const frontend = resolveSource();
   const ownsFrontend = frontend.packageName === NEXT_PACKAGE;
+  const frontendBuildMode = (process.env.BAMBOO_FRONTEND_BUILD_MODE || "").trim().toLowerCase();
   const buildEnv = {
     ...process.env,
+    // Bodhi supplies its verified frontend through --static-dir. Local Bamboo
+    // builds need no embedded copy; current Bamboo rejects the old auto mode.
     BAMBOO_FRONTEND_BUILD_MODE: frontend.packageName === LEGACY_PACKAGE
-      ? "embedded" : (process.env.BAMBOO_FRONTEND_BUILD_MODE || "auto"),
+      ? "embedded" : (frontendBuildMode || "api-only"),
     BODHI_BROWSER_RUNTIME_RELEASE_BUILD: isDebug ? "0" : "1",
   };
   const run = (command, args, cwd) => execFileSync(command, args, { cwd, env: buildEnv, stdio: "inherit" });
@@ -60,6 +63,9 @@ function main() {
   if (SOURCE === "release") buildEnv.BAMBOO_FRONTEND_BUILD_MODE = "embedded";
   if (!["release", "local", "none"].includes(SOURCE)) {
     throw new Error(`Unknown BAMBOO_SIDECAR_SOURCE: ${SOURCE}. Use release, local or none.`);
+  }
+  if (!["embedded", "api-only"].includes(buildEnv.BAMBOO_FRONTEND_BUILD_MODE)) {
+    throw new Error(`Invalid BAMBOO_FRONTEND_BUILD_MODE=${JSON.stringify(process.env.BAMBOO_FRONTEND_BUILD_MODE)}. Use embedded or api-only.`);
   }
   // Target triple for the sidecar. Defaults to the build host, but CI cross-builds
   // (e.g. an x86_64 app on an arm64 macOS runner) set BAMBOO_SIDECAR_TARGET to the

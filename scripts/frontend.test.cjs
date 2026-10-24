@@ -368,7 +368,7 @@ function assemble(f, mode, producerLayout = "crate", overrides = {}) {
       packageName: frontend.LEGACY_PACKAGE,
     };
   }
-  const env = { BAMBOO_SIDECAR_SOURCE: "local", BAMBOO_LOCAL_PATH: bamboo, BAMBOO_FRONTEND_BUILD_MODE: producerLayout === "root" ? "api-only" : "auto", ...overrides };
+  const env = { BAMBOO_SIDECAR_SOURCE: "local", BAMBOO_LOCAL_PATH: bamboo, ...overrides };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "build-sidecar.cjs"), "utf8"), {
     __dirname: path.join(f.root, "scripts"),
     console: { log() {}, warn() {}, error() {} },
@@ -409,25 +409,25 @@ function assemble(f, mode, producerLayout = "crate", overrides = {}) {
   return { calls, bamboo };
 }
 
-test("local sidecar uses Bamboo's normal build mode without rebuilding the legacy frontend", (t) => {
+test("local sidecar defaults to api-only because Bodhi owns the frontend resources", (t) => {
   const f = fixture(t);
   const { calls, bamboo } = assemble(f, "local");
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0].args, ["scripts/browser-runtime.cjs", "x86_64-unknown-linux-gnu"]);
   assert.equal(calls[1].command, "cargo");
-  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "auto");
+  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "api-only");
   assert.ok(calls[1].args.includes("--locked"));
   assert.equal(fs.existsSync(path.join(bamboo, "frontend_package")), false);
   assert.equal(fs.readFileSync(path.join(f.root, "src-tauri/binaries/bamboo-x86_64-unknown-linux-gnu"), "utf8"), "fixture binary");
 });
 
-test("explicit local package assembly uses the normal Bamboo build mode and owned Tauri resources", (t) => {
+test("explicit local package assembly uses api-only and owned Tauri resources", (t) => {
   const f = fixture(t);
   const { calls, bamboo } = assemble(f, "next-package");
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0].args, ["scripts/browser-runtime.cjs", "x86_64-unknown-linux-gnu"]);
   assert.equal(calls[1].command, "cargo");
-  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "auto");
+  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "api-only");
   assert.equal(fs.existsSync(path.join(bamboo, "frontend_package")), false);
   assert.equal(
     fs.existsSync(path.join(f.root, ".bodhi-frontend/dist/index.html")),
@@ -435,10 +435,27 @@ test("explicit local package assembly uses the normal Bamboo build mode and owne
   );
 });
 
+test("local sidecar honors supported explicit frontend modes", (t) => {
+  for (const mode of ["api-only", "embedded", " API-ONLY "]) {
+    const { calls } = assemble(fixture(t), "local", "crate", { BAMBOO_FRONTEND_BUILD_MODE: mode });
+    assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, mode.trim().toLowerCase());
+  }
+});
+
+test("unsupported local frontend mode fails before frontend staging, browser preparation or Cargo", (t) => {
+  for (const mode of ["auto", "unknown"]) {
+    const f = fixture(t);
+    assert.throws(() => assemble(f, "local", "crate", { BAMBOO_FRONTEND_BUILD_MODE: mode }), /Invalid BAMBOO_FRONTEND_BUILD_MODE.*Use embedded or api-only/);
+    assert.equal(fs.existsSync(path.join(f.root, ".bodhi-frontend")), false);
+    assert.equal(fs.existsSync(path.join(f.root, "src-tauri/browser-runtime")), false);
+    assert.equal(fs.existsSync(path.join(f.temp, "bamboo/target")), false);
+  }
+});
+
 test("production defaults to the published full Bamboo binary even with a checkout available", (t) => {
   const f = fixture(t);
   const { calls } = assemble(f, "next-package", "crate", {
-    BAMBOO_SIDECAR_SOURCE: "", BAMBOO_SIDECAR_TARGET: "aarch64-apple-darwin",
+    BAMBOO_SIDECAR_SOURCE: "", BAMBOO_SIDECAR_TARGET: "aarch64-apple-darwin", BAMBOO_FRONTEND_BUILD_MODE: "auto",
   });
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[0].args, ["scripts/bamboo-sidecar.cjs", "install", "aarch64-apple-darwin"]);
@@ -465,6 +482,7 @@ test("a failed published asset install stops the hook before browser staging or 
 test("debug development keeps the local source default", (t) => {
   const { calls } = assemble(fixture(t), "local", "crate", { BAMBOO_SIDECAR_SOURCE: "", TAURI_ENV_DEBUG: "true" });
   assert.equal(calls[1].command, "cargo");
+  assert.equal(calls[1].env.BAMBOO_FRONTEND_BUILD_MODE, "api-only");
   assert.equal(calls[1].args.includes("--release"), false);
 });
 
@@ -484,7 +502,7 @@ test("Tauri hook target and debug profile control both sidecar and browser assem
 test("explicit legacy rollback accepts main/root and dev/crate producers", (t) => {
   for (const layout of ["root", "crate"]) {
     const f = fixture(t);
-    const { calls, bamboo } = assemble(f, "legacy-package", layout);
+    const { calls, bamboo } = assemble(f, "legacy-package", layout, { BAMBOO_FRONTEND_BUILD_MODE: layout === "root" ? "api-only" : "auto" });
     assert.deepEqual(calls[1].args, ["scripts/frontend-package.cjs"]);
     assert.equal(calls[2].command, "cargo");
     assert.equal(calls[2].env.BAMBOO_FRONTEND_BUILD_MODE, "embedded");

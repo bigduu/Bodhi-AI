@@ -51,7 +51,7 @@ Bodhi 在本地开发时读取同级 `../lotus-next`，在 package 组装时读�
 
 `.bodhi-frontend/receipt.json` 记录包名、版本、源码提交、dirty 标记、适用时的发布产物摘要、逐文件 SHA-256 和确定性的整体哈希。构建或装配期间身份变化会在替换已有生成输出前中止。本地有改动的检出仍可使用并明确标记 dirty；发布包必须来自干净源码且与提交锁完全一致。
 
-校验后的 dist 同时装配到 `.lotus-dist/`（便于检查）和 `.bodhi-frontend/dist/`（Tauri 资源）。仅后者以 `frontend/dist` 打包；`frontendDist` 仍是小型启动页。外壳在编译时固定校验记录，启动时核对包内记录及所有文件；缺失、损坏、多余文件或符号链接都会产生可见失败。应用把自己解析出的资源目录通过现有 `--static-dir` 参数交给 Bamboo，因此应用移离源码目录后仍可启动。Bodhi 直接复用标准完整 Bamboo 执行文件，包含其正常内嵌前端；发布清单必须准确声明 `buildMode=embedded` 和 `embeddedFrontend=true`。Bamboo 优先使用显式 `--static-dir`，因此 Bodhi 继续使用自己锁定的 Lotus Next 资源和现有界面。本地构建沿用 Bamboo 正常前端模式（默认 `auto`），不再要求专用 sidecar 变体。
+校验后的 dist 同时装配到 `.lotus-dist/`（便于检查）和 `.bodhi-frontend/dist/`（Tauri 资源）。仅后者以 `frontend/dist` 打包；`frontendDist` 仍是小型启动页。外壳在编译时固定校验记录，启动时核对包内记录及所有文件；缺失、损坏、多余文件或符号链接都会产生可见失败。应用把自己解析出的资源目录通过现有 `--static-dir` 参数交给 Bamboo，因此应用移离源码目录后仍可启动。Bodhi 直接复用标准完整 Bamboo 执行文件，包含其正常内嵌前端；发布清单必须准确声明 `buildMode=embedded` 和 `embeddedFrontend=true`。Bamboo 优先使用显式 `--static-dir`，因此 Bodhi 继续使用自己锁定的 Lotus Next 资源和现有界面。本地源码构建默认使用 `BAMBOO_FRONTEND_BUILD_MODE=api-only`，由 Bodhi 提供已校验的前端资源。显式设为 `embedded` 可包含 Bamboo 自身校验后的前端包；已移除的 `auto` 模式会在准备工作开始前被拒绝。
 
 Tauri 复制资源前，构建脚本先验证 Cargo 输出路径层级，再只替换生成的 `<Cargo profile>/frontend` 目录。这样连续 dev/build 不会保留上一次已经删除的哈希资源，避免正常重建被启动校验误判为损坏；其他构建资源和符号链接目标均保留。
 
