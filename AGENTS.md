@@ -33,6 +33,16 @@ native gates. Preserve those gates until the dependent feature-evidence and
 trusted-main-controller changes are reviewed and activated. Do not claim this
 feature CI change completes the release cutover or bypass existing gates.
 
+The staged `scripts/release-source.cjs` helper (#121 under tracker #119) validates frozen-dev source and
+controller identity without publishing. It is not connected to `release.yml`.
+Target output retention, publication schema v2, main promotion and bootstrap
+remain dependent work (#122 and guarded activation). An unconfirmed PR merge, including the observed #118
+metadata inconsistency, is a hard admission failure even when Git trees match.
+GitHub may copy a successful job into a later attempt without executing it
+again. Preserve its original physical job/attempt and logs, and record the latest
+logical result separately. Only identical complete job/step execution times can
+establish that reuse; a later failure or ambiguous attempt still blocks admission.
+
 ## Inputs and evidence
 
 - Consume the exact published Bamboo and Lotus identities in

@@ -64,6 +64,20 @@ is reviewed and activated. Moving those gates is not authorized by a successful
 feature job alone. The current publisher therefore still performs its historical
 assembly/E2E checks; this is a pending cutover, not the final release policy.
 
+`scripts/release-source.cjs` (#121 under tracker #119) is a staged, read-only admission helper. It keeps
+trusted controller `C`, accepted dev merge `S` and actual tested snapshot `M`
+distinct, and reads the upstream locks from an explicit clean `S` checkout.
+Its tests include the observed #118 open/merged-false state; matching Git merge
+parents and trees do not replace a confirmed PR receipt. The helper does not
+activate a publisher or authorize a release dispatch. Existing release/recovery
+workflows, schema-v1 evidence and runtime gates remain unchanged while target
+retention/reuse (#122) and the controller bootstrap are implemented separately.
+Successful jobs copied by GitHub into a later attempt keep their original
+physical job/attempt and source logs in the proof. The latest logical job is
+recorded separately and must pass; matching complete execution/step timestamps
+are required before recognizing a copy. Different executions, missing times,
+same-attempt ambiguity and later failures cannot be hidden as reuse.
+
 ## Prepare and dispatch
 
 Land source and lock updates through Bodhi's normal reviewed pull-request flow. Keep source manifest versions at `0.0.0`; the workflow stamps the requested app version only in temporary publishing checkouts. Use numeric `YYYY.M.N`, with month 1–12 and counter 1–65535, without leading zeros. The app version is independent of both upstream versions.
