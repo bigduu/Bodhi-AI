@@ -41,6 +41,11 @@ and its frozen v1 workflow fixtures; `recover-release.yml` selects v1 explicitly
 for historical runs, including the active #116 train. Do not reinterpret v1
 runtime gates or original artifact identities as v2 receipts.
 
+GitHub may copy a successful job into a later attempt without executing it
+again. Preserve its original physical job/attempt and logs, and record the latest
+logical result separately. Only identical complete job/step execution times can
+establish that reuse; a later failure or ambiguous attempt still blocks admission.
+
 ## Inputs and evidence
 
 - Consume the exact published Bamboo and Lotus identities in

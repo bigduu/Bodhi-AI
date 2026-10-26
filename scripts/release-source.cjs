@@ -86,6 +86,46 @@ function passed(job, gates) {
     assert.equal(steps[0].conclusion, "success", `Unsuccessful gate: ${gate}`);
   }
 }
+function executionOrigin(logical, matching) {
+  // GitHub can copy a successful job into a later attempt with a new ID while
+  // retaining every execution timestamp. Keep that logical status separate
+  // from the original execution that owns its logs and artifacts.
+  const attempts = new Set();
+  for (const job of matching) {
+    assert.equal(job.name, logical.name); assert.equal(job.run_id, logical.run_id);
+    assert.equal(job.head_sha, logical.head_sha);
+    assert.equal(job.run_attempt, id(job.run_attempt, "job attempt"));
+    assert.ok(!attempts.has(job.run_attempt), "Ambiguous job attempt");
+    attempts.add(job.run_attempt);
+  }
+  const present = matching.filter(job => job.id === logical.id);
+  assert.equal(present.length, 1, "Logical job is missing or ambiguous");
+  assert.deepEqual(present[0], logical);
+  function execution(job) {
+    if (job.status !== "completed" || job.conclusion !== "success") return null;
+    const start = Date.parse(job.started_at), end = Date.parse(job.completed_at);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || !job.steps?.length) return null;
+    const numbers = new Set(), steps = [];
+    for (const step of job.steps) {
+      if (!Number.isSafeInteger(step.number) || step.number <= 0 || numbers.has(step.number) ||
+          typeof step.name !== "string" || !step.name || step.status !== "completed" ||
+          !["success", "skipped", "neutral"].includes(step.conclusion)) return null;
+      numbers.add(step.number);
+      const skipped = step.conclusion === "skipped" && step.started_at === null && step.completed_at === null;
+      if (!skipped) {
+        const first = Date.parse(step.started_at), last = Date.parse(step.completed_at);
+        if (!Number.isFinite(first) || !Number.isFinite(last) || first < start || last > end || first > last) return null;
+      }
+      steps.push({ number: step.number, name: step.name, status: step.status, conclusion: step.conclusion,
+        started_at: step.started_at, completed_at: step.completed_at });
+    }
+    return JSON.stringify({ started_at: job.started_at, completed_at: job.completed_at, steps });
+  }
+  const key = execution(logical);
+  assert.notEqual(key, null, "Complete successful execution times are required");
+  return matching.filter(job => job.run_attempt <= logical.run_attempt && execution(job) === key)
+    .sort((a, b) => a.run_attempt - b.run_attempt)[0];
+}
 function devHead(branch) {
   const protection = branch?.protection?.required_status_checks;
   assert.equal(branch?.protected, true, "Dev must be protected");
@@ -151,14 +191,16 @@ function admitFeature({ source, pullRequest, runId, attempt }, request = api, re
     const last = Math.max(...matching.map((job) => job.run_attempt));
     const latest = matching.filter((job) => job.run_attempt === last);
     assert.equal(latest.length, 1, `Ambiguous selected job: ${name}`);
-    const job = latest[0]; passed(job, gates);
+    const logical = latest[0]; passed(logical, gates);
+    const job = executionOrigin(logical, matching); passed(job, gates);
     if (gates.includes(SOURCE_GATE)) {
       const observed = sourceFromLog(readLog(job.id));
       assert.equal(observed.tree, tree, "Actual tested tree differs from dev");
       if (snapshot) assert.equal(observed.snapshot, snapshot, "Selected jobs tested different snapshots");
       snapshot = observed.snapshot;
     }
-    selected.push({ id: id(job.id, "job ID"), name, attempt: job.run_attempt });
+    selected.push({ id: id(job.id, "job ID"), name, attempt: job.run_attempt,
+      logical: { id: id(logical.id, "logical job ID"), attempt: logical.run_attempt } });
   }
   const merge = request(`git/commits/${snapshot}`);
   assert.deepEqual(merge.parents.map((parent) => parent.sha), [base, head], "Actual snapshot parents differ");
@@ -187,5 +229,5 @@ function main() {
   fs.writeFileSync(output, JSON.stringify({ ...proof, controller, lockHashes: product.lockHashes,
     frontend: product.frontend }, null, 2) + "\n", { flag: "wx" });
 }
-module.exports = { FEATURE_WORKFLOW_BLOB, requireController, requireProduct, sourceFromLog, admitFeature };
+module.exports = { FEATURE_WORKFLOW_BLOB, requireController, requireProduct, sourceFromLog, executionOrigin, devHead, admitFeature };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi source: ${error.message}`); process.exitCode = 1; } }

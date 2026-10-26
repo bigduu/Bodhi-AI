@@ -84,6 +84,12 @@ promotion. Bootstrap, required-check activation and that promotion boundary are
 separate work. Main receives stable source and references to the immutable
 published record, without a new source JSON file or another build.
 
+Successful jobs copied by GitHub into a later attempt keep their original
+physical job/attempt and source logs in the proof. The latest logical job is
+recorded separately and must pass; matching complete execution/step timestamps
+are required before recognizing a copy. Different executions, missing times,
+same-attempt ambiguity and later failures cannot be hidden as reuse.
+
 ## Prepare and dispatch after activation
 
 Keep source manifests at `0.0.0`. Land fixes and lock updates through feature

@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const { test } = require("node:test");
-const { admitFeature, requireController, requireProduct, sourceFromLog, FEATURE_WORKFLOW_BLOB } = require("./release-source.cjs");
+const { admitFeature, requireController, requireProduct, sourceFromLog, executionOrigin, FEATURE_WORKFLOW_BLOB } = require("./release-source.cjs");
 const { NATIVE_TARGETS, REPOSITORY } = require("./release-finalizer.cjs");
 const S = "1".repeat(40), B = "2".repeat(40), F = "3".repeat(40), M = "4".repeat(40), T = "5".repeat(40), C = "6".repeat(40);
 const D = "7".repeat(40), D2 = "8".repeat(40);
@@ -21,8 +21,8 @@ function fixture() {
       head: { sha: F, repo: { full_name: REPOSITORY } } },
     run: { id: 42, repository: { full_name: REPOSITORY }, event: "pull_request", path: ".github/workflows/ci.yml", head_sha: F,
       run_attempt: 1, status: "completed", conclusion: "success", pull_requests: [{ number: 17, base: { ref: "dev", sha: B }, head: { sha: F } }] },
-    jobs: gates.map(([name, names], i) => ({ id: i + 100, name, run_id: 42, run_attempt: 1, head_sha: F, status: "completed", conclusion: "success",
-      steps: names.map(name => ({ name, status: "completed", conclusion: "success" })) })),
+    jobs: gates.map(([name, names], i) => timed({ id: i + 100, name, run_id: 42, run_attempt: 1, head_sha: F, status: "completed", conclusion: "success",
+      steps: names.map(name => ({ name, status: "completed", conclusion: "success" })) }, i * 60)),
     accepted: { parents: [{ sha: B }, { sha: F }], tree: { sha: T } },
     snapshot: { parents: [{ sha: B }, { sha: F }], tree: { sha: T } },
     branch: { protected: true, commit: { sha: D }, protection: { required_status_checks: { enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"],
@@ -57,6 +57,57 @@ test("same-run failed-job-only rerun retains earlier successful jobs and their a
   const proof = f.verify({ attempt: 2 });
   assert.equal(proof.jobs[1].id, 201); assert.equal(proof.jobs[1].attempt, 2);
   assert.equal(proof.jobs[2].attempt, 1);
+});
+function timed(job, shift = 0) {
+  const time = seconds => new Date(Date.UTC(2026, 9, 26, 18, 14, 55 + shift + seconds)).toISOString();
+  job.started_at = time(0); job.completed_at = time(job.steps.length * 2 + 2);
+  job.steps = job.steps.map((step, index) => ({ ...step, number: index + 1,
+    started_at: time(index * 2 + 1), completed_at: time(index * 2 + 2) }));
+  return job;
+}
+test("GitHub copied success keeps physical job/attempt and reads original logs, while recording its logical attempt", () => {
+  const f = fixture(); f.run.run_attempt = 2;
+  const original = timed(f.jobs[0]);
+  f.jobs.push({ ...structuredClone(original), id: 200, run_attempt: 2 });
+  const read = [];
+  const proof = admitFeature({ ...input, attempt: 2 }, f.request, job => { read.push(job); assert.notEqual(job, 200); return f.logs[job]; });
+  assert.deepEqual(proof.jobs[0], { id: 100, name: original.name, attempt: 1, logical: { id: 200, attempt: 2 } });
+  assert.ok(read.includes(100));
+});
+test("a third logical projection still preserves the earliest physical execution", () => {
+  const job = timed(fixture().jobs[0]), second = { ...structuredClone(job), id: 200, run_attempt: 2 };
+  const third = { ...structuredClone(job), id: 300, run_attempt: 3 };
+  assert.equal(executionOrigin(third, [third, second, job]).id, 100);
+});
+for (const [name, mutate] of [
+  ["different job execution", job => timed(job, 60)],
+  ["different step execution", job => { job.steps[0].completed_at = job.steps[0].started_at; }],
+  ["different step name", job => { job.steps[0].name += " changed"; }],
+  ["different step number", job => { job.steps[0].number = 99; }],
+]) test(`similarity with ${name} never reattributes execution to an older success`, () => {
+  const original = timed(fixture().jobs[0]);
+  const logical = { ...structuredClone(original), id: 200, run_attempt: 2 }; mutate(logical);
+  assert.equal(executionOrigin(logical, [original, logical]).id, 200);
+});
+for (const [name, mutate] of [
+  ["missing step times", job => { delete job.steps[0].completed_at; }],
+  ["invalid step times", job => { job.steps[0].completed_at = "invalid"; }],
+  ["step outside job", job => { job.steps[0].completed_at = "2026-10-27T18:14:55.000Z"; }],
+  ["incomplete step", job => { job.steps[0].status = "in_progress"; }],
+]) test(`unprovable ${name} cannot authorize an original execution`, () => {
+  const original = timed(fixture().jobs[0]);
+  const logical = { ...structuredClone(original), id: 200, run_attempt: 2 }; mutate(logical);
+  assert.throws(() => executionOrigin(logical, [original, logical]), /execution times/);
+});
+test("same-attempt aliases remain ambiguous rather than being deduplicated", () => {
+  const original = timed(fixture().jobs[0]);
+  assert.throws(() => executionOrigin(original, [original, { ...structuredClone(original), id: 200 }]), /Ambiguous/);
+});
+test("a later failed logical result cannot reuse an older physical success", () => {
+  const f = fixture(); f.run.run_attempt = 2;
+  const original = timed(f.jobs[0]);
+  f.jobs.push({ ...structuredClone(original), id: 200, run_attempt: 2, conclusion: "failure" });
+  assert.throws(() => f.verify({ attempt: 2 }), /Unsuccessful/);
 });
 for (const [name, change] of [
   ["unconfirmed PR despite an identical normal dev merge", f => { f.pr.merged = false; f.pr.state = "open"; }],
