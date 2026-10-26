@@ -82,8 +82,19 @@ function passed(job, gates) {
   for (const gate of gates) {
     const steps = job.steps.filter((step) => step.name === gate);
     assert.equal(steps.length, 1, `Missing or ambiguous gate: ${gate}`);
+    assert.equal(steps[0].status, "completed", `Incomplete gate: ${gate}`);
     assert.equal(steps[0].conclusion, "success", `Unsuccessful gate: ${gate}`);
   }
+}
+function devHead(branch) {
+  const protection = branch?.protection?.required_status_checks;
+  assert.equal(branch?.protected, true, "Dev must be protected");
+  assert.equal(protection?.enforcement_level, "everyone", "Dev administrators must follow admission");
+  for (const context of ["Unit Tests", "E2E Tests"]) {
+    assert.ok(protection.contexts.includes(context), `Dev must require ${context}`);
+    assert.ok(protection.checks.some((check) => check.context === context && check.app_id === 15368), `Require the GitHub Actions ${context} check`);
+  }
+  return sha(branch.commit?.sha, "observed dev head");
 }
 function admitFeature({ source, pullRequest, runId, attempt }, request = api, readLog = jobLog) {
   sha(source, "accepted dev source");
@@ -101,19 +112,13 @@ function admitFeature({ source, pullRequest, runId, attempt }, request = api, re
   const accepted = request(`git/commits/${source}`);
   assert.deepEqual(accepted.parents.map((parent) => parent.sha), [base, head], "Require the normal accepted merge parents");
   const tree = sha(accepted.tree.sha, "accepted tree");
-  const ancestry = request(`compare/${source}...dev`);
+  const observedDev = devHead(request("branches/dev"));
+  const ancestry = request(`compare/${source}...${observedDev}`);
   assert.equal(ancestry?.merge_base_commit?.sha, source, "Cut is not in dev ancestry");
   assert.equal(request(`git/ref/heads/release/${source}`)?.object?.sha, source, "Frozen branch differs from its cut");
   // This ordinary branch endpoint is readable by the controller token. The
   // administration-only /protection endpoint must not require extra authority.
   // Exact B/F merge parents and M/S tree equality above reject stale admission.
-  const branch = request("branches/dev"), protection = branch?.protection?.required_status_checks;
-  assert.equal(branch?.protected, true, "Dev must be protected");
-  assert.equal(protection?.enforcement_level, "everyone", "Dev administrators must follow admission");
-  for (const context of ["Unit Tests", "E2E Tests"]) {
-    assert.ok(protection.contexts.includes(context), `Dev must require ${context}`);
-    assert.ok(protection.checks.some((check) => check.context === context && check.app_id === 15368), `Require the GitHub Actions ${context} check`);
-  }
   const run = request(`actions/runs/${runId}`);
   assert.equal(run?.id, runId);
   assert.equal(run?.repository?.full_name, REPOSITORY);
@@ -163,8 +168,13 @@ function admitFeature({ source, pullRequest, runId, attempt }, request = api, re
   assert.ok(fresh.merged && fresh.state === "closed" && fresh.merge_commit_sha === source && fresh.head.sha === head && fresh.base.sha === base, "Feature PR changed during admission");
   assert.ok(latestRun.run_attempt === attempt && latestRun.status === "completed" && latestRun.conclusion === "success", "Feature run changed during admission");
   assert.equal(request(`git/ref/heads/release/${source}`)?.object?.sha, source, "Frozen source changed during admission");
+  const currentDev = devHead(request("branches/dev"));
+  if (currentDev !== observedDev) {
+    const advance = request(`compare/${observedDev}...${currentDev}`);
+    assert.ok(advance?.status === "ahead" && advance.behind_by === 0 && advance.merge_base_commit?.sha === observedDev, "Dev was rewritten during admission");
+  }
   return { schemaVersion: 1, repository: REPOSITORY, source, tree, pullRequest, base, head, snapshot, runId, attempt,
-    workflowBlob: FEATURE_WORKFLOW_BLOB, jobs: selected };
+    observedDev, currentDev, workflowBlob: FEATURE_WORKFLOW_BLOB, jobs: selected };
 }
 function main() {
   const [command, output] = process.argv.slice(2);

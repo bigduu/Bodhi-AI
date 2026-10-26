@@ -8,6 +8,7 @@ const { test } = require("node:test");
 const { admitFeature, requireController, requireProduct, sourceFromLog, FEATURE_WORKFLOW_BLOB } = require("./release-source.cjs");
 const { NATIVE_TARGETS, REPOSITORY } = require("./release-finalizer.cjs");
 const S = "1".repeat(40), B = "2".repeat(40), F = "3".repeat(40), M = "4".repeat(40), T = "5".repeat(40), C = "6".repeat(40);
+const D = "7".repeat(40), D2 = "8".repeat(40);
 const sourceGate = "Require the exact feature merge source";
 const input = { source: S, pullRequest: 17, runId: 42, attempt: 1 };
 function fixture() {
@@ -21,17 +22,18 @@ function fixture() {
     run: { id: 42, repository: { full_name: REPOSITORY }, event: "pull_request", path: ".github/workflows/ci.yml", head_sha: F,
       run_attempt: 1, status: "completed", conclusion: "success", pull_requests: [{ number: 17, base: { ref: "dev", sha: B }, head: { sha: F } }] },
     jobs: gates.map(([name, names], i) => ({ id: i + 100, name, run_id: 42, run_attempt: 1, head_sha: F, status: "completed", conclusion: "success",
-      steps: names.map(name => ({ name, conclusion: "success" })) })),
+      steps: names.map(name => ({ name, status: "completed", conclusion: "success" })) })),
     accepted: { parents: [{ sha: B }, { sha: F }], tree: { sha: T } },
     snapshot: { parents: [{ sha: B }, { sha: F }], tree: { sha: T } },
-    branch: { protected: true, protection: { required_status_checks: { enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"],
+    branch: { protected: true, commit: { sha: D }, protection: { required_status_checks: { enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"],
       checks: ["Unit Tests", "E2E Tests"].map(context => ({ context, app_id: 15368 })) } } },
     frozen: S, ancestor: S, workflowBlob: FEATURE_WORKFLOW_BLOB, total: undefined,
     logs: Object.fromEntries(gates.slice(0, 4).map((_job, i) => [100 + i, `2026-10-26T17:25:40.0279841Z Feature source: ${M} tree: ${T}\n`])),
   };
   f.request = endpoint => {
     const replies = { "pulls/17": f.pr, [`git/commits/${S}`]: f.accepted, [`git/commits/${M}`]: f.snapshot,
-      [`compare/${S}...dev`]: { merge_base_commit: { sha: f.ancestor } }, [`git/ref/heads/release/${S}`]: { object: { sha: f.frozen } },
+      [`compare/${S}...${D}`]: { merge_base_commit: { sha: f.ancestor } }, [`git/ref/heads/release/${S}`]: { object: { sha: f.frozen } },
+      [`compare/${D}...${D2}`]: { status: "ahead", behind_by: 0, merge_base_commit: { sha: D } },
       "branches/dev": f.branch, "actions/runs/42": f.run,
       "actions/runs/42/jobs?filter=all&per_page=100&page=1": { total_count: f.total ?? f.jobs.length, jobs: f.jobs },
       [`contents/.github/workflows/ci.yml?ref=${M}`]: { sha: f.workflowBlob } };
@@ -45,6 +47,7 @@ test("admission preserves actual feature snapshot separately from accepted dev a
   const proof = fixture().verify();
   assert.equal(proof.source, S); assert.equal(proof.snapshot, M); assert.equal(proof.tree, T);
   assert.equal(proof.base, B); assert.equal(proof.head, F); assert.equal(proof.workflowBlob, FEATURE_WORKFLOW_BLOB);
+  assert.equal(proof.observedDev, D); assert.equal(proof.currentDev, D); assert.notEqual(proof.observedDev, proof.source);
   assert.deepEqual(proof.jobs.map(job => job.id), [100, 101, 102, 103, 104, 105]);
 });
 test("same-run failed-job-only rerun retains earlier successful jobs and their actual attempts", () => {
@@ -87,6 +90,8 @@ for (const [name, change] of [
   ["future job attempt", f => { f.jobs[0].run_attempt = 2; }],
   ["foreign job source", f => { f.jobs[0].head_sha = B; }],
   ["failed native step inside green job", f => { f.jobs[1].steps[3].conclusion = "failure"; }],
+  ["skipped native step inside green job", f => { f.jobs[1].steps[3].conclusion = "skipped"; }],
+  ["in-progress native step inside green job", f => { f.jobs[1].steps[3].status = "in_progress"; }],
   ["missing native gate", f => { f.jobs[2].steps.pop(); }],
   ["another tested tree", f => { f.logs[100] = f.logs[100].replace(T, S); }],
   ["different selected snapshot", f => { f.logs[101] = f.logs[101].replace(M, B); }],
@@ -106,6 +111,29 @@ for (const [endpoint, mutate] of [["pulls/17", value => { value.head.sha = B; }]
   [`git/ref/heads/release/${S}`, value => { value.object.sha = B; }]]) test(`admission catches a concurrent change to ${endpoint}`, () => {
   const f = fixture(); let reads = 0;
   assert.throws(() => admitFeature(input, key => { const value = f.request(key); if (key === endpoint && ++reads > 1) mutate(value); return value; }, job => f.logs[job]));
+});
+test("normal dev advance while logs are read preserves both observed and current dev identities", () => {
+  const f = fixture(); let branchReads = 0;
+  const proof = admitFeature(input, endpoint => {
+    const value = f.request(endpoint); if (endpoint === "branches/dev" && ++branchReads > 1) value.commit.sha = D2;
+    return value;
+  }, job => f.logs[job]);
+  assert.equal(proof.source, S); assert.equal(proof.observedDev, D); assert.equal(proof.currentDev, D2);
+});
+for (const [name, mutate] of [
+  ["unprotected dev", branch => { branch.protected = false; }],
+  ["removed required check", branch => { branch.protection.required_status_checks.contexts.pop(); }],
+  ["changed check app", branch => { branch.protection.required_status_checks.checks[0].app_id = 42; }],
+  ["administrator bypass", branch => { branch.protection.required_status_checks.enforcement_level = "non_admins"; }],
+  ["rewritten ancestry", () => {}],
+]) test(`final dev recheck rejects ${name} during log reads`, () => {
+  const f = fixture(); let branchReads = 0;
+  assert.throws(() => admitFeature(input, endpoint => {
+    const value = f.request(endpoint);
+    if (endpoint === "branches/dev" && ++branchReads > 1) { value.commit.sha = D2; mutate(value); }
+    if (endpoint === `compare/${D}...${D2}` && name === "rewritten ancestry") { value.merge_base_commit.sha = B; value.status = "diverged"; value.behind_by = 1; }
+    return value;
+  }, job => f.logs[job]));
 });
 test("observed #118 open/merged-false state blocks admission before inspecting its matching Git merge", () => {
   assert.throws(() => admitFeature({ source: "1ff40d39ef6ec4580402890c8ccb75f85e79d652", pullRequest: 118, runId: 40368488426, attempt: 1 }, endpoint => {
@@ -149,7 +177,7 @@ test("actual read-only CLI emits the C/S proof and fails closed on unconfirmed P
   const product = path.join(root, "product"), bin = path.join(root, "bin"), database = path.join(root, "responses.json");
   fs.mkdirSync(path.join(product, "scripts"), { recursive: true }); fs.mkdirSync(bin);
   for (const file of ["bamboo-sidecar-lock.json", "frontend-package-lock.json"]) fs.copyFileSync(path.join(__dirname, file), path.join(product, "scripts", file));
-  const f = fixture(), endpoints = ["pulls/17", `git/commits/${S}`, `git/commits/${M}`, `compare/${S}...dev`, `git/ref/heads/release/${S}`,
+  const f = fixture(), endpoints = ["pulls/17", `git/commits/${S}`, `git/commits/${M}`, `compare/${S}...${D}`, `git/ref/heads/release/${S}`,
     "branches/dev", "actions/runs/42", "actions/runs/42/jobs?filter=all&per_page=100&page=1", `contents/.github/workflows/ci.yml?ref=${M}`];
   const save = () => fs.writeFileSync(database, JSON.stringify({ responses: Object.fromEntries(endpoints.map(endpoint => [endpoint, f.request(endpoint)])), logs: f.logs }));
   save();
