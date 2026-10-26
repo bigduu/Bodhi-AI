@@ -180,6 +180,10 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
   assert.equal(pr.head.repo.full_name, REPOSITORY);
   assert.equal(pr.base.ref, "dev");
   assert.equal(pr.merge_commit_sha, source, "Cut must be the actual accepted dev merge");
+  assert.ok(typeof pr.merged_at === "string" &&
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(pr.merged_at) &&
+    Number.isFinite(Date.parse(pr.merged_at)), "Missing or invalid feature merge time");
+  const mergedAt = Date.parse(pr.merged_at);
   const base = sha(pr.base.sha, "feature base"), head = sha(pr.head.sha, "feature head");
   const accepted = request(`git/commits/${source}`);
   assert.deepEqual(accepted.parents.map((parent) => parent.sha), [base, head], "Require the normal accepted merge parents");
@@ -221,6 +225,7 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
     assert.equal(latest.length, 1, `Ambiguous selected job: ${name}`);
     const logical = latest[0]; passed(logical, gates);
     const job = executionOrigin(logical, matching); passed(job, gates);
+    assert.ok(Date.parse(job.completed_at) <= mergedAt, "Feature execution completed after accepted dev merge: " + name);
     if (gates.includes(SOURCE_GATE)) {
       const log = readLog(job.id), observed = contextFromLog(log);
       assert.deepEqual(sourceFromLog(log), { snapshot: observed.snapshot, tree: observed.tree }, "Source and context records differ");
@@ -242,6 +247,7 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
   const fresh = request(`pulls/${pullRequest}`), latestRun = request(`actions/runs/${runId}`);
   assert.ok(fresh.merged && fresh.state === "closed" && fresh.merge_commit_sha === source && fresh.head.sha === head && fresh.base.sha === base, "Feature PR changed during admission");
   assert.equal(fresh.number, pullRequest); assert.equal(fresh.base.ref, "dev");
+  assert.equal(fresh.merged_at, pr.merged_at, "Feature merge time changed during admission");
   assert.equal(fresh.base.repo.full_name, REPOSITORY); assert.equal(fresh.head.repo.full_name, REPOSITORY);
   assert.ok(latestRun.run_attempt === attempt && latestRun.status === "completed" && latestRun.conclusion === "success", "Feature run changed during admission");
   assert.equal(latestRun.id, runId); assert.equal(latestRun.repository.full_name, REPOSITORY);
@@ -252,7 +258,7 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
     const advance = request(`compare/${observedDev}...${currentDev}`);
     assert.ok(advance?.status === "ahead" && advance.behind_by === 0 && advance.merge_base_commit?.sha === observedDev, "Dev was rewritten during admission");
   }
-  return { schemaVersion: ADMISSION_SCHEMA, kind: ADMISSION_KIND, repository: REPOSITORY, source, tree, pullRequest, base, head, snapshot, runId, attempt,
+  return { schemaVersion: ADMISSION_SCHEMA, kind: ADMISSION_KIND, repository: REPOSITORY, source, tree, pullRequest, mergedAt: pr.merged_at, base, head, snapshot, runId, attempt,
     observedDev, currentDev, workflowBlob: FEATURE_WORKFLOW_BLOB, jobs: selected };
 }
 function admitFeature(input, request = api, readLog = jobLog) {
