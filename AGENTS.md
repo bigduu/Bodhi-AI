@@ -33,6 +33,12 @@ native gates. Preserve those gates until the dependent feature-evidence and
 trusted-main-controller changes are reviewed and activated. Do not claim this
 feature CI change completes the release cutover or bypass existing gates.
 
+The staged `scripts/release-source.cjs` helper validates frozen-dev source and
+controller identity without publishing. It is not connected to `release.yml`.
+Target output retention, publication schema v2, main promotion and bootstrap
+remain dependent work. An unconfirmed PR merge, including the observed #118
+metadata inconsistency, is a hard admission failure even when Git trees match.
+
 ## Inputs and evidence
 
 - Consume the exact published Bamboo and Lotus identities in
