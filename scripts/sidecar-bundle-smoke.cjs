@@ -5,8 +5,8 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { ROOT } = require("./lotus-dist.cjs");
-const { verifySidecar } = require("./verify-assembly.cjs");
+const { ROOT, verifyStaged } = require("./lotus-dist.cjs");
+const { verifySidecar, verifyDebugAssembly } = require("./verify-assembly.cjs");
 const { verifyArchitecture } = require("./browser-runtime.cjs");
 
 async function main() {
@@ -14,9 +14,14 @@ async function main() {
   const nativeArch = target?.startsWith("aarch64-") ? "arm64" : target?.startsWith("x86_64-") ? "x64" : null;
   assert.equal(process.arch, nativeArch, "Sidecar smoke must run on its native architecture");
   const staged = verifySidecar(ROOT, target);
-  const binary = target.includes("apple-darwin")
+  const debug = process.argv[3] === "--assembly=debug";
+  assert.ok(!process.argv[3]?.startsWith("--") || debug, "Unknown assembly mode");
+  assert.ok(process.argv.length <= (debug ? 5 : 4), "Unexpected assembly arguments");
+  const evidenceFile = process.argv[debug ? 4 : 3];
+  const assembly = debug ? verifyDebugAssembly(ROOT, target, verifyStaged()) : null;
+  const binary = assembly?.binary || (target.includes("apple-darwin")
     ? path.join(ROOT, "target", target, "release/bundle/macos/Bodhi AI.app/Contents/MacOS/bamboo")
-    : staged.binary;
+    : staged.binary);
   const metadata = fs.lstatSync(binary);
   assert.ok(metadata.isFile() && !metadata.isSymbolicLink() && metadata.size >= 65536);
   verifyArchitecture(binary, target);
@@ -44,18 +49,18 @@ async function main() {
     assert.ok(childPid > 0, "The packaged sidecar did not register a real owned worker");
     assert.match(result.stderr, /completed/);
     assert.ok(result.stdout.includes(marker), "The owned actor did not echo its assignment");
-    const receipt = { target, binary, bytes: metadata.size, transport: "owned-actor-echo", processExit: result.status, externalStackOverride: false, providerCredentials: false };
+    const receipt = { target, binary, assembly: debug ? "debug" : "release", bytes: metadata.size, transport: "owned-actor-echo", processExit: result.status, externalStackOverride: false, providerCredentials: false };
     if (process.env.BAMBOO_SIDECAR_SOURCE === "release") {
       const release = require("./bamboo-sidecar.cjs").installedRelease(ROOT, target);
-      require("./lotus-dist.cjs").verifyStaged();
-      const staticDirectory = target.includes("apple-darwin")
+      verifyStaged();
+      const staticDirectory = assembly?.staticDirectory || (target.includes("apple-darwin")
         ? path.join(path.dirname(binary), "../Resources/frontend/dist")
-        : path.join(ROOT, ".bodhi-frontend/dist");
+        : path.join(ROOT, ".bodhi-frontend/dist"));
       receipt.staticOverride = await require("./sidecar-static-smoke.cjs").smokeStaticOverride({
         binary, version: release.version, staticDirectory,
       });
     }
-    if (process.argv[3]) fs.writeFileSync(path.resolve(process.argv[3]), JSON.stringify(receipt, null, 2) + "\n");
+    if (evidenceFile) fs.writeFileSync(path.resolve(evidenceFile), JSON.stringify(receipt, null, 2) + "\n");
     console.log(JSON.stringify(receipt));
   } finally {
     // A failed parent timeout must not leave the worker it registered behind.

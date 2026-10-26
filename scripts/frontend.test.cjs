@@ -592,8 +592,8 @@ test("assembly verification rejects placeholders and validates target binaries",
   assert.throws(() => verifySidecar(root, "../outside"), /Invalid sidecar/);
 });
 
-test("workflow artifact uploads follow the root Cargo workspace target", () => {
-  for (const workflowName of ["ci.yml", "release.yml"]) {
+test("only the release workflow uploads installers from the root Cargo workspace target", () => {
+  for (const workflowName of ["release.yml"]) {
     const workflow = fs.readFileSync(
       path.join(__dirname, `../.github/workflows/${workflowName}`),
       "utf8",
@@ -625,6 +625,7 @@ test("workflow artifact uploads follow the root Cargo workspace target", () => {
 test("CI installs the committed frontend identity before exact staging", () => {
   const lock = JSON.parse(fs.readFileSync(path.join(__dirname, "frontend-package-lock.json"), "utf8"));
   const ci = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
-  assert.equal(ci.match(/^  LOTUS_VERSION: "([^"]+)"$/m)?.[1], lock.packageVersion);
+  assert.doesNotMatch(ci, /^  LOTUS_VERSION:/m);
+  assert.ok(ci.includes("require('./scripts/frontend-package-lock.json').packageVersion"));
   assert.equal(ci.match(/^  LOTUS_PACKAGE_NAME: "([^"]+)"$/m)?.[1], lock.packageName);
 });

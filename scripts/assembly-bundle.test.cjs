@@ -5,7 +5,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { NEXT_PACKAGE, LEGACY_PACKAGE, contentHash, inventory } = require("./lotus-dist.cjs");
 const { LOCK, browserPaths, sha256File, treeHash, verifyRuntime } = require("./browser-runtime.cjs");
-const { verifyBundledFrontend, verifyBundledRuntime } = require("./verify-assembly.cjs");
+const { verifyBundledFrontend, verifyBundledRuntime, verifyDebugAssembly } = require("./verify-assembly.cjs");
 
 function write(file, value, executable = false) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -119,4 +119,63 @@ test("bundle verification also binds the recorded signing identity", (t) => {
   write(path.join(bundled, "receipt.json"), { ...receipt, signingIdentity: "different-build-identity" });
   assert.doesNotThrow(() => verifyRuntime(bundled, target));
   assert.throws(() => verifyBundledRuntime(bundled, staged, target), /exact staged browser runtime/);
+});
+
+function debugFixture(t) {
+  const { root, app, receipt } = fixture(t);
+  const target = "x86_64-unknown-linux-gnu";
+  const directory = path.join(root, "target", target, "debug");
+  fs.mkdirSync(directory, { recursive: true });
+  fs.cpSync(path.join(app, "Contents", "Resources", "frontend"), path.join(directory, "frontend"), { recursive: true });
+  const binary = Buffer.alloc(65536);
+  binary.write("\x7fELF");
+  binary[4] = 2;
+  binary[5] = 1;
+  binary.writeUInt16LE(0x3e, 18);
+  write(path.join(root, "src-tauri", "binaries", `bamboo-${target}`), binary, true);
+  write(path.join(directory, "bamboo"), binary, true);
+  const stagedRuntime = path.join(root, "src-tauri", "browser-runtime");
+  runtimeFixture(stagedRuntime);
+  fs.cpSync(stagedRuntime, path.join(directory, "browser-runtime"), { recursive: true });
+  return { root, target, directory, receipt };
+}
+
+test("feature E2E verifies Cargo's debug resources without an installer or release bundle", (t) => {
+  const { root, target, directory, receipt } = debugFixture(t);
+  assert.deepEqual(verifyDebugAssembly(root, target, receipt), {
+    binary: path.join(directory, "bamboo"),
+    staticDirectory: path.join(directory, "frontend", "dist"),
+    runtime: path.join(directory, "browser-runtime"),
+  });
+  assert.equal(fs.existsSync(path.join(root, "target", target, "release")), false);
+});
+
+for (const [name, mutate, error] of [
+  ["a changed copied sidecar", (f) => {
+    const binary = path.join(f.directory, "bamboo");
+    const bytes = fs.readFileSync(binary); bytes[100] = 1; fs.writeFileSync(binary, bytes);
+  }, /sidecar differs/],
+  ["an unchanged receipt with changed frontend bytes", (f) => write(path.join(f.directory, "frontend", "dist", "assets", "lazy.js"), "changed"), /different Lotus frontend assets/],
+  ["a coherent old frontend", (f) => {
+    const directory = path.join(f.directory, "frontend");
+    write(path.join(directory, "receipt.json"), { ...f.receipt, sourceRevision: "b".repeat(40) });
+  }, /different Lotus frontend receipt/],
+  ["an old browser receipt", (f) => {
+    const file = path.join(f.directory, "browser-runtime", "receipt.json");
+    const receipt = JSON.parse(fs.readFileSync(file));
+    write(file, { ...receipt, signingIdentity: "different" });
+  }, /exact staged browser runtime/],
+  ["missing Cargo output", (f) => fs.rmSync(f.directory, { recursive: true }), /ENOENT/],
+]) test(`feature E2E rejects ${name} instead of using staged or release fallbacks`, (t) => {
+  const f = debugFixture(t);
+  mutate(f);
+  assert.throws(() => verifyDebugAssembly(f.root, f.target, f.receipt), error);
+});
+
+test("feature E2E rejects a linked debug output", { skip: process.platform === "win32" }, (t) => {
+  const f = debugFixture(t);
+  const moved = path.join(f.root, "other-debug");
+  fs.renameSync(f.directory, moved);
+  fs.symlinkSync(moved, f.directory, "dir");
+  assert.throws(() => verifyDebugAssembly(f.root, f.target, f.receipt), /real Cargo output/);
 });

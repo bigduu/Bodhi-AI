@@ -346,16 +346,24 @@ test("downloader enforces HTTPS redirects, bounded downloads and no ambient curl
 
 for (const name of ["ci.yml", "release.yml"]) test(`${name} consumes assets before shell compilation and retains native gates`, () => {
   const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows", name), "utf8");
-  const body = name === "ci.yml" ? workflow.slice(workflow.indexOf("  build-tauri:")) : workflow;
+  const body = name === "ci.yml" ? workflow.slice(workflow.indexOf("  native-tests:")) : workflow;
   assert.doesNotMatch(body, /bamboo-src|repository:\s*bigduu\/Bamboo-agent|BAMBOO_SIDECAR_SOURCE:\s*local|sidecar_cache/);
   assert.doesNotMatch(body, /cargo update/);
   const targets = [...body.matchAll(/^\s+target:\s*["']?([a-z0-9_-]+)["']?\s*$/gm)].map((match) => match[1]).sort();
   assert.deepEqual(targets, [...require("./release-finalizer.cjs").NATIVE_TARGETS].sort());
-  const preflight = body.indexOf("node scripts/bamboo-sidecar.cjs check-lock");
-  const download = body.indexOf('node scripts/bamboo-sidecar.cjs install "${{ matrix.target }}"');
-  const rust = body.indexOf("- name: Install Rust stable");
-  assert.ok(preflight > 0 && download > preflight && rust > download);
-  assert.match(body, /BAMBOO_SIDECAR_SOURCE: release/);
+  if (name === "ci.yml") {
+    const stage = body.indexOf("run: npm run build:sidecar:dev");
+    const tests = body.indexOf("run: cargo test --locked");
+    assert.ok(stage > 0 && tests > stage);
+    assert.match(body, /--assembly=debug/);
+    assert.doesNotMatch(body, /cargo build|tauri-action|release\/bundle/);
+  } else {
+    const preflight = body.indexOf("node scripts/bamboo-sidecar.cjs check-lock");
+    const download = body.indexOf('node scripts/bamboo-sidecar.cjs install "${{ matrix.target }}"');
+    const rust = body.indexOf("- name: Install Rust stable");
+    assert.ok(preflight > 0 && download > preflight && rust > download);
+  }
+  assert.match(workflow, /BAMBOO_SIDECAR_SOURCE: release/);
   assert.match(body, /hashFiles\('scripts\/bamboo-sidecar-lock.json'\)/);
   assert.match(body, /npm run verify:assembly/);
   assert.match(body, /node scripts\/sidecar-bundle-smoke.cjs/);
