@@ -156,10 +156,10 @@ function verifyBundledFrontend(app, expected) {
   verifyFrontendDirectory(path.join(app, "Contents", "Resources", "frontend"), expected);
 }
 
-function verifyBundledRuntime(runtime, staged, target) {
+function verifyBundledRuntime(runtime, staged, target, runtimeLock) {
   const { verifyRuntime } = require("./browser-runtime.cjs");
-  verifyRuntime(staged, target);
-  const bundled = verifyRuntime(runtime, target);
+  verifyRuntime(staged, target, null, runtimeLock);
+  const bundled = verifyRuntime(runtime, target, null, runtimeLock);
   // Bind the complete receipt, including the host/package lock and signing
   // identity, to the selected build instead of accepting any valid old runtime.
   if (!fs.readFileSync(path.join(runtime, "receipt.json"))
@@ -169,7 +169,7 @@ function verifyBundledRuntime(runtime, staged, target) {
   return bundled;
 }
 
-function verifyMacosBundle(root, target, receipt, appPath) {
+function verifyMacosBundle(root, target, receipt, appPath, runtimeLock) {
   const app = appPath
     ? path.resolve(appPath)
     : path.join(root, "target", target, "release", "bundle", "macos", "Bodhi AI.app");
@@ -180,7 +180,7 @@ function verifyMacosBundle(root, target, receipt, appPath) {
   verifyBundledFrontend(app, receipt);
   const browser = verifyBundledRuntime(
     path.join(app, "Contents", "Resources", "browser-runtime"),
-    path.join(root, "src-tauri", "browser-runtime"), target,
+    path.join(root, "src-tauri", "browser-runtime"), target, runtimeLock,
   );
   execFileSync("codesign", ["--verify", "--deep", "--strict", app], { stdio: "pipe" });
   return browser;

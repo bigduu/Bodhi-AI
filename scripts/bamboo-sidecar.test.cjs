@@ -358,14 +358,23 @@ for (const name of ["ci.yml", "release.yml"]) test(`${name} consumes assets befo
     assert.match(body, /--assembly=debug/);
     assert.doesNotMatch(body, /cargo build|tauri-action|release\/bundle/);
   } else {
-    const preflight = body.indexOf("node scripts/bamboo-sidecar.cjs check-lock");
-    const download = body.indexOf('node scripts/bamboo-sidecar.cjs install "${{ matrix.target }}"');
-    const rust = body.indexOf("- name: Install Rust stable");
-    assert.ok(preflight > 0 && download > preflight && rust > download);
+    const preflight = body.indexOf("scripts/release-finalizer-v2.cjs reserve");
+    const build = body.indexOf("npm run tauri:build");
+    const verify = body.indexOf("scripts/release-output.cjs capture");
+    assert.ok(preflight > 0 && build > preflight && verify > build);
+    assert.match(body, /hashFiles\('product\/scripts\/bamboo-sidecar-lock.json'\)/);
+    assert.doesNotMatch(body, /scripts\/bamboo-sidecar\.cjs install|npm run web:build|sidecar-bundle-smoke|browser-bundle-smoke/);
+    const config = JSON.parse(fs.readFileSync(path.join(__dirname, "../src-tauri/tauri.conf.json")));
+    assert.equal(config.build.beforeBuildCommand, "node scripts/build-sidecar.cjs");
+    const verifier = fs.readFileSync(path.join(__dirname, "release-output.cjs"), "utf8");
+    for (const check of ["installedRelease(root, target", "lotus.verifyStaged(source, root)", "verifyArchitecture", "verifyMacosBundle", "verifyRuntime"])
+      assert.ok(verifier.includes(check), `Missing static release check: ${check}`);
   }
   assert.match(workflow, /BAMBOO_SIDECAR_SOURCE: release/);
-  assert.match(body, /hashFiles\('scripts\/bamboo-sidecar-lock.json'\)/);
-  assert.match(body, /npm run verify:assembly/);
-  assert.match(body, /node scripts\/sidecar-bundle-smoke.cjs/);
-  assert.match(body, /node scripts\/browser-bundle-smoke.cjs/);
+  if (name === "ci.yml") {
+    assert.match(body, /hashFiles\('scripts\/bamboo-sidecar-lock.json'\)/);
+    assert.match(body, /npm run verify:assembly/);
+    assert.match(body, /node scripts\/sidecar-bundle-smoke.cjs/);
+    assert.match(body, /node scripts\/browser-bundle-smoke.cjs/);
+  }
 });

@@ -4,6 +4,12 @@ run-name: Recover Bodhi v${{ inputs.bodhi_version }} from ${{ inputs.release_run
 on:
   workflow_dispatch:
     inputs:
+      evidence_schema:
+        description: "2 for original-output releases; 1 only for historical v1 runs (including #116)"
+        type: choice
+        required: true
+        default: "2"
+        options: ["2", "1"]
       release_run_id:
         description: "Original release.yml run whose three supported native builds passed"
         required: true
@@ -32,6 +38,7 @@ permissions:
 
 jobs:
   recover:
+    if: inputs.evidence_schema == '1'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -62,3 +69,25 @@ jobs:
         env:
           ORIGINAL_EVIDENCE_ARTIFACT_ID: ${{ steps.original.outputs.artifact_id }}
         run: node scripts/release-finalizer.cjs recover "${{ runner.temp }}/bodhi-original-release/bodhi-release-evidence.json"
+
+  recover-v2:
+    if: inputs.evidence_schema == '2'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      RELEASE_VERSION: ${{ inputs.bodhi_version }}
+      ORIGINAL_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+      ORIGINAL_RELEASE_ATTEMPT: ${{ inputs.release_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - name: Verify original immutable outputs and recover publication
+        working-directory: controller
+        run: node scripts/release-finalizer-v2.cjs recover "${{ runner.temp }}/evidence.json"

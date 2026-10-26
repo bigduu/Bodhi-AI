@@ -1,6 +1,17 @@
 # Publish Bodhi independently
 
-Bodhi's only publishing entrypoint is this repository's [release.yml](../.github/workflows/release.yml). It accepts an explicit unused app version and the full Bodhi source SHA selected by the workflow ref. Zenith is an optional integration checkout; its gitlinks, configuration, credentials and workflows are not release prerequisites. Bamboo and Lotus Next publish separately, and Bodhi consumes their accepted artifacts.
+The prepared v2 publisher is this repository's [release.yml](../.github/workflows/release.yml).
+It runs a trusted `main` controller `C` against a separate disposable checkout of
+an accepted, frozen dev merge `S`. Bamboo and Lotus Next remain independent
+producers; Bodhi consumes their exact committed artifact locks. Zenith is not a
+release prerequisite.
+
+This branch prepares #122 under tracker #119; it does not activate the trusted
+main bootstrap, protection changes or a main promotion workflow. Do not dispatch
+a new production release until that separate cutover is reviewed. Existing v1
+runs, including #116, keep their original workflow snapshots, source locks,
+runtime gates and recovery contract. The new publisher never silently falls
+back to v1 when source admission fails.
 
 ## Feature Unit and E2E
 
@@ -57,49 +68,68 @@ source-record commit. A trusted main-ref controller may execute the release
 dispatch for its selected frozen source; the controller ref does not create a
 second product build phase.
 
-The feature CI phase is implemented here. The existing release and recovery
-workflows below deliberately retain their original native gates and exact-source
-contract until the dependent feature-evidence and trusted-main-controller slice
-is reviewed and activated. Moving those gates is not authorized by a successful
-feature job alone. The current publisher therefore still performs its historical
-assembly/E2E checks; this is a pending cutover, not the final release policy.
+Feature CI is implemented. The v2 release path now connects
+`scripts/release-source.cjs` to source admission and output retention. Admission
+keeps trusted controller `C`, accepted dev merge `S`, PR base/head and actual
+tested snapshot `M` distinct. It requires a confirmed GitHub PR merge, normal
+merge parents, tested/accepted tree equality, exact successful Unit/E2E jobs,
+protected dev ancestry and `release/<S>` still pointing to `S`. The observed #118
+open/merged-false state remains a negative case; a matching Git tree does not
+supply the missing merge receipt.
 
-`scripts/release-source.cjs` (#121 under tracker #119) is a staged, read-only admission helper. It keeps
-trusted controller `C`, accepted dev merge `S` and actual tested snapshot `M`
-distinct, and reads the upstream locks from an explicit clean `S` checkout.
-Its tests include the observed #118 open/merged-false state; matching Git merge
-parents and trees do not replace a confirmed PR receipt. The helper does not
-activate a publisher or authorize a release dispatch. Existing release/recovery
-workflows, schema-v1 evidence and runtime gates remain unchanged while target
-retention/reuse (#122) and the controller bootstrap are implemented separately.
+`verifyPublished` in `scripts/release-finalizer-v2.cjs` is a read-only structural
+manifest component for a future consumer. Its caller must authenticate the
+expected controller/source/run; this export alone does not authorize main
+promotion. Bootstrap, required-check activation and that promotion boundary are
+separate work. Main receives stable source and references to the immutable
+published record, without a new source JSON file or another build.
+
 Successful jobs copied by GitHub into a later attempt keep their original
 physical job/attempt and source logs in the proof. The latest logical job is
 recorded separately and must pass; matching complete execution/step timestamps
 are required before recognizing a copy. Different executions, missing times,
 same-attempt ambiguity and later failures cannot be hidden as reuse.
 
-## Prepare and dispatch
+## Prepare and dispatch after activation
 
-Land source and lock updates through Bodhi's normal reviewed pull-request flow. Keep source manifest versions at `0.0.0`; the workflow stamps the requested app version only in temporary publishing checkouts. Use numeric `YYYY.M.N`, with month 1–12 and counter 1–65535, without leading zeros. The app version is independent of both upstream versions.
+Keep source manifests at `0.0.0`. Land fixes and lock updates through feature
+Unit/E2E into protected dev, select the exact accepted merge, and freeze
+`release/<40-character-cut-SHA>` without later repair commits. A defect found
+while packaging goes back through feature/dev and gets a new cut.
 
-The committed identities are authoritative:
+The selected source owns both upstream identities:
 
-| Lock | What remains fixed |
+| Lock | Fixed identity |
 |---|---|
-| `scripts/bamboo-sidecar-lock.json` | Published Bamboo version, full source SHA, embedded mode, exact native target contract and manifest name/SHA-256; v1 has four targets and v2 has ARM macOS, Windows x64 and Linux x64. The manifest binds executable and browser host assets |
-| `scripts/frontend-package-lock.json` | Exact `@bigduu/lotus-next` version, clean source SHA, universal manifest and resource digests |
+| `scripts/bamboo-sidecar-lock.json` | Exact published version/source, full embedded native target contract and manifest SHA-256; executable and browser-host bytes |
+| `scripts/frontend-package-lock.json` | Exact `@bigduu/lotus-next` package/version, clean source, universal manifest and resource digests |
 
-There are no upstream version overrides, `latest` resolution, source-build fallback, Bamboo crates.io check or Zenith source tag requirement. Accept a new upstream identity in a separate reviewed lock update after verifying its real published bytes and native compatibility.
+There are no upstream version overrides, moving `latest`, source rebuild
+fallbacks or Zenith tag requirements. Accept updated artifacts in a separate
+reviewed lock change; this slice does not import #120's active release locks.
 
-Select a merged Bodhi commit, then dispatch directly (replace `YYYY.M.N` with the unused version):
+After the trusted-main cutover is activated, use an unused numeric `YYYY.M.N`
+(month 1–12, counter 1–65535) and the actual confirmed PR/run/attempt:
 
 ```sh
-source_sha="$(gh api repos/bigduu/Bodhi-AI/commits/main --jq .sha)"
 gh workflow run release.yml -R bigduu/Bodhi-AI --ref main \
-  -f expected_source_sha="$source_sha" -f bodhi_version=YYYY.M.N
+  -f expected_source_sha=<EXACT_ACCEPTED_DEV_MERGE> -f bodhi_version=YYYY.M.N \
+  -f feature_pull_request=<CONFIRMED_DEV_PR> \
+  -f feature_run_id=<SUCCESSFUL_FEATURE_RUN> -f feature_run_attempt=<EXACT_ATTEMPT>
 ```
 
-If `main` moves before dispatch, the source check stops before native builds. Select the current reviewed commit and dispatch again. A Bodhi-owned immutable branch/tag ref may also be selected with its matching full SHA; no Zenith tag is needed. Release and recovery workflows share a per-version concurrency group and do not cancel an active assembly.
+The workflow keeps actual `GITHUB_SHA`/`GITHUB_WORKFLOW_SHA` as `C`; `S` is an
+explicit checkout and receipt field. It reserves the version before any formal
+build in the existing GitHub draft plus shared per-version concurrency group.
+It records source admission, selected lock hashes, controller, run, original
+preflight job and attempt in `bodhi-v2-reservation-<RUN_ID>`. A collision with
+another v1/v2 draft, final release or tag stops before building. A lost create
+response is resolved by readback, without a second reservation request. If a
+reservation exists but its original admission artifact was never retained,
+stop rather than inventing admission or replacing the reservation.
+
+The following two sections retain historical consumer evidence; their versions
+are not overrides for the current source's committed locks.
 
 ## First package using the published Bamboo 14 baseline
 
@@ -146,37 +176,98 @@ execution. The separate upstream Docker run failed in its cargo-chef path-patch
 layer; no Docker image is used by these native/Bodhi workflows, and that failure
 is not reported as repaired or passed.
 
-## Acceptance and publication
+## Original target outputs and publication
 
-Preflight checks the exact clean source, version, both committed locks and absence of the final release/tag before starting the matrix. Every native job then downloads the accepted Bamboo executable and browser host, installs the locked Lotus Next package, builds the Tauri shell and passes the existing assembly, bundled actor/HTTP/static-dir and bundled browser gates:
+Each native job reads the reserved source/version and selected locks, then
+stamps only its disposable `S` Cargo manifest, Cargo package-lock entry and Tauri
+configuration. Source commits keep their placeholders. The Tauri hook alone
+stages the published Bamboo executable/browser host, exact frontend and browser
+runtime; there is no preceding second staging or upstream source build.
 
-| Runner | Target |
-|---|---|
-| `macos-latest` | `aarch64-apple-darwin` |
-| `ubuntu-22.04` | `x86_64-unknown-linux-gnu` |
-| `windows-latest` | `x86_64-pc-windows-msvc` |
+| Runner | Target | Original installer files |
+|---|---|---|
+| `macos-latest` | `aarch64-apple-darwin` | DMG and app tar.gz |
+| `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | AppImage, deb and RPM |
+| `windows-latest` | `x86_64-pc-windows-msvc` | NSIS exe |
 
-Jobs upload only to `bodhi-draft-v<VERSION>-<RUN_ID>-<ATTEMPT>`. After all three supported platforms pass, finalization independently reads that exact attempt's successful gates and verifies one matching source-bound draft with all six original assets: the ARM64 DMG and macOS app archive, AppImage, deb, rpm and Windows NSIS installer. It checks unique asset IDs, uploaded state, minimum sizes, SHA-256 digests and GitHub download URLs.
+The new v2 release phase does no Unit/E2E actor or browser runtime smoke. Those
+belong to admitted feature CI. It retains static upstream/resource checks,
+shell architecture, package version/architecture and the existing macOS
+signature verification. macOS still uses the existing ad-hoc signing override;
+this change does not add notarization or claim a distribution certificate.
+Controller verification reads the browser lock from the immutable `S` Git blob
+and passes that data through staged and bundled checks. It does not execute an
+`S` module or change the controller's default browser lock.
 
-Before publishing, it uploads `bodhi-release-evidence-<RUN_ID>-<ATTEMPT>` containing the exact version, source, run, attempt, release ID and every asset ID/size/digest. It promotes only that original release ID to `app-v<VERSION>` and confirms its unchanged assets and source tag. A different existing release or tag is refused. A lost PATCH response triggers readback of that exact publication, never a blind write retry. Signing and the native acceptance gates for ARM64 macOS, Linux x86_64 and Windows x64 are unchanged. Intel macOS is excluded from this release and its Homebrew cask remains ARM-only. The locked Bamboo manifest is validated against its exact producer contract: historical v1 requires all four targets; v2 requires exactly ARM macOS, Linux x64 and Windows x64. This selection does not change Bodhi's existing three-platform packaging matrix or reopen any historical release.
+Before finalization, each successful target uploads a flat immutable artifact
+`bodhi-v2-target-<RUN_ID>-<TARGET_ATTEMPT>-<TARGET>` with its actual installer bytes
+and `target-receipt.json`. The receipt binds the reserved source/controller/
+version by hash, original job ID/attempt, static checks, all filenames, sizes and
+SHA-256 values. RPM is retained alongside the other Linux outputs. Artifact
+metadata binds run/controller, creation window, immutable artifact ID and ZIP
+digest. Restore verifies the downloaded ZIP digest, exact flat entry set and
+individual file hashes, preserving original bytes.
 
-Watch the Bodhi run directly and verify the final release:
+Builders have no publisher token. Finalization runs only controller code on
+Ubuntu, restores the three target artifacts by immutable IDs and uploads their
+six original installers to the reserved draft. It keeps already-uploaded asset
+IDs when bytes match and refuses conflicts; it never deletes or overwrites an
+asset. It then attaches `bodhi-release-v2.json` with source admission, controller,
+version, source lock hashes, original run/job/attempts, artifact identities and
+six installer asset identities. The manifest has no circular self-ID. A separate
+immutable `bodhi-v2-evidence-<RUN_ID>-<FINALIZER_ATTEMPT>` binds its hash and asset
+ID plus the complete seven-asset set before publication.
 
-```sh
-gh run watch <RUN_ID> -R bigduu/Bodhi-AI --exit-status
-gh release view app-v<VERSION> -R bigduu/Bodhi-AI
-```
+Publication revalidates that retained evidence, promotes the same release ID to
+`app-v<VERSION>` targeting `S`, and verifies the unchanged IDs/hashes and final
+tag. Immediately before PATCH it rechecks the frozen ref/tree, protected-dev
+policy and source ancestry, allowing normal dev advancement while refusing a
+rewrite or unknown API state. This refresh does not rewrite the original
+admission or manifest. A lost upload or PATCH response reads back the same identity; it does not
+blindly retry a write. Finalization and recovery run no Cargo, Tauri or Vite
+commands. Retention is 90 days, subject to repository limits; expired original
+outputs are a hard stop.
 
-## Recover finalization without rebuilding
+## Rerun or recover without replacing successful outputs
 
-Use [recover-release.yml](../.github/workflows/recover-release.yml) only when all three original native jobs passed and **Publish the completed draft** was the only failing finalizer step, after the original evidence artifact was uploaded. Use the original run, attempt, SHA and version:
+For a failed job, first classify the failure. A product defect requires a new
+feature/dev acceptance and frozen cut. An infrastructure failure may rerun
+failed jobs in the same run/source/version after diagnosis. A target with no
+successful Build may retry; a recorded successful Build must have its retained
+original files. Missing, expired, ambiguous or changed files stop rather than
+being rebuilt. Earlier successful siblings retain their original job/attempts;
+a later attempt never relabels them. Even a full rerun selects those originals
+and skips toolchain/dependency installation, compilation and packaging.
+If a later selector alone failed before Build/capture/retention ran, a current
+active selector may retry verification of the original bytes. The finalizer
+still waits for that latest logical job's success. A real later Build failure,
+second physical build or missing original output cannot use this exception.
+
+A finalizer failure before publication evidence is retained can rerun that
+failed finalizer in the same run. Partial uploads keep their original asset IDs.
+After the evidence upload, use v2 recovery only if **Publish the original draft**
+was the sole failing finalizer step:
 
 ```sh
 gh workflow run recover-release.yml -R bigduu/Bodhi-AI --ref main \
-  -f release_run_id=<ORIGINAL_RUN_ID> -f release_attempt=<ORIGINAL_ATTEMPT> \
-  -f expected_source_sha=<ORIGINAL_FULL_SHA> -f bodhi_version=<ORIGINAL_VERSION>
+  -f evidence_schema=2 -f release_run_id=<ORIGINAL_RUN> \
+  -f release_attempt=<FAILED_FINALIZER_ATTEMPT> \
+  -f expected_source_sha=<ORIGINAL_FROZEN_SHA> -f bodhi_version=<ORIGINAL_VERSION>
 ```
 
-Recovery verifies the original run/version/source and all three gates, rejects missing, expired or duplicate evidence, and downloads the single immutable artifact by ID from that original run and attempt. It checks the evidence against the unchanged original draft/assets before publishing. If GitHub already published that identical release after a lost response, recovery confirms it without another PATCH. Conflicting IDs, source, assets or final tag stop recovery. The artifact is retained for 90 days, subject to repository retention limits.
+Recovery authenticates the original controller/run and exact finalizer attempt,
+source-admission artifact, original target jobs/attempts and immutable file IDs/
+hashes. It downloads the retained publication evidence by ID and promotes only
+the unchanged original release. If GitHub published it after a lost response,
+recovery confirms it without another PATCH. A newer recovery controller keeps
+its own actual GitHub identity and never impersonates the original controller.
 
-Do not use a later failed-jobs rerun or a new build's assets to repair finalization. If native builds failed, or finalization never retained evidence, fix the cause and dispatch a fresh full three-platform run with the still-unused version. This recovery contract applies to runs produced by this workflow format; historical train runs without its version-bound run identity and original evidence artifact cannot be recovered through it.
+For historical v1 runs, including #116, select `-f evidence_schema=1` with their
+original run/attempt/source/version. The byte-pinned v1 helper and frozen workflow
+fixtures preserve all historical native runtime gates and publication-only
+recovery rules. v1 has six release assets; v2 has those same six plus its manifest.
+There is no schema fallback or conversion of old runs into v2 evidence.
+
+Local policy/fixture tests and ZIP/Git CLI checks are not native installer,
+three-OS signing, production publication or main-promotion evidence. Verify
+those separately on the exact reviewed activated controller and admitted source.

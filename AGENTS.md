@@ -27,17 +27,20 @@ The common phase contract is
   and promotion PR/merge references. Never mutate a frozen release head or add
   a post-build JSON source commit to create that record.
 
-The feature workflow implements the first phase. The current `release.yml` and
-`recover-release.yml` still use their historical source/controller contract and
-native gates. Preserve those gates until the dependent feature-evidence and
-trusted-main-controller changes are reviewed and activated. Do not claim this
-feature CI change completes the release cutover or bypass existing gates.
+The feature workflow implements the first phase. The prepared schema-v2
+`release.yml` connects frozen-dev admission (#121) to original-output retention
+and publication (#122). It requires the real trusted `main` controller `C`, an
+explicit separate product checkout `S`, a confirmed protected-dev PR receipt and
+its exact successful feature run. Never relabel GitHub's SHA/ref variables.
+This branch does not activate trusted-main bootstrap, required checks or main
+promotion. An unconfirmed merge, including the observed #118 metadata
+inconsistency, fails admission even when Git trees match.
 
-The staged `scripts/release-source.cjs` helper (#121 under tracker #119) validates frozen-dev source and
-controller identity without publishing. It is not connected to `release.yml`.
-Target output retention, publication schema v2, main promotion and bootstrap
-remain dependent work (#122 and guarded activation). An unconfirmed PR merge, including the observed #118
-metadata inconsistency, is a hard admission failure even when Git trees match.
+New releases use v2 only. Preserve `scripts/release-finalizer.cjs` byte-for-byte
+and its frozen v1 workflow fixtures; `recover-release.yml` selects v1 explicitly
+for historical runs, including the active #116 train. Do not reinterpret v1
+runtime gates or original artifact identities as v2 receipts.
+
 GitHub may copy a successful job into a later attempt without executing it
 again. Preserve its original physical job/attempt and logs, and record the latest
 logical result separately. Only identical complete job/step execution times can
@@ -55,6 +58,30 @@ establish that reuse; a later failure or ambiguous attempt still blocks admissio
   merge, frozen source and final main merge identities in every receipt.
 - Preserve original run/attempt, artifact IDs and hashes. Publication recovery
   reuses the original successful native assets; it does not rebuild them.
+- Reserve the final version in the existing GitHub draft and version concurrency
+  domain before building. The Tauri hook alone stages upstream artifacts. Each
+  supported target builds once, passes static version/architecture/resource and
+  existing signing checks, and retains its installer bytes plus job/attempt
+  receipt before finalization. Include RPM alongside AppImage/deb.
+- A rerun restores successful targets by immutable artifact ID and SHA-256;
+  earlier successful siblings keep their original attempts. A recorded
+  successful Build with missing/expired output is a hard stop, never permission
+  to rebuild it. Classify an unsuccessful build before retrying: source defects
+  require feature/dev acceptance and a new cut; an infrastructure retry keeps
+  the same source/version. Finalization/recovery execute no product commands.
+  An active current selector may revalidate originals after a selector-only API
+  failure whose Build/capture/retention steps never ran. Finalization still
+  requires the latest logical job to succeed; real Build failures remain fatal.
+- Native builders have read permissions only; publisher credentials belong to
+  version reservation and finalization/recovery. Preserve original release and
+  asset IDs after partial uploads or lost responses. Never delete/overwrite
+  conflicting assets to make a rerun pass. Cache contents are not release proof.
+- Immediately before publication, recheck the frozen ref/tree, dev protection
+  and normal dev ancestry from the original admission. Refuse unknown API state
+  or a rewrite; preserve the original manifest and admission identities.
+- Controller static checks read the frozen source's browser lock as Git data,
+  passing it explicitly to the existing verifiers. Never load source scripts or
+  mutate the controller's default lock to validate another product source.
 - Keep `Unit Tests` and `E2E Tests` as real aggregates. Failed, cancelled, skipped
   or missing selected jobs must not become a successful admission result.
 
