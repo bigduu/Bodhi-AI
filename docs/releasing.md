@@ -355,7 +355,11 @@ workflow result as a replacement for the required PR check.
 
 The actual Main merge M must have the current B/head parents. Its complete
 postimage must equal S, or S overlaid by the **entire** literal control closure
-from B. Partial mixtures, product edits, stamped versions, lock exceptions,
+from B. Complete S is permitted only for a recognized Main-capable producer
+with all eleven control paths as regular `100644` blobs, including the Target
+workflow and `main-admission.cjs` entrypoint. Alpha publication stays valid, but
+Alpha promotion must preserve the whole B closure; it cannot remove future Main
+admission. Partial mixtures, product edits, stamped versions, lock exceptions,
 unlisted entries and mode changes reject admission. M and its tree are recorded
 separately; an overlay is never described as the source that was compiled.
 PR head/base and locator, Main protection, original/recovery run identities,

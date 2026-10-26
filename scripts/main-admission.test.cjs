@@ -113,7 +113,7 @@ function fixture() {
     else if (endpoint.startsWith("compare/")) { const [before] = endpoint.slice(8).split("..."); result = { merge_base_commit: { sha: before }, status: "ahead", behind_by: 0 }; }
     else if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) result = { sha: main.RELEASE_BLOB };
     else if (endpoint === `contents/.github/workflows/recover-release.yml?ref=${C2}`) result = { sha: main.RECOVERY_BLOB };
-    else if (endpoint === `contents/.github/workflows/ci.yml?ref=${FM}`) result = { sha: source.FEATURE_WORKFLOW_BLOB };
+    else if (endpoint === `contents/.github/workflows/ci.yml?ref=${FM}`) result = { sha: f.featureBlob || source.FEATURE_WORKFLOW_BLOB };
     else if (endpoint.startsWith("contents/") && endpoint.endsWith(`?ref=${S}`)) {
       const file = endpoint.slice(9).split("?")[0]; result = { encoding: "base64", content: lockBytes[file].toString("base64") };
     } else assert.fail(`Unexpected read-only request: ${endpoint}`);
@@ -132,7 +132,10 @@ function fixture() {
   f.actual = entries => { f.commits[M].tree.sha = MT; f.trees[MT] = copy(entries); };
   f.overlay = () => {
     const entries = copy(f.trees[ST]), base = f.trees[f.commits[f.pr.base.sha].tree.sha];
-    for (const file of main.CONTROLS) entries.splice(entries.findIndex(entry => entry.path === file), 1, copy(base.find(entry => entry.path === file)));
+    for (const file of main.CONTROLS) {
+      const entry = copy(base.find(entry => entry.path === file)), index = entries.findIndex(entry => entry.path === file);
+      if (index < 0) entries.push(entry); else entries.splice(index, 1, entry);
+    }
     f.actual(entries);
   };
   return f;
@@ -144,6 +147,38 @@ test("normal completed release admits a complete S Main postimage, preserving ac
 });
 test("Main may retain the whole trusted controller closure while its complete product/locks remain S", () => {
   const f = fixture(); f.overlay(); const proof = f.verify(); assert.equal(proof.postimage, "retained-main-controls"); assert.equal(proof.mainTree, MT);
+});
+function alphaSource(f) {
+  f.featureBlob = f.reservation.admission.workflowBlob = source.CONTEXT_WORKFLOW_BLOB;
+  f.featureJobs = f.featureJobs.filter(job => job.name !== source.MAIN_GATE);
+  f.trees[ST].find(entry => entry.path === ".github/workflows/ci.yml").sha = source.CONTEXT_WORKFLOW_BLOB;
+  f.trees[ST] = f.trees[ST].filter(entry => entry.path !== "scripts/main-admission.cjs");
+  f.release.body = JSON.stringify(f.reservation);
+  f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation });
+  for (const [index, target] of f.manifest.targets.entries()) {
+    target.receipt.reservationSha256 = out.sha256(out.bytes(f.reservation));
+    f.files[101 + index]["target-receipt.json"] = out.bytes(target.receipt);
+  }
+  refreshManifest(f);
+}
+test("a published Alpha source cannot replace Main with a complete postimage lacking its Target/entrypoint", () => {
+  const f = fixture(); alphaSource(f);
+  // Alpha still authenticates as a completed original release; only the Main
+  // complete-S promotion is refused because it would remove future admission.
+  assert.equal(main.published(f.value, B, f.request, f.options).source, S);
+  assert.throws(() => f.verify(), /Main-capable|controller/);
+});
+test("a published Alpha source plus the complete current-B control closure remains admissible", () => {
+  const f = fixture(); alphaSource(f); f.overlay();
+  const proof = f.verify(); assert.equal(proof.postimage, "retained-main-controls"); assert.equal(proof.source, S);
+  assert.ok(!f.reads.includes(`compare/${C}...${S}`));
+});
+for (const [name, mutate] of [
+  ["missing entrypoint", entries => entries.splice(entries.findIndex(entry => entry.path === "scripts/main-admission.cjs"), 1)],
+  ["symlink control", entries => { entries.find(entry => entry.path === "scripts/main-admission.cjs").mode = "120000"; }],
+  ["executable control mode", entries => { entries.find(entry => entry.path === "scripts/main-admission.cjs").mode = "100755"; }],
+]) test(`complete Main-capable S refuses ${name}`, () => {
+  const f = fixture(); mutate(f.trees[ST]); assert.throws(() => f.verify(), /controller/);
 });
 function refreshManifest(f) {
   const asset = f.release.assets.find(item => item.name === out.MANIFEST);

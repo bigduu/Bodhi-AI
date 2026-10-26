@@ -82,7 +82,10 @@ a fake release cut merely to inspect an accepted Dev source.
   Missing originals, a latest logical failure, replacement bytes or unknown API
   state stop admission. Main never compiles, tests, packages or republishes.
 - Main's actual merge M must equal complete S, or complete S overlaid by the
-  entire literal controller closure from its current base B. Preserve M/tree
+  entire literal controller closure from its current base B. Complete S requires
+  an admitted Main-capable producer and all eleven ordinary control files; an
+  Alpha release instead retains the entire B closure so future Target admission
+  remains available. Preserve M/tree
   separately; C need not be S's ancestor. No per-file mixture or product/lock/
   version exception is allowed. The bootstrap component instead accepts only
   the fixed legacy base plus the complete reviewed control closure from an

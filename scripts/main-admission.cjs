@@ -84,8 +84,13 @@ function overlay(base, controls) {
   }
   return { entries };
 }
-function postimage(base, product, actual) {
-  if (actual.hash === product.hash) return "complete-source";
+function postimage(base, product, actual, producer) {
+  if (actual.hash === product.hash) {
+    assert.equal(source.FEATURE_PRODUCERS.get(producer), true, "Complete S requires a recognized Main-capable producer");
+    overlay(product, product); // Require every ordinary control file, including this entrypoint.
+    assert.equal(product.entries.get(".github/workflows/ci.yml").sha, producer, "Source controller workflow differs");
+    return "complete-source";
+  }
   assert.deepEqual(projection(actual), projection(overlay(product, base)), "Main differs from the complete source/controller postimage");
   return "retained-main-controls";
 }
@@ -225,7 +230,7 @@ function verifyMain({ pullRequest, snapshot }, request = readOnly, options = {})
   else {
     assert.equal(mainHead(branch), pr.base.sha);
     proof = published(value, pr.base.sha, request, options);
-    proof.postimage = postimage(tree(pr.base.sha, request), tree(value.source, request), actual);
+    proof.postimage = postimage(tree(pr.base.sha, request), tree(value.source, request), actual, proof.reservation.admission.workflowBlob);
   }
   const fresh = mainPR(pullRequest, snapshot, request);
   assert.equal(fresh.base.sha, pr.base.sha); assert.equal(fresh.head.sha, pr.head.sha);
