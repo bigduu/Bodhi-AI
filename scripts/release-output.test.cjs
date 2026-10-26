@@ -28,14 +28,16 @@ function fixture() {
   const proof = { schemaVersion: 1, repository: out.REPOSITORY, source: S, tree: T, base: "d".repeat(40), head: "e".repeat(40), snapshot: "f".repeat(40),
     observedDev: S, currentDev: S, pullRequest: 17, runId: 20, attempt: 1, workflowBlob: FEATURE_WORKFLOW_BLOB,
     jobs: ["Unit Tests (Node)", ...out.NATIVE_TARGETS.map(target => `Unit and E2E (${target})`), "Unit Tests", "E2E Tests"]
-      .map((name, index) => ({ id: index + 500, name, attempt: 1 })) };
+      .map((name, index) => ({ id: index + 500, name, attempt: 1, logical: { id: index + 500, attempt: 1 } })) };
   const reservation = { schemaVersion: 2, kind: "bodhi-original-release", repository: out.REPOSITORY, source: S, tree: T,
     controller: C, version: ctx.version, runId: ctx.runId, preflight: { jobId: 10, attempt: 1 }, admission: proof,
     lockHashes: { "scripts/bamboo-sidecar-lock.json": "1".repeat(64), "scripts/frontend-package-lock.json": "2".repeat(64) },
     frontend: JSON.parse(fs.readFileSync(path.join(__dirname, "frontend-package-lock.json"))) };
   const job = (id, name, attempt, gates, active = false) => ({ id, name, run_id: ctx.runId, head_sha: C, run_attempt: attempt,
     status: active ? "in_progress" : "completed", conclusion: active ? null : "success", started_at: "2026-10-27T00:00:00Z",
-    completed_at: active ? null : "2026-10-27T00:05:00Z", steps: gates.map(name => ({ name, status: "completed", conclusion: "success" })) });
+    completed_at: active ? null : "2026-10-27T00:05:00Z", steps: gates.map((name, index) => ({ name, number: index + 1, status: "completed", conclusion: "success",
+      started_at: new Date(Date.parse("2026-10-27T00:00:10Z") + index * 10000).toISOString(),
+      completed_at: new Date(Date.parse("2026-10-27T00:00:15Z") + index * 10000).toISOString() })) });
   const jobs = [job(10, "Reserve admitted release", 1, [out.PREFLIGHT, out.RESERVATION]),
     ...out.NATIVE_TARGETS.map((target, index) => job(index + 11, `Build original (${target})`, index === 1 ? 2 : 1,
       ["Select retained target output", "Verify source and stamp reserved version", out.BUILD, out.CAPTURE, out.RETAIN])),
@@ -141,6 +143,21 @@ test("v2 recovery keeps a new trusted controller distinct from the original prod
     ["GITHUB_WORKFLOW_REF", `${out.REPOSITORY}/.github/workflows/release.yml@refs/heads/main`], ["GITHUB_EVENT_NAME", "pull_request"]])
     assert.throws(() => out.controller(true, { ...values, [field]: value }, out.ROOT, git));
   assert.equal(values.GITHUB_SHA, current);
+});
+test("reservation retains separate physical and latest logical feature identities", () => {
+  const { reservation } = fixture(); reservation.admission.attempt = 2;
+  reservation.admission.jobs[0].logical = { id: 900, attempt: 2 };
+  const original = clone(reservation); out.verifyReservation(reservation, ctx); assert.deepEqual(reservation, original);
+});
+for (const [label, mutate] of [
+  ["missing logical identity", value => { delete value.admission.jobs[0].logical; }],
+  ["future logical attempt", value => { value.admission.jobs[0].logical.attempt = 2; }],
+  ["physical after logical", value => { value.admission.jobs[0].attempt = 2; }],
+  ["ambiguous logical job", value => { value.admission.jobs[1].logical = clone(value.admission.jobs[0].logical); }],
+  ["different ID within one attempt", value => { value.admission.jobs[0].logical.id = 900; }],
+  ["same ID under a later attempt", value => { value.admission.attempt = 2; value.admission.jobs[0].logical.attempt = 2; }],
+]) test(`reservation refuses ${label} in feature provenance`, () => {
+  const { reservation } = fixture(); mutate(reservation); assert.throws(() => out.verifyReservation(reservation, ctx));
 });
 for (const [label, mutate] of [
   ["legacy draft", f => f.extraReleases.push({ id: 88, tag_name: `bodhi-draft-v${ctx.version}-55-1` })],

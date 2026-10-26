@@ -73,6 +73,9 @@ establish that reuse; a later failure or ambiguous attempt still blocks admissio
   version reservation and finalization/recovery. Preserve original release and
   asset IDs after partial uploads or lost responses. Never delete/overwrite
   conflicting assets to make a rerun pass. Cache contents are not release proof.
+- Immediately before publication, recheck the frozen ref/tree, dev protection
+  and normal dev ancestry from the original admission. Refuse unknown API state
+  or a rewrite; preserve the original manifest and admission identities.
 - Keep `Unit Tests` and `E2E Tests` as real aggregates. Failed, cancelled, skipped
   or missing selected jobs must not become a successful admission result.
 

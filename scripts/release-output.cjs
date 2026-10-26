@@ -186,7 +186,11 @@ function verifyReservation(value, ctx) {
   assert.equal(value.admission.workflowBlob, admission.FEATURE_WORKFLOW_BLOB);
   assert.deepEqual(value.admission.jobs.map(job => job.name).sort(), ["Unit Tests (Node)", "Unit Tests", "E2E Tests", ...NATIVE_TARGETS.map(target => `Unit and E2E (${target})`)].sort());
   assert.equal(new Set(value.admission.jobs.map(job => id(job.id))).size, 6);
-  for (const job of value.admission.jobs) assert.ok(id(job.attempt) <= value.admission.attempt);
+  assert.equal(new Set(value.admission.jobs.map(job => id(job.logical?.id))).size, 6);
+  for (const job of value.admission.jobs) {
+    assert.ok(id(job.attempt) <= id(job.logical.attempt) && job.logical.attempt <= value.admission.attempt, "Feature physical/logical attempts are out of order");
+    assert.equal(job.id === job.logical.id, job.attempt === job.logical.attempt, "Feature physical/logical identity differs within one attempt");
+  }
   id(value.preflight.jobId); assert.ok(id(value.preflight.attempt) <= ctx.attempt);
   assert.equal(value.frontend.packageName, "@bigduu/lotus-next");
   assert.deepEqual(Object.keys(value.lockHashes).sort(), ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"]);

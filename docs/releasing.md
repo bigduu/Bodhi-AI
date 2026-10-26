@@ -217,7 +217,10 @@ ID plus the complete seven-asset set before publication.
 
 Publication revalidates that retained evidence, promotes the same release ID to
 `app-v<VERSION>` targeting `S`, and verifies the unchanged IDs/hashes and final
-tag. A lost upload or PATCH response reads back the same identity; it does not
+tag. Immediately before PATCH it rechecks the frozen ref/tree, protected-dev
+policy and source ancestry, allowing normal dev advancement while refusing a
+rewrite or unknown API state. This refresh does not rewrite the original
+admission or manifest. A lost upload or PATCH response reads back the same identity; it does not
 blindly retry a write. Finalization and recovery run no Cargo, Tauri or Vite
 commands. Retention is 90 days, subject to repository limits; expired original
 outputs are a hard stop.
