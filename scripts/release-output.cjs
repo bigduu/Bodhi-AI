@@ -219,6 +219,22 @@ function loadReservation(ctx, request = api, restore = download) {
   assert.equal(request(`git/commits/${ctx.source}`)?.tree?.sha, reservation.tree);
   return { release, reservation, artifact: original };
 }
+function selectorOnlyFailure(job) {
+  const failed = job.steps.filter(step => step.conclusion === "failure");
+  return job.status === "completed" && job.conclusion === "failure" && failed.length === 1 && failed[0].name === "Select retained target output" && failed[0].status === "completed" &&
+    [BUILD, CAPTURE, RETAIN].every(name => {
+      const steps = job.steps.filter(step => step.name === name);
+      return steps.length === 1 && steps[0].status === "completed" && steps[0].conclusion === "skipped";
+    });
+}
+function activeSelector(ctx, rows) {
+  const current = rows.filter(job => job.run_attempt === ctx.attempt);
+  if (current.length !== 1 || !Number.isSafeInteger(current[0].id) || current[0].id <= 0 || current[0].status !== "in_progress" || current[0].conclusion !== null) return false;
+  const steps = current[0].steps.filter(step => step.name === "Select retained target output");
+  return steps.length === 1 && steps[0].status === "in_progress" && steps[0].conclusion === null &&
+    !current[0].steps.some(step => step.conclusion === "failure" || step.name === BUILD &&
+      !(step.status === "completed" && step.conclusion === "skipped" || ["queued", "pending"].includes(step.status) && step.conclusion === null));
+}
 function selectTarget(ctx, reservation, target, request = api, restore = download, requireLatestSuccess = false) {
   assert.ok(NATIVE_TARGETS.includes(target)); const rows = jobs(ctx, request).filter(job => job.name === `Build original (${target})`);
   assert.equal(new Set(rows.map(job => job.run_attempt)).size, rows.length, "Ambiguous target job in one attempt");
@@ -228,13 +244,21 @@ function selectTarget(ctx, reservation, target, request = api, restore = downloa
   }
   const successfulBuilds = rows.filter(job => job.steps.some(step => step.name === BUILD && step.conclusion === "success"));
   const completed = rows.filter(job => job.status === "completed").sort((a, b) => b.run_attempt - a.run_attempt);
-  if (successfulBuilds.length && completed.length) passed(completed[0], ["Select retained target output"]);
   const built = [];
   for (const job of successfulBuilds.sort((a, b) => a.run_attempt - b.run_attempt)) {
     const original = admission.executionOrigin(job, rows);
     if (!built.some(existing => existing.id === original.id)) built.push(original);
   }
   assert.ok(built.length <= 1, "Multiple physical builds for one reserved target");
+  if (built.length) {
+    for (const later of completed.filter(job => job.run_attempt > built[0].run_attempt)) {
+      assert.ok(later.conclusion === "success" || selectorOnlyFailure(later), "A later real target failure cannot be hidden by retained output");
+      assert.ok(!later.steps.some(step => step.name === BUILD && !["success", "skipped"].includes(step.conclusion)), "A later Build did not pass");
+    }
+    if (completed[0]?.conclusion === "failure" && !requireLatestSuccess && selectorOnlyFailure(completed[0])) {
+      assert.ok(activeSelector(ctx, rows), "Only an active current selector may revalidate after a selector failure");
+    } else passed(completed[0], ["Select retained target output"]);
+  }
   const all = pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request);
   const candidates = all.filter(value => value.name.startsWith(`bodhi-v2-target-${ctx.runId}-`) && value.name.endsWith(`-${target}`));
   if (!built.length) { assert.equal(candidates.length, 0, "Artifact without an original successful build"); return null; }
@@ -279,16 +303,19 @@ function staticOutputs(root, ctx, target, output) {
   const source = lotus.resolveSource({ LOTUS_SOURCE: "package", LOTUS_PACKAGE_NAME: "@bigduu/lotus-next" }, root);
   const receipt = lotus.verifyStaged(source, root);
   const sidecar = require("./bamboo-sidecar.cjs").installedRelease(root, target, { BAMBOO_SIDECAR_SOURCE: "release", BAMBOO_SIDECAR_TARGET: target });
-  browser.verifyRuntime(path.join(root, "src-tauri/browser-runtime"), target, sidecar.hostDirectory);
+  // Read immutable product data with controller code, never require a module from S.
+  const runtimeLock = JSON.parse(execFileSync("git", ["show", `${ctx.source}:scripts/browser-runtime.lock.json`],
+    { cwd: root, env: childEnv(), encoding: "utf8", maxBuffer: 128 * 1024 }));
+  browser.verifyRuntime(path.join(root, "src-tauri/browser-runtime"), target, sidecar.hostDirectory, runtimeLock);
   const base = path.join(root, "target", target, "release"), bundle = path.join(base, "bundle");
   browser.verifyArchitecture(path.join(base, target.includes("windows") ? "bodhi.exe" : "bodhi"), target);
   const command = (name, args) => execFileSync(name, args, { env: childEnv(), encoding: "utf8" }).trim();
   if (target.includes("darwin")) {
-    assembly.verifyMacosBundle(root, target, receipt);
+    assembly.verifyMacosBundle(root, target, receipt, undefined, runtimeLock);
     const app = path.join(bundle, "macos/Bodhi AI.app");
     assert.equal(command("plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(app, "Contents/Info.plist")]), ctx.version);
     command("tar", ["-czf", path.join(bundle, "macos/Bodhi.AI_aarch64.app.tar.gz"), "-C", path.dirname(app), path.basename(app)]);
-  } else browser.verifyRuntime(path.join(root, "src-tauri/browser-runtime"), target);
+  }
   const directories = target.includes("darwin") ? ["dmg", "macos"] : target.includes("linux") ? ["appimage", "deb", "rpm"] : ["nsis"];
   const expected = names(ctx.version, target);
   for (let index = 0; index < directories.length; index++) {

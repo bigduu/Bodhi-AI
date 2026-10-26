@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const vm = require("node:vm");
 const { execFileSync, spawnSync } = require("node:child_process");
 const out = require("./release-output.cjs");
 const finalizer = require("./release-finalizer-v2.cjs");
@@ -205,6 +206,48 @@ test("server projection keeps the original physical receipt/job/attempt/artifact
   const original = out.selectTarget(ctx, f.reservation, out.NATIVE_TARGETS[0], a.request, a.restore, true);
   assert.equal(original.receipt.jobId, 11); assert.equal(original.receipt.attempt, 1); assert.equal(original.artifact.id, 101);
 });
+function selectorRetry(f) {
+  const target = out.NATIVE_TARGETS[0], retry = out.context({ ...env, GITHUB_RUN_ATTEMPT: "3" });
+  const failed = f.job(31, `Build original (${target})`, 2, ["Select retained target output", out.BUILD, out.CAPTURE, out.RETAIN]);
+  failed.conclusion = "failure";
+  failed.steps.forEach((step, index) => { step.conclusion = index === 0 ? "failure" : "skipped"; });
+  const current = f.job(41, `Build original (${target})`, 3, ["Select retained target output"], true);
+  Object.assign(current.steps[0], { status: "in_progress", conclusion: null, completed_at: null });
+  current.steps.push({ name: out.BUILD, number: 2, status: "queued", conclusion: null });
+  f.jobs.push(failed, current); f.run.run_attempt = 3;
+  return { target, retry, failed, current };
+}
+test("active selector retry restores original bytes after an API-only selector failure; finalizer still waits for logical success", () => {
+  const f = fixture(), { target, retry, current } = selectorRetry(f), a = adapters(f);
+  const original = out.selectTarget(retry, f.reservation, target, a.request, a.restore);
+  assert.equal(original.receipt.jobId, 11); assert.equal(original.receipt.attempt, 1); assert.equal(original.artifact.id, 101);
+  assert.throws(() => out.selectTarget(retry, f.reservation, target, a.request, a.restore, true));
+  current.status = "completed"; current.conclusion = "success"; current.completed_at = "2026-10-27T00:05:00Z";
+  Object.assign(current.steps[0], { status: "completed", conclusion: "success", completed_at: "2026-10-27T00:02:00Z" });
+  Object.assign(current.steps[1], { status: "completed", conclusion: "skipped" });
+  const completed = out.selectTarget(retry, f.reservation, target, a.request, a.restore, true);
+  assert.deepEqual(completed.receipt, original.receipt); assert.deepEqual(completed.artifact, original.artifact);
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+for (const [label, mutate] of [
+  ["missing active retry", (f, state) => f.jobs.pop()],
+  ["inactive selector step", (f, state) => { state.current.steps[0].status = "queued"; }],
+  ["current Build already running", (f, state) => { state.current.steps[1].status = "in_progress"; }],
+  ["previous real Build failure", (f, state) => { state.failed.steps[1].conclusion = "failure"; }],
+  ["previous unknown Build state", (f, state) => { state.failed.steps.splice(1, 1); }],
+  ["second real physical Build", (f, state) => { state.failed.conclusion = "success"; state.failed.steps.forEach(step => { step.conclusion = "success"; }); }],
+  ["missing original artifact", f => f.artifacts.splice(1, 1)],
+]) test(`selector retry refuses ${label} rather than rebuilding or hiding a real failure`, () => {
+  const f = fixture(), state = selectorRetry(f); mutate(f, state); const a = adapters(f);
+  assert.throws(() => out.selectTarget(state.retry, f.reservation, state.target, a.request, a.restore));
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+test("a later logical success cannot hide an intervening real Build failure", () => {
+  const f = fixture(), { target, retry, failed, current } = selectorRetry(f), a = adapters(f);
+  failed.steps[1].conclusion = "failure";
+  current.status = "completed"; current.conclusion = "success"; current.steps = [clone(f.jobs[1].steps[0])];
+  assert.throws(() => out.selectTarget(retry, f.reservation, target, a.request, a.restore, true));
+});
 for (const [label, mutate] of [
   ["latest failed logical job", (f, job) => { job.conclusion = "failure"; job.steps.find(step => step.name === out.BUILD).conclusion = "failure"; }],
   ["different real execution", (f, job) => { job.started_at = "2026-10-27T00:00:01Z"; }],
@@ -398,6 +441,27 @@ test("actual immutable ZIP adapter checks raw digest and flat entry set before r
 test("subprocess credential scope excludes unrelated publisher and host secrets", () => {
   assert.deepEqual(out.childEnv({ PATH: "/bin", HOME: "/home", GH_TOKEN: "needed", GITHUB_TOKEN: "unused", NPM_TOKEN: "unused", HOST_TUNNEL_TOKEN: "unused" }),
     { PATH: "/bin", HOME: "/home", GH_TOKEN: "needed" });
+});
+test("static verification reads immutable S browser-lock data with C code, never an S module", t => {
+  const root = directory(t), lock = { schemaVersion: 1, nodeVersion: "99.0.0" }, calls = [];
+  fs.mkdirSync(path.join(root, "scripts"));
+  fs.writeFileSync(path.join(root, "scripts/browser-runtime.cjs"), "throw Error('S code must never execute');\n");
+  const sandbox = { module: { exports: {} }, __dirname, process, console, Buffer, require(name) {
+    if (name === "node:child_process") return { execFileSync(program, args, options) {
+      assert.equal(program, "git"); assert.deepEqual(Array.from(args), ["show", `${S}:scripts/browser-runtime.lock.json`]);
+      assert.equal(options.cwd, root); assert.equal(options.maxBuffer, 128 * 1024); return JSON.stringify(lock);
+    } };
+    if (name === "./lotus-dist.cjs") return { resolveSource(_env, checkout) { assert.equal(checkout, root); return {}; }, verifyStaged() { return {}; } };
+    if (name === "./bamboo-sidecar.cjs") return { installedRelease(checkout) { assert.equal(checkout, root); return { hostDirectory: "selected-host" }; } };
+    if (name === "./browser-runtime.cjs") return { verifyRuntime(runtime, target, source, selected) {
+      calls.push({ runtime, target, source, selected }); throw Error("fixture stops after lock binding");
+    } };
+    return require(name);
+  } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "release-output.cjs"), "utf8"), sandbox);
+  assert.throws(() => sandbox.module.exports.staticOutputs(root, ctx, out.NATIVE_TARGETS[1], root), /after lock binding/);
+  assert.equal(calls.length, 1); assert.equal(calls[0].source, "selected-host");
+  assert.equal(JSON.stringify(calls[0].selected), JSON.stringify(lock));
 });
 test("actual CLI keeps real Git controller/source identities and stamps only the disposable product checkout", t => {
   const root = directory(t), controller = path.join(root, "controller"), product = path.join(root, "product"), bin = path.join(root, "bin");

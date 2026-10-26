@@ -69,6 +69,9 @@ establish that reuse; a later failure or ambiguous attempt still blocks admissio
   to rebuild it. Classify an unsuccessful build before retrying: source defects
   require feature/dev acceptance and a new cut; an infrastructure retry keeps
   the same source/version. Finalization/recovery execute no product commands.
+  An active current selector may revalidate originals after a selector-only API
+  failure whose Build/capture/retention steps never ran. Finalization still
+  requires the latest logical job to succeed; real Build failures remain fatal.
 - Native builders have read permissions only; publisher credentials belong to
   version reservation and finalization/recovery. Preserve original release and
   asset IDs after partial uploads or lost responses. Never delete/overwrite
@@ -76,6 +79,9 @@ establish that reuse; a later failure or ambiguous attempt still blocks admissio
 - Immediately before publication, recheck the frozen ref/tree, dev protection
   and normal dev ancestry from the original admission. Refuse unknown API state
   or a rewrite; preserve the original manifest and admission identities.
+- Controller static checks read the frozen source's browser lock as Git data,
+  passing it explicitly to the existing verifiers. Never load source scripts or
+  mutate the controller's default lock to validate another product source.
 - Keep `Unit Tests` and `E2E Tests` as real aggregates. Failed, cancelled, skipped
   or missing selected jobs must not become a successful admission result.
 

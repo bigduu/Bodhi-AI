@@ -195,6 +195,9 @@ belong to admitted feature CI. It retains static upstream/resource checks,
 shell architecture, package version/architecture and the existing macOS
 signature verification. macOS still uses the existing ad-hoc signing override;
 this change does not add notarization or claim a distribution certificate.
+Controller verification reads the browser lock from the immutable `S` Git blob
+and passes that data through staged and bundled checks. It does not execute an
+`S` module or change the controller's default browser lock.
 
 Before finalization, each successful target uploads a flat immutable artifact
 `bodhi-v2-target-<RUN_ID>-<TARGET_ATTEMPT>-<TARGET>` with its actual installer bytes
@@ -235,6 +238,10 @@ original files. Missing, expired, ambiguous or changed files stop rather than
 being rebuilt. Earlier successful siblings retain their original job/attempts;
 a later attempt never relabels them. Even a full rerun selects those originals
 and skips toolchain/dependency installation, compilation and packaging.
+If a later selector alone failed before Build/capture/retention ran, a current
+active selector may retry verification of the original bytes. The finalizer
+still waits for that latest logical job's success. A real later Build failure,
+second physical build or missing original output cannot use this exception.
 
 A finalizer failure before publication evidence is retained can rerun that
 failed finalizer in the same run. Partial uploads keep their original asset IDs.

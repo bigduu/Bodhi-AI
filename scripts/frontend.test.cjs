@@ -10,6 +10,24 @@ const frontend = require("./lotus-dist.cjs");
 const artifact = require("./lotus-next-artifact.cjs");
 const { verifySidecar } = require("./verify-assembly.cjs");
 
+test("Mac bundle verification threads the selected S browser lock to staged and bundled C verifiers", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-mac-selected-lock-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = path.join(root, "candidate.app"), staged = path.join(root, "src-tauri/browser-runtime"), bundled = path.join(app, "Contents/Resources/browser-runtime");
+  const receipt = { packageName: "@bigduu/lotus", schemaVersion: 1 }, selected = { schemaVersion: 1, nodeVersion: "99.0.1" }, calls = [];
+  for (const directory of [staged, bundled, path.join(app, "Contents/Resources/frontend")]) {
+    fs.mkdirSync(directory, { recursive: true }); fs.writeFileSync(path.join(directory, "receipt.json"), JSON.stringify(receipt));
+  }
+  const sandbox = { module: { exports: {} }, __dirname, Buffer, process, JSON, require(name) {
+    if (name === "./browser-runtime.cjs") return { verifyRuntime(...args) { calls.push(args); return {}; } };
+    if (name === "node:child_process") return { execFileSync(program) { assert.equal(program, "codesign"); } };
+    return require(name);
+  } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "verify-assembly.cjs"), "utf8"), sandbox);
+  sandbox.module.exports.verifyMacosBundle(root, "aarch64-apple-darwin", receipt, app, selected);
+  assert.deepEqual(calls.map(args => args[0]), [staged, bundled]);
+  assert.ok(calls.every(args => args[3] === selected));
+});
+
 function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
