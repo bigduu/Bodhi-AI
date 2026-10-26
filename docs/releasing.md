@@ -106,7 +106,13 @@ The selected source owns both upstream identities:
 
 There are no upstream version overrides, moving `latest`, source rebuild
 fallbacks or Zenith tag requirements. Accept updated artifacts in a separate
-reviewed lock change; this slice does not import #120's active release locks.
+reviewed lock change. The original-output implementation (#122) kept its locks
+unchanged; the separate stable integration (#125) carries the exact identities
+already accepted by main `aef64d4a` in #120 and published with Bodhi27:
+Bamboo `2026.10.18` / `d6325a73` and Lotus Next `2026.10.29` / `9446b8d3`.
+The lockfiles remain authoritative for every full source and digest. This normal
+main-to-dev integration selects no new artifact and activates no publication;
+the controller bootstrap and completed-release main gate remain separate work.
 
 After the trusted-main cutover is activated, use an unused numeric `YYYY.M.N`
 (month 1–12, counter 1–65535) and the actual confirmed PR/run/attempt:
