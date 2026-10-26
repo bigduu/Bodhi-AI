@@ -336,7 +336,7 @@ test("workflows bind independent inputs, original evidence and unchanged native 
 });
 
 // Bamboo publishes four reusable targets; this Bodhi release supports three.
-test("both native matrices match supported finalizer targets and exclude Intel packaging", () => {
+test("feature native tests and release packaging preserve the supported target contract", () => {
   assert.deepEqual(NATIVE_TARGETS, ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]);
   assert.equal(require("./bamboo-sidecar.cjs").TARGETS.length, 4);
   for (const name of ["ci.yml", "release.yml"]) {
@@ -344,6 +344,9 @@ test("both native matrices match supported finalizer targets and exclude Intel p
     const targets = [...body.matchAll(/^            target: "?([a-z0-9_-]+)"?$/gm)].map(match => match[1]);
     assert.deepEqual(targets.sort(), [...NATIVE_TARGETS].sort());
     assert.doesNotMatch(body, /macos-15-intel|x86_64-apple-darwin/);
-    for (const gate of ["Verify exact frontend and real target sidecar", "Smoke native bundled sidecar actor transport", "Smoke bundled browser host"]) assert.ok(body.includes(`- name: ${gate}`));
+    const gates = name === "ci.yml"
+      ? ["Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"]
+      : ["Verify exact frontend and real target sidecar", "Smoke native bundled sidecar actor transport", "Smoke bundled browser host"];
+    for (const gate of gates) assert.ok(body.includes(`- name: ${gate}`));
   }
 });

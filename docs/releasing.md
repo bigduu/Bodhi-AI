@@ -2,6 +2,68 @@
 
 Bodhi's only publishing entrypoint is this repository's [release.yml](../.github/workflows/release.yml). It accepts an explicit unused app version and the full Bodhi source SHA selected by the workflow ref. Zenith is an optional integration checkout; its gitlinks, configuration, credentials and workflows are not release prerequisites. Bamboo and Lotus Next publish separately, and Bodhi consumes their accepted artifacts.
 
+## Feature Unit and E2E
+
+Feature and integration PRs target `dev`. The [CI workflow](../.github/workflows/ci.yml)
+runs Unit and E2E there; it does not run on main pushes or build installers.
+`Unit Tests` aggregates Node script tests and the three native test jobs. `E2E Tests`
+aggregates those same native jobs after their actor, static frontend and browser
+checks. Each native job stages the locked Bamboo/Lotus inputs once and invokes
+Cargo once in its debug/test profile. No second shell build or Tauri packaging
+job is required for those tests.
+
+Run the script Unit suite locally with:
+
+```sh
+npm run test:build
+actionlint .github/workflows/ci.yml
+```
+
+For native Unit/E2E, install the accepted frontend package and use the current
+host's target (`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` or
+`x86_64-pc-windows-msvc`). The following Bash example stages test resources and
+does not create an installer:
+
+```sh
+native_target="$(rustc -vV | sed -n 's/^host: //p')"
+frontend_version="$(node -p "require('./scripts/frontend-package-lock.json').packageVersion")"
+npm ci --prefer-offline --no-audit
+npm install --no-save --ignore-scripts --package-lock=false "@bigduu/lotus-next@$frontend_version"
+export LOTUS_SOURCE=package BAMBOO_SIDECAR_SOURCE=release
+export BAMBOO_SIDECAR_TARGET="$native_target" TAURI_ENV_TARGET_TRIPLE="$native_target"
+export APPLE_SIGNING_IDENTITY=-
+npm run build:sidecar:dev
+cargo test --locked --manifest-path src-tauri/Cargo.toml --target "$native_target"
+npm run verify:assembly -- "$native_target" --assembly=debug
+node scripts/sidecar-bundle-smoke.cjs "$native_target" --assembly=debug
+node scripts/browser-bundle-smoke.cjs "$native_target" "target/$native_target/debug/browser-runtime"
+```
+
+The debug checks require the actual sidecar, frontend and browser files copied by
+that Cargo invocation. Missing or changed debug output fails; a staged input or
+an old release bundle is not a fallback. These tests exercise the real actor,
+HTTP/static-dir and browser chain, not the complete desktop GUI.
+
+## Delivery policy and cutover
+
+The shared target flow is feature Unit/E2E → accepted `dev` → frozen
+`release/<cut-SHA>` → stable `main`. Fixes belong to feature branches. Release
+selects an explicit version and builds/packages each final target once; it does
+not rerun Unit/E2E or accumulate a repair batch. A defect requires tested dev
+admission and a new cut. Main keeps stable source and the immutable version
+record (tag, Release manifest/provenance and promotion references). Main
+push/promotion events perform no product build/test, and there is no post-build
+source-record commit. A trusted main-ref controller may execute the release
+dispatch for its selected frozen source; the controller ref does not create a
+second product build phase.
+
+The feature CI phase is implemented here. The existing release and recovery
+workflows below deliberately retain their original native gates and exact-source
+contract until the dependent feature-evidence and trusted-main-controller slice
+is reviewed and activated. Moving those gates is not authorized by a successful
+feature job alone. The current publisher therefore still performs its historical
+assembly/E2E checks; this is a pending cutover, not the final release policy.
+
 ## Prepare and dispatch
 
 Land source and lock updates through Bodhi's normal reviewed pull-request flow. Keep source manifest versions at `0.0.0`; the workflow stamps the requested app version only in temporary publishing checkouts. Use numeric `YYYY.M.N`, with month 1–12 and counter 1–65535, without leading zeros. The app version is independent of both upstream versions.
