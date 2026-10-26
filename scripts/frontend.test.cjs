@@ -592,33 +592,17 @@ test("assembly verification rejects placeholders and validates target binaries",
   assert.throws(() => verifySidecar(root, "../outside"), /Invalid sidecar/);
 });
 
-test("only the release workflow uploads installers from the root Cargo workspace target", () => {
-  for (const workflowName of ["release.yml"]) {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, `../.github/workflows/${workflowName}`),
-      "utf8",
-    );
-    assert.doesNotMatch(workflow, /src-tauri\/target\/[^\n]+\/bundle\//);
-    assert.match(
-      workflow,
-      /target\/x86_64-unknown-linux-gnu\/release\/bundle\/appimage\/\*\.AppImage/,
-    );
-    assert.match(
-      workflow,
-      /target\/x86_64-pc-windows-msvc\/release\/bundle\/nsis\/\*\.exe/,
-    );
-    assert.match(workflow, /if-no-files-found: error/);
-  }
-  const release = fs.readFileSync(
-    path.join(__dirname, "../.github/workflows/release.yml"),
-    "utf8",
-  );
-  for (const target of ["aarch64-apple-darwin"]) {
-    assert.match(
-      release,
-      new RegExp(`target/${target}/release/bundle/dmg/\\*\\.dmg`),
-    );
-  }
+test("release captures original root-workspace installers before finalization", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/release.yml"), "utf8");
+  const output = fs.readFileSync(path.join(__dirname, "release-output.cjs"), "utf8");
+  assert.doesNotMatch(workflow, /src-tauri\/target\/|tauri-apps\/tauri-action/);
+  assert.equal((workflow.match(/npm run tauri:build/g) || []).length, 1);
+  assert.match(workflow, /scripts\/release-output\.cjs capture/);
+  assert.match(workflow, /if-no-files-found: error/);
+  assert.ok(output.includes('path.join(root, "target", target, "release")'));
+  assert.ok(output.includes('["appimage", "deb", "rpm"]'));
+  assert.ok(output.includes('["dmg", "macos"]'));
+  assert.ok(output.includes('["nsis"]'));
 });
 
 // The installed package must match the committed universal artifact lock.

@@ -1,0 +1,387 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { execFileSync, spawnSync } = require("node:child_process");
+const out = require("./release-output.cjs");
+const finalizer = require("./release-finalizer-v2.cjs");
+const { FEATURE_WORKFLOW_BLOB } = require("./release-source.cjs");
+const C = "c".repeat(40), S = "a".repeat(40), T = "b".repeat(40);
+const env = { GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: "2026.10.30", EXPECTED_SOURCE_SHA: S,
+  GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "2", GITHUB_WORKFLOW_SHA: C };
+const ctx = out.context(env);
+const clone = value => structuredClone(value);
+const restored = [];
+test.afterEach(() => {
+  for (const destination of restored.splice(0)) {
+    const owned = path.basename(destination) === "original" ? path.dirname(destination) : destination;
+    fs.rmSync(owned, { recursive: true, force: true });
+  }
+});
+function directory(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-original-test-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root;
+}
+function fixture() {
+  const proof = { schemaVersion: 1, repository: out.REPOSITORY, source: S, tree: T, base: "d".repeat(40), head: "e".repeat(40), snapshot: "f".repeat(40),
+    observedDev: S, currentDev: S, pullRequest: 17, runId: 20, attempt: 1, workflowBlob: FEATURE_WORKFLOW_BLOB,
+    jobs: ["Unit Tests (Node)", ...out.NATIVE_TARGETS.map(target => `Unit and E2E (${target})`), "Unit Tests", "E2E Tests"]
+      .map((name, index) => ({ id: index + 500, name, attempt: 1 })) };
+  const reservation = { schemaVersion: 2, kind: "bodhi-original-release", repository: out.REPOSITORY, source: S, tree: T,
+    controller: C, version: ctx.version, runId: ctx.runId, preflight: { jobId: 10, attempt: 1 }, admission: proof,
+    lockHashes: { "scripts/bamboo-sidecar-lock.json": "1".repeat(64), "scripts/frontend-package-lock.json": "2".repeat(64) },
+    frontend: JSON.parse(fs.readFileSync(path.join(__dirname, "frontend-package-lock.json"))) };
+  const job = (id, name, attempt, gates, active = false) => ({ id, name, run_id: ctx.runId, head_sha: C, run_attempt: attempt,
+    status: active ? "in_progress" : "completed", conclusion: active ? null : "success", started_at: "2026-10-27T00:00:00Z",
+    completed_at: active ? null : "2026-10-27T00:05:00Z", steps: gates.map(name => ({ name, status: "completed", conclusion: "success" })) });
+  const jobs = [job(10, "Reserve admitted release", 1, [out.PREFLIGHT, out.RESERVATION]),
+    ...out.NATIVE_TARGETS.map((target, index) => job(index + 11, `Build original (${target})`, index === 1 ? 2 : 1,
+      ["Select retained target output", "Verify source and stamp reserved version", out.BUILD, out.CAPTURE, out.RETAIN])),
+    job(14, "Publish original release", 2, [], true)];
+  const f = { reservation, job, jobs, run: { id: ctx.runId, run_attempt: ctx.attempt, repository: { full_name: out.REPOSITORY },
+    path: `${out.REPOSITORY}/.github/workflows/release.yml@refs/heads/main`, event: "workflow_dispatch", head_sha: C, head_branch: "main",
+    display_title: `Bodhi v2 v${ctx.version} @ ${S}`, status: "in_progress", conclusion: null }, calls: [], artifacts: [], files: {}, manifestBytes: {}, uploads: [], tag: null };
+  f.release = { id: 99, url: `https://api.github.com/repos/${out.REPOSITORY}/releases/99`, html_url: `https://github.com/${out.REPOSITORY}/releases/tag/${ctx.draftTag}`,
+    upload_url: `https://uploads.github.com/repos/${out.REPOSITORY}/releases/99/assets{?name,label}`, draft: true, prerelease: false,
+    target_commitish: S, tag_name: ctx.draftTag, body: JSON.stringify(reservation), assets: [] };
+  const artifact = (id, name) => ({ id, name, expired: false, digest: `sha256:${String(id).padStart(64, "0")}`, size_in_bytes: 3000,
+    created_at: "2026-10-27T00:04:00Z", workflow_run: { id: ctx.runId, head_sha: C } });
+  f.artifacts.push(artifact(100, ctx.reservationName)); f.files[100] = { "reservation.json": out.bytes({ releaseId: 99, reservation }) };
+  for (let index = 0; index < out.NATIVE_TARGETS.length; index++) {
+    const target = out.NATIVE_TARGETS[index], originalJob = jobs[index + 1], contents = {};
+    const files = out.names(ctx.version, target).map((name, fileIndex) => {
+      const data = Buffer.alloc(1024 ** 2, index * 4 + fileIndex + 1); contents[name] = data;
+      return { name, size: data.length, sha256: out.sha256(data) };
+    });
+    const receipt = { schemaVersion: 2, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: originalJob.id,
+      attempt: originalJob.run_attempt, checks: out.checks(target), files };
+    contents["target-receipt.json"] = out.bytes(receipt);
+    f.artifacts.push(artifact(101 + index, out.artifactName(ctx, target, originalJob.run_attempt))); f.files[101 + index] = contents;
+  }
+  f.extraReleases = []; return f;
+}
+function adapters(f) {
+  const request = (endpoint, method = "GET", body) => {
+    f.calls.push({ endpoint, method, body }); if (f.failEndpoint === endpoint) throw new Error("GitHub unavailable (HTTP 503)");
+    if (endpoint === `actions/runs/${ctx.runId}`) return clone(f.run);
+    if (endpoint.startsWith(`actions/runs/${ctx.runId}/jobs?`)) return { total_count: f.jobs.length, jobs: clone(f.jobs) };
+    if (endpoint.startsWith(`actions/runs/${ctx.runId}/artifacts?`)) return { total_count: f.artifacts.length, artifacts: clone(f.artifacts) };
+    if (endpoint.startsWith("releases?")) return clone([...(f.release ? [f.release] : []), ...f.extraReleases]);
+    if (endpoint === "releases" && method === "POST") {
+      assert.equal(f.release, null); f.release = { ...fixture().release, ...clone(body) };
+      if (f.lostCreate) throw new Error("lost create response"); return clone(f.release);
+    }
+    if (endpoint === "releases/99") {
+      if (method === "PATCH") {
+        if (f.patchWithoutCommit) throw new Error("PATCH failed before commit");
+        Object.assign(f.release, clone(body)); f.tag = { object: { type: "commit", sha: S } };
+        for (const asset of f.release.assets) asset.browser_download_url = `https://github.com/${out.REPOSITORY}/releases/download/${ctx.finalTag}/${asset.name}`;
+        if (f.lostPatch) throw new Error("lost PATCH response");
+      }
+      return clone(f.release);
+    }
+    if (endpoint === `git/ref/tags/${ctx.finalTag}`) return clone(f.tag);
+    if (endpoint === `git/ref/heads/release/${S}`) return { object: { sha: f.frozen || S } };
+    if (endpoint === `git/commits/${S}`) return { tree: { sha: f.tree || T } };
+    throw new Error(`Unexpected API call: ${method} ${endpoint}`);
+  };
+  const restore = (artifact, entries, destination) => {
+    restored.push(destination);
+    assert.ok(!fs.existsSync(destination)); fs.mkdirSync(destination, { recursive: true });
+    const contents = f.files[artifact.id]; assert.ok(contents, "Missing retained bytes");
+    assert.deepEqual(Object.keys(contents).sort(), [...entries].sort());
+    for (const [name, data] of Object.entries(contents)) fs.writeFileSync(path.join(destination, name), data, { flag: "wx" });
+  };
+  const send = (release, file, name) => {
+    f.uploads.push(name); const data = fs.readFileSync(file), id = 200 + f.release.assets.length;
+    assert.ok(!f.release.assets.some(asset => asset.name === name));
+    const asset = { id, name, size: data.length, digest: `sha256:${out.sha256(data)}`, state: "uploaded",
+      url: `https://api.github.com/repos/${out.REPOSITORY}/releases/assets/${id}`,
+      browser_download_url: `https://github.com/${out.REPOSITORY}/releases/download/${release.tag_name}/${name}` };
+    f.release.assets.push(asset); f.manifestBytes[id] = data;
+    if (f.lostUpload) throw new Error("lost upload response"); return clone(asset);
+  };
+  return { request, restore, send, read: id => JSON.parse(f.manifestBytes[id]) };
+}
+function assemble(t, f) {
+  const a = adapters(f), root = directory(t);
+  return finalizer.assemble(ctx, path.join(root, "evidence.json"), a.request, a.restore, a.send, a.read);
+}
+test("version reservation precedes every original build and binds separate controller/product", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  f.jobs.push({ name: "Build original (${{ matrix.target }})", status: "queued" });
+  f.lostCreate = true;
+  const result = finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, a.request);
+  assert.equal(result.releaseId, 99); assert.equal(result.reservation.controller, C); assert.equal(result.reservation.source, S);
+  assert.equal(result.reservation.preflight.attempt, 2); assert.equal(f.release.assets.length, 0);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+  assert.throws(() => finalizer.reserve(ctx, reservation, reservation.admission, a.request), /authenticated original reservation/);
+});
+for (const [field, value] of [["run_attempt", 1], ["head_sha", S], ["head_branch", "dev"], ["event", "push"],
+  ["path", "foreign/Bodhi-AI/.github/workflows/release.yml@main"], ["display_title", `Bodhi v${ctx.version} @ ${S}`],
+  ["status", "completed"], ["conclusion", "success"]]) test(`v2 run rejects different ${field}`, () => {
+  const f = fixture(); f.run[field] = value; assert.throws(() => finalizer.originalRun(ctx, adapters(f).request));
+});
+test("v2 recovery keeps a new trusted controller distinct from the original producer", () => {
+  const current = "9".repeat(40), values = { GITHUB_REPOSITORY: out.REPOSITORY, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main",
+    GITHUB_WORKFLOW_REF: `${out.REPOSITORY}/.github/workflows/recover-release.yml@refs/heads/main`, GITHUB_WORKFLOW_SHA: current, GITHUB_SHA: current };
+  const git = (_root, ...args) => args[0] === "rev-parse" ? current : "";
+  assert.equal(out.controller(true, values, out.ROOT, git), current);
+  for (const [field, value] of [["GITHUB_SHA", S], ["GITHUB_REF", `refs/heads/release/${S}`],
+    ["GITHUB_WORKFLOW_REF", `${out.REPOSITORY}/.github/workflows/release.yml@refs/heads/main`], ["GITHUB_EVENT_NAME", "pull_request"]])
+    assert.throws(() => out.controller(true, { ...values, [field]: value }, out.ROOT, git));
+  assert.equal(values.GITHUB_SHA, current);
+});
+for (const [label, mutate] of [
+  ["legacy draft", f => f.extraReleases.push({ id: 88, tag_name: `bodhi-draft-v${ctx.version}-55-1` })],
+  ["other v2 run", f => f.extraReleases.push({ id: 88, tag_name: `bodhi-v2-draft-v${ctx.version}-55` })],
+  ["existing tag", f => { f.tag = { object: { type: "commit", sha: S } }; }],
+  ["existing final release", f => f.extraReleases.push({ id: 88, tag_name: ctx.finalTag })],
+]) test(`reservation refuses ${label} without a build or write`, () => {
+  const f = fixture(); f.release = null; mutate(f); const a = adapters(f);
+  assert.throws(() => finalizer.available(ctx, a.request)); assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+test("independent successful targets from attempts 1/2 retain their exact immutable IDs and installer bytes", t => {
+  const f = fixture(), a = adapters(f), reservation = out.loadReservation(ctx, a.request, a.restore).reservation;
+  assert.deepEqual(reservation, f.reservation);
+  const chosen = out.NATIVE_TARGETS.map(target => out.selectTarget(ctx, reservation, target, a.request, a.restore, true));
+  assert.deepEqual(chosen.map(target => target.receipt.attempt), [1, 2, 1]);
+  assert.deepEqual(chosen.map(target => target.artifact.id), [101, 102, 103]);
+  assert.equal(chosen.flatMap(target => target.receipt.files).length, 6);
+  assert.ok(chosen[1].receipt.files.some(file => file.name.endsWith(".rpm")));
+  for (const item of chosen) t.after(() => fs.rmSync(path.dirname(item.directory), { recursive: true, force: true }));
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+test("rerun-all target selectors reuse earlier siblings without another physical build", () => {
+  const f = fixture(), target = out.NATIVE_TARGETS[0], a = adapters(f);
+  f.jobs.push(f.job(31, `Build original (${target})`, 2, ["Select retained target output"]));
+  const selected = out.selectTarget(ctx, f.reservation, target, a.request, a.restore, true);
+  assert.equal(selected.receipt.jobId, 11); assert.equal(selected.receipt.attempt, 1); assert.equal(selected.artifact.id, 101);
+});
+for (const [label, mutate] of [
+  ["missing successful output", f => f.artifacts.splice(1, 1)],
+  ["expired output", f => { f.artifacts[1].expired = true; }],
+  ["foreign run", f => { f.artifacts[1].workflow_run.id = 43; }],
+  ["foreign controller", f => { f.artifacts[1].workflow_run.head_sha = S; }],
+  ["missing immutable digest", f => { delete f.artifacts[1].digest; }],
+  ["outside original job", f => { f.artifacts[1].created_at = "2026-10-28T00:00:00Z"; }],
+  ["duplicate output", f => f.artifacts.push(clone(f.artifacts[1]))],
+  ["missing retention gate", f => { f.jobs[1].steps.at(-1).conclusion = "failure"; }],
+  ["failed original job", f => { f.jobs[1].conclusion = "failure"; }],
+  ["second physical build", f => f.jobs.push(f.job(31, f.jobs[1].name, 2, [out.BUILD]))],
+  ["foreign target receipt", f => { const r = JSON.parse(f.files[101]["target-receipt.json"]); r.target = out.NATIVE_TARGETS[1]; f.files[101]["target-receipt.json"] = out.bytes(r); }],
+  ["foreign job receipt", f => { const r = JSON.parse(f.files[101]["target-receipt.json"]); r.jobId = 999; f.files[101]["target-receipt.json"] = out.bytes(r); }],
+  ["foreign attempt receipt", f => { const r = JSON.parse(f.files[101]["target-receipt.json"]); r.attempt = 2; f.files[101]["target-receipt.json"] = out.bytes(r); }],
+  ["foreign source reservation", f => { const r = JSON.parse(f.files[101]["target-receipt.json"]); r.reservationSha256 = "f".repeat(64); f.files[101]["target-receipt.json"] = out.bytes(r); }],
+  ["changed installer", f => { f.files[101][Object.keys(f.files[101])[0]][0] ^= 1; }],
+]) test(`original target selection refuses ${label}; never rebuilds or mutates`, () => {
+  const f = fixture(); mutate(f); const a = adapters(f);
+  assert.throws(() => out.selectTarget(ctx, f.reservation, out.NATIVE_TARGETS[0], a.request, a.restore));
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+test("a failed build with no successful build output may retry; successful Build with no receipt may not", () => {
+  const f = fixture(), a = adapters(f), target = out.NATIVE_TARGETS[0];
+  f.jobs[1].steps.find(step => step.name === out.BUILD).conclusion = "failure"; f.jobs[1].conclusion = "failure"; f.artifacts.splice(1, 1);
+  assert.equal(out.selectTarget(ctx, f.reservation, target, a.request, a.restore), null);
+  f.jobs[1].steps.find(step => step.name === out.BUILD).conclusion = "success";
+  assert.throws(() => out.selectTarget(ctx, f.reservation, target, a.request, a.restore));
+});
+for (const [label, mutate] of [
+  ["moved frozen source", f => { f.frozen = C; }], ["changed source tree", f => { f.tree = C; }],
+  ["preflight evidence missing", f => f.artifacts.shift()], ["preflight evidence expired", f => { f.artifacts[0].expired = true; }],
+  ["preflight evidence changed", f => { f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: { ...f.reservation, source: C } }); }],
+  ["unretained preflight", f => { f.jobs[0].steps.at(-1).conclusion = "skipped"; }],
+]) test(`source-bound reservation refuses ${label}`, () => {
+  const f = fixture(); mutate(f); const a = adapters(f); assert.throws(() => out.loadReservation(ctx, a.request, a.restore));
+});
+test("finalization uploads all six originals plus manifest; ambiguous upload and PATCH responses read back same IDs", t => {
+  const f = fixture(); f.lostUpload = true; f.lostPatch = true;
+  const evidence = assemble(t, f), a = adapters(f), before = clone(evidence.assets);
+  assert.equal(f.uploads.length, 7); assert.equal(evidence.manifest.reservation.controller, C); assert.equal(evidence.manifest.reservation.source, S);
+  const release = finalizer.publish(ctx, evidence, a.request);
+  assert.equal(release.id, 99); assert.equal(release.target_commitish, S); assert.equal(release.tag_name, ctx.finalTag);
+  finalizer.verifyPublished(ctx, release, evidence.manifest);
+  finalizer.publish(ctx, evidence, a.request);
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 1);
+  assert.deepEqual(evidence.assets, before); assert.equal(f.uploads.length, 7);
+});
+test("same-run finalizer retry retains existing asset IDs and original manifest attempt", t => {
+  const f = fixture(), first = assemble(t, f), a = adapters(f);
+  const output = path.join(directory(t), "evidence.json");
+  const second = finalizer.assemble(ctx, output, a.request, a.restore, a.send, a.read);
+  assert.deepEqual(second, first); assert.equal(f.uploads.length, 7);
+});
+test("a later finalizer attempt reuses earlier native outputs and the first immutable manifest", t => {
+  const f = fixture(), first = assemble(t, f), a = adapters(f), next = out.context({ ...env, GITHUB_RUN_ATTEMPT: "3" });
+  f.jobs.at(-1).status = "completed"; f.jobs.at(-1).conclusion = "failure"; f.jobs.at(-1).completed_at = "2026-10-27T00:05:00Z";
+  f.jobs.push(f.job(24, "Publish original release", 3, [], true)); f.run.run_attempt = 3;
+  const second = finalizer.assemble(next, path.join(directory(t), "evidence.json"), a.request, a.restore, a.send, a.read);
+  assert.equal(second.finalizerAttempt, 3); assert.equal(second.manifest.finalizer.attempt, 2);
+  assert.deepEqual(second.manifest, first.manifest); assert.equal(f.uploads.length, 7);
+  finalizer.publish(next, second, a.request);
+});
+for (const [label, mutate] of [
+  ["asset digest", f => { f.release.assets[0].digest = `sha256:${"0".repeat(64)}`; }],
+  ["asset size", f => { f.release.assets[0].size++; }], ["asset ID", f => { f.release.assets[0].id++; }],
+  ["source", f => { f.release.target_commitish = C; }], ["foreign asset", f => f.release.assets.push(clone(f.release.assets[0]))],
+  ["reservation lock", f => { const value = JSON.parse(f.release.body); value.lockHashes["scripts/frontend-package-lock.json"] = "f".repeat(64); f.release.body = JSON.stringify(value); }],
+  ["reservation PR", f => { const value = JSON.parse(f.release.body); value.admission.pullRequest++; f.release.body = JSON.stringify(value); }],
+  ["final tag occupied", f => { f.tag = { object: { type: "commit", sha: C } }; }],
+]) test(`publication refuses changed ${label} without replacement or PATCH`, t => {
+  const f = fixture(), evidence = assemble(t, f); mutate(f); const a = adapters(f);
+  assert.throws(() => finalizer.publish(ctx, evidence, a.request));
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 0); assert.equal(f.uploads.length, 7);
+});
+test("conflicting pre-existing installer is refused, never deleted/replaced", t => {
+  const f = fixture(), a = adapters(f), root = directory(t), targetFile = Object.keys(f.files[101])[0], file = path.join(root, targetFile);
+  fs.writeFileSync(file, f.files[101][targetFile]); a.send(f.release, file, targetFile); f.release.assets[0].digest = `sha256:${"0".repeat(64)}`;
+  assert.throws(() => finalizer.assemble(ctx, path.join(root, "evidence.json"), a.request, a.restore, a.send, a.read), /Conflicting original asset/);
+  assert.equal(f.uploads.length, 1); assert.equal(f.calls.filter(call => ["PATCH", "DELETE"].includes(call.method)).length, 0);
+});
+test("read-only recovery requires the exact failed finalizer/evidence attempt and retains mixed native attempts", t => {
+  const f = fixture(), evidence = assemble(t, f), a = adapters(f);
+  f.run.status = "completed"; f.run.conclusion = "failure";
+  const job = f.jobs.at(-1); job.status = "completed"; job.conclusion = "failure"; job.completed_at = "2026-10-27T00:05:00Z";
+  job.steps = [finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH].map((name, index) => ({ name, status: "completed", conclusion: index === 2 ? "failure" : "success" }));
+  f.artifacts.push({ ...f.artifacts[0], id: 150, name: ctx.evidenceName }); f.files[150] = { "evidence.json": out.bytes(evidence) };
+  const original = finalizer.recoveryArtifact({ ...ctx, controller: "9".repeat(40) }, a.request);
+  assert.equal(original.ctx.controller, C); assert.equal(original.artifact.id, 150);
+  f.lostPatch = true; finalizer.publish(original.ctx, evidence, a.request); finalizer.publish(original.ctx, evidence, a.request);
+  assert.deepEqual(evidence.manifest.targets.map(target => target.receipt.attempt), [1, 2, 1]);
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 1);
+  job.steps[0].conclusion = "failure"; assert.throws(() => finalizer.recoveryArtifact(ctx, a.request));
+});
+test("lost publication before commit stops; retry uses originals and performs one later PATCH", t => {
+  const f = fixture(), evidence = assemble(t, f), a = adapters(f); f.patchWithoutCommit = true;
+  assert.throws(() => finalizer.publish(ctx, evidence, a.request), /before commit/);
+  f.patchWithoutCommit = false; finalizer.publish(ctx, evidence, a.request);
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 2); assert.equal(f.uploads.length, 7);
+});
+test("publication requires the exact retained evidence artifact before PATCH", t => {
+  const f = fixture(), evidence = assemble(t, f), a = adapters(f), job = f.jobs.at(-1);
+  job.steps = [finalizer.ASSEMBLE, finalizer.EVIDENCE].map(name => ({ name, status: "completed", conclusion: "success" }));
+  job.started_at = new Date(Date.now() - 60000).toISOString();
+  f.artifacts.push({ ...f.artifacts[0], id: 150, name: ctx.evidenceName, created_at: new Date(Date.now() - 1000).toISOString() }); f.files[150] = { "evidence.json": out.bytes(evidence) };
+  assert.equal(finalizer.retainedEvidence(ctx, evidence, a.request, a.restore).id, 150);
+  f.files[150]["evidence.json"] = out.bytes({ ...evidence, finalizerAttempt: 1 });
+  assert.throws(() => finalizer.retainedEvidence(ctx, evidence, a.request, a.restore), /evidence differs/);
+  f.artifacts.pop(); assert.throws(() => finalizer.retainedEvidence(ctx, evidence, a.request, a.restore), /artifact missing/);
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 0);
+});
+test("API failures never become absence or a new build/version", () => {
+  const f = fixture(), a = adapters(f); f.failEndpoint = `git/ref/tags/${ctx.finalTag}`;
+  assert.throws(() => finalizer.available(ctx, a.request), /unavailable/);
+  f.failEndpoint = `actions/runs/${ctx.runId}`; assert.throws(() => finalizer.originalRun(ctx, a.request), /unavailable/);
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+test("temporary version stamping updates only the local app metadata and package lock", t => {
+  const root = directory(t); fs.mkdirSync(path.join(root, "src-tauri"));
+  const cargo = '[package]\nname = "bodhi"\nversion = "0.0.0"\n', lock = 'version = 4\n[[package]]\nname = "bodhi"\nversion = "0.0.0"\n[[package]]\nname = "other"\nversion = "0.0.0"\n';
+  fs.writeFileSync(path.join(root, "src-tauri/Cargo.toml"), cargo); fs.writeFileSync(path.join(root, "Cargo.lock"), lock);
+  fs.writeFileSync(path.join(root, "src-tauri/tauri.conf.json"), JSON.stringify({ version: "0.0.0", build: { beforeBuildCommand: "hook" } }));
+  out.stamp(root, ctx.version);
+  assert.match(fs.readFileSync(path.join(root, "src-tauri/Cargo.toml"), "utf8"), /version = "2026\.10\.30"/);
+  assert.match(fs.readFileSync(path.join(root, "Cargo.lock"), "utf8"), /name = "other"\nversion = "0\.0\.0"/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.conf.json"))).build.beforeBuildCommand, "hook");
+  assert.throws(() => out.stamp(root, ctx.version));
+});
+test("actual immutable ZIP adapter checks raw digest and flat entry set before restoring original bytes", t => {
+  const root = directory(t), input = path.join(root, "input"); fs.mkdirSync(input);
+  fs.writeFileSync(path.join(input, "target-receipt.json"), '{"schemaVersion":2}\n'); fs.writeFileSync(path.join(input, "original.rpm"), Buffer.alloc(1024 ** 2, 7));
+  const zip = path.join(root, "original.zip"); execFileSync("zip", ["-q", zip, "target-receipt.json", "original.rpm"], { cwd: input, env: out.childEnv() });
+  // The child receives only adapter-specific data, never the host publisher/tunnel environment.
+  const gh = path.join(root, "gh"); fs.writeFileSync(gh, `#!/bin/sh\nexec /bin/cat '${zip.replaceAll("'", "'\\''")}'\n`, { mode: 0o700 });
+  const oldPath = process.env.PATH; process.env.PATH = root + path.delimiter + oldPath;
+  try {
+    const artifact = { id: 101, digest: `sha256:${out.hashFile(zip)}` }, entries = ["target-receipt.json", "original.rpm"];
+    const output = path.join(root, "restored"); out.download(artifact, entries, output);
+    assert.equal(out.hashFile(path.join(output, "original.rpm")), out.hashFile(path.join(input, "original.rpm")));
+    assert.throws(() => out.download({ ...artifact, digest: `sha256:${"0".repeat(64)}` }, entries, path.join(root, "bad-digest")), /ZIP digest differs/);
+    assert.throws(() => out.download(artifact, ["target-receipt.json"], path.join(root, "bad-entries")), /flat file set/);
+    assert.throws(() => out.download(artifact, entries, output), /must be new/);
+  } finally { process.env.PATH = oldPath; }
+});
+test("subprocess credential scope excludes unrelated publisher and host secrets", () => {
+  assert.deepEqual(out.childEnv({ PATH: "/bin", HOME: "/home", GH_TOKEN: "needed", GITHUB_TOKEN: "unused", NPM_TOKEN: "unused", HOST_TUNNEL_TOKEN: "unused" }),
+    { PATH: "/bin", HOME: "/home", GH_TOKEN: "needed" });
+});
+test("actual CLI keeps real Git controller/source identities and stamps only the disposable product checkout", t => {
+  const root = directory(t), controller = path.join(root, "controller"), product = path.join(root, "product"), bin = path.join(root, "bin");
+  fs.mkdirSync(controller); fs.mkdirSync(product); fs.mkdirSync(bin);
+  fs.cpSync(__dirname, path.join(controller, "scripts"), { recursive: true, filter: file => !file.includes("node_modules") });
+  fs.mkdirSync(path.join(product, "scripts")); fs.mkdirSync(path.join(product, "src-tauri"));
+  for (const name of ["bamboo-sidecar-lock.json", "frontend-package-lock.json"]) fs.copyFileSync(path.join(__dirname, name), path.join(product, "scripts", name));
+  fs.writeFileSync(path.join(product, "src-tauri/Cargo.toml"), '[package]\nname = "bodhi"\nversion = "0.0.0"\n');
+  fs.writeFileSync(path.join(product, "src-tauri/tauri.conf.json"), '{"version":"0.0.0"}\n');
+  fs.writeFileSync(path.join(product, "Cargo.lock"), 'version = 4\n[[package]]\nname = "bodhi"\nversion = "0.0.0"\n');
+  const gitEnv = { ...out.childEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
+  const git = (cwd, ...args) => execFileSync("git", args, { cwd, env: gitEnv, encoding: "utf8" }).trim();
+  for (const cwd of [controller, product]) {
+    git(cwd, "init", "--quiet"); git(cwd, "add", ".");
+    git(cwd, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture");
+  }
+  const actualC = git(controller, "rev-parse", "HEAD"), actualS = git(product, "rev-parse", "HEAD"), actualT = git(product, "rev-parse", "HEAD^{tree}");
+  const f = fixture();
+  const changed = JSON.parse(JSON.stringify({ run: f.run, jobs: f.jobs, release: f.release, artifacts: f.artifacts, reservation: f.reservation })
+    .replaceAll(C, actualC).replaceAll(S, actualS).replaceAll(T, actualT));
+  const actualCtx = { ...ctx, source: actualS, controller: actualC };
+  for (const file of Object.keys(changed.reservation.lockHashes)) changed.reservation.lockHashes[file] = out.sha256(fs.readFileSync(path.join(product, file)));
+  changed.release.body = JSON.stringify(changed.reservation);
+  const contents = { "reservation.json": out.bytes({ releaseId: 99, reservation: changed.reservation }) };
+  const mac = JSON.parse(f.files[101]["target-receipt.json"]); mac.reservationSha256 = out.sha256(out.bytes(changed.reservation));
+  const macContents = { ...f.files[101], "target-receipt.json": out.bytes(mac) };
+  changed.zip = {};
+  for (const [id, files] of [[100, contents], [101, macContents]]) {
+    const input = path.join(root, `zip-${id}`); fs.mkdirSync(input);
+    for (const [name, data] of Object.entries(files)) fs.writeFileSync(path.join(input, name), data);
+    const archive = path.join(root, `${id}.zip`); execFileSync("zip", ["-q", archive, ...Object.keys(files)], { cwd: input, env: out.childEnv() });
+    changed.zip[id] = archive; changed.artifacts.find(artifact => artifact.id === id).digest = `sha256:${out.hashFile(archive)}`;
+  }
+  const state = path.join(root, "github.json"); fs.writeFileSync(state, JSON.stringify(changed));
+  fs.writeFileSync(path.join(bin, "gh"), `#!${process.execPath}
+const fs=require('node:fs'), f=JSON.parse(fs.readFileSync(${JSON.stringify(state)}));
+if(process.env.HOST_TUNNEL_TOKEN || process.env.NPM_TOKEN) throw Error('unrelated credentials inherited');
+const endpoint=process.argv.find(v=>v.startsWith('repos/')).slice('repos/${out.REPOSITORY}/'.length);
+if(endpoint.endsWith('/zip')) { process.stdout.write(fs.readFileSync(f.zip[endpoint.split('/')[2]])); process.exit(0); }
+let result;
+if(endpoint==='actions/runs/42') result=f.run;
+else if(endpoint.includes('/jobs?')) result={total_count:f.jobs.length,jobs:f.jobs};
+else if(endpoint.includes('/artifacts?')) result={total_count:f.artifacts.length,artifacts:f.artifacts};
+else if(endpoint.startsWith('releases?')) result=[f.release];
+else if(endpoint==='releases/99') result=f.release;
+else if(endpoint==='git/ref/heads/release/${actualS}') result={object:{sha:${JSON.stringify(actualS)}}};
+else if(endpoint==='git/commits/${actualS}') result={tree:{sha:${JSON.stringify(actualT)}}};
+else throw Error('unexpected endpoint '+endpoint);
+process.stdout.write(JSON.stringify(result));\n`, { mode: 0o700 });
+  const output = path.join(root, "outputs"), cliEnv = { ...out.childEnv({ PATH: bin + path.delimiter + process.env.PATH, HOME: process.env.HOME, TMPDIR: root }), ...env,
+    GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main", GITHUB_WORKFLOW_REF: `${out.REPOSITORY}/.github/workflows/release.yml@refs/heads/main`,
+    GITHUB_WORKFLOW_SHA: actualC, GITHUB_SHA: actualC, EXPECTED_SOURCE_SHA: actualS, SOURCE_ROOT: product, GITHUB_OUTPUT: output,
+    HOST_TUNNEL_TOKEN: "fixture-unused", NPM_TOKEN: "fixture-unused" };
+  const run = command => spawnSync(process.execPath, [path.join(controller, "scripts/release-output.cjs"), command, out.NATIVE_TARGETS[0]],
+    { cwd: controller, env: cliEnv, encoding: "utf8" });
+  const plan = run("plan"); assert.equal(plan.status, 0, plan.stderr); assert.match(fs.readFileSync(output, "utf8"), /^reuse=true\n/);
+  const prepare = run("prepare"); assert.equal(prepare.status, 0, prepare.stderr);
+  assert.equal(git(product, "rev-parse", "HEAD"), actualS); assert.equal(git(controller, "rev-parse", "HEAD"), actualC);
+  assert.equal(git(controller, "status", "--porcelain"), ""); assert.equal(cliEnv.GITHUB_SHA, actualC);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(product, "src-tauri/tauri.conf.json"))).version, actualCtx.version);
+});
+test("release/recovery graph has one build owner, no release runtime tests, explicit legacy recovery and unchanged locks", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/release.yml"), "utf8");
+  const recovery = fs.readFileSync(path.join(__dirname, "../.github/workflows/recover-release.yml"), "utf8");
+  const native = workflow.slice(workflow.indexOf("  publish-tauri:"), workflow.indexOf("  finalize:"));
+  const finalization = workflow.slice(workflow.indexOf("  finalize:"));
+  assert.equal((workflow.match(/npm run tauri:build/g) || []).length, 1);
+  assert.doesNotMatch(workflow, /cargo test|test:build|sidecar-bundle-smoke|browser-bundle-smoke|npm run web:build|scripts\/bamboo-sidecar\.cjs install|tauri-apps\/tauri-action/);
+  assert.doesNotMatch(native, /contents: write|GITHUB_TOKEN:/); assert.match(native, /bundles: appimage,deb,rpm/);
+  assert.doesNotMatch(finalization, /working-directory: product|cargo |npm |tauri:build/);
+  for (const name of [out.PREFLIGHT, out.RESERVATION, out.BUILD, out.CAPTURE, out.RETAIN, finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH]) assert.ok(workflow.includes(`- name: ${name}`));
+  assert.ok(workflow.includes("ref: ${{ github.workflow_sha }}")); assert.ok(workflow.includes("ref: ${{ inputs.expected_source_sha }}"));
+  assert.doesNotMatch(workflow + recovery, /GITHUB_SHA:\s|export GITHUB_SHA|GITHUB_WORKFLOW_SHA:\s/);
+  for (const body of [workflow, recovery]) assert.match(body, /group: bodhi-release-\$\{\{ inputs.bodhi_version \}\}\n  cancel-in-progress: false/);
+  assert.match(recovery, /if: inputs\.evidence_schema == '1'/); assert.match(recovery, /if: inputs\.evidence_schema == '2'/);
+  assert.match(recovery, /scripts\/release-finalizer\.cjs recover/); assert.match(recovery, /scripts\/release-finalizer-v2\.cjs recover/);
+  assert.equal(out.NATIVE_TARGETS.length, 3); assert.equal(out.NATIVE_TARGETS.flatMap(target => out.names(ctx.version, target)).length, 6);
+});
