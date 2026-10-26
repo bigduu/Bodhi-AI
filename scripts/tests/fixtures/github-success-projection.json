@@ -1,0 +1,243 @@
+{
+  "repository": "bigduu/lotus-next",
+  "runId": 40375990335,
+  "totalRows": 22,
+  "jobs": [
+    {
+      "id": 121759187383,
+      "run_id": 40375990335,
+      "run_attempt": 1,
+      "name": "Node 24",
+      "head_sha": "55d1b7dc9d49eea09a79ea7667b121d7c4aca202",
+      "head_branch": "lotus-next/ci/446-feature-unit-e2e",
+      "workflow_name": "Frontend checks",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-26T18:14:55Z",
+      "completed_at": "2026-10-26T18:18:14Z",
+      "runner_id": 1000047326,
+      "runner_name": "GitHub Actions 1000047326",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-26T18:14:56Z",
+          "completed_at": "2026-10-26T18:14:57Z"
+        },
+        {
+          "name": "Check out repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-26T18:14:57Z",
+          "completed_at": "2026-10-26T18:14:59Z"
+        },
+        {
+          "name": "Set up Node.js",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-26T18:14:59Z",
+          "completed_at": "2026-10-26T18:15:02Z"
+        },
+        {
+          "name": "Install dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-26T18:15:02Z",
+          "completed_at": "2026-10-26T18:15:11Z"
+        },
+        {
+          "name": "Verify Node 22 Unit compatibility",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-10-26T18:15:11Z",
+          "completed_at": "2026-10-26T18:15:11Z"
+        },
+        {
+          "name": "Verify architecture, behavior, build, and package contents",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-26T18:15:11Z",
+          "completed_at": "2026-10-26T18:18:02Z"
+        },
+        {
+          "name": "Verify the deterministic provider fixture",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-26T18:18:02Z",
+          "completed_at": "2026-10-26T18:18:02Z"
+        },
+        {
+          "name": "Verify the complete four-shard browser inventory",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-10-26T18:18:02Z",
+          "completed_at": "2026-10-26T18:18:11Z"
+        },
+        {
+          "name": "Share the verified exact-source artifact and inventory",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-10-26T18:18:11Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        },
+        {
+          "name": "Post Set up Node.js",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-10-26T18:18:13Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        },
+        {
+          "name": "Post Check out repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-10-26T18:18:13Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-10-26T18:18:13Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        }
+      ]
+    },
+    {
+      "id": 121813921707,
+      "run_id": 40375990335,
+      "run_attempt": 2,
+      "name": "Node 24",
+      "head_sha": "55d1b7dc9d49eea09a79ea7667b121d7c4aca202",
+      "head_branch": "lotus-next/ci/446-feature-unit-e2e",
+      "workflow_name": "Frontend checks",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-26T18:14:55Z",
+      "completed_at": "2026-10-26T18:18:14Z",
+      "runner_id": 1000047326,
+      "runner_name": "GitHub Actions 1000047326",
+      "runner_group_id": null,
+      "runner_group_name": "GitHub Actions",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-26T18:14:56Z",
+          "completed_at": "2026-10-26T18:14:57Z"
+        },
+        {
+          "name": "Check out repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-10-26T18:14:57Z",
+          "completed_at": "2026-10-26T18:14:59Z"
+        },
+        {
+          "name": "Set up Node.js",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-10-26T18:14:59Z",
+          "completed_at": "2026-10-26T18:15:02Z"
+        },
+        {
+          "name": "Install dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-10-26T18:15:02Z",
+          "completed_at": "2026-10-26T18:15:11Z"
+        },
+        {
+          "name": "Verify Node 22 Unit compatibility",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 5,
+          "started_at": "2026-10-26T18:15:11Z",
+          "completed_at": "2026-10-26T18:15:11Z"
+        },
+        {
+          "name": "Verify architecture, behavior, build, and package contents",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-10-26T18:15:11Z",
+          "completed_at": "2026-10-26T18:18:02Z"
+        },
+        {
+          "name": "Verify the deterministic provider fixture",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-10-26T18:18:02Z",
+          "completed_at": "2026-10-26T18:18:02Z"
+        },
+        {
+          "name": "Verify the complete four-shard browser inventory",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8,
+          "started_at": "2026-10-26T18:18:02Z",
+          "completed_at": "2026-10-26T18:18:11Z"
+        },
+        {
+          "name": "Share the verified exact-source artifact and inventory",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9,
+          "started_at": "2026-10-26T18:18:11Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        },
+        {
+          "name": "Post Set up Node.js",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17,
+          "started_at": "2026-10-26T18:18:13Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        },
+        {
+          "name": "Post Check out repository",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18,
+          "started_at": "2026-10-26T18:18:13Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19,
+          "started_at": "2026-10-26T18:18:13Z",
+          "completed_at": "2026-10-26T18:18:13Z"
+        }
+      ]
+    }
+  ]
+}

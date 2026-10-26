@@ -162,6 +162,18 @@ function verifyEvidence(ctx, evidence, release) {
   validateAsset(manifest[0], ctx); assert.deepEqual(assetIdentity(manifest[0]), evidence.manifestAsset);
   assert.equal(manifest[0].digest, `sha256:${evidence.manifestSha256}`); assert.equal(manifest[0].size, bytes(evidence.manifest).length);
 }
+function refreshSource(ctx, reservation, request = api) {
+  assert.equal(request(`git/ref/heads/release/${ctx.source}`)?.object?.sha, ctx.source, "Frozen source changed before publication");
+  assert.equal(request(`git/commits/${ctx.source}`)?.tree?.sha, reservation.tree, "Product tree changed before publication");
+  const current = source.devHead(request("branches/dev"));
+  const ancestry = request(`compare/${ctx.source}...${current}`);
+  assert.equal(ancestry?.merge_base_commit?.sha, ctx.source, "Admitted source left dev ancestry");
+  if (current !== reservation.admission.currentDev) {
+    const advance = request(`compare/${reservation.admission.currentDev}...${current}`);
+    assert.ok(advance?.status === "ahead" && advance.behind_by === 0 && advance.merge_base_commit?.sha === reservation.admission.currentDev,
+      "Dev was rewritten after source admission");
+  }
+}
 function publish(ctx, evidence, request = api) {
   const releaseId = evidence.manifest.releaseId;
   let release = request(`releases/${releaseId}`); out.releaseReservation(release, ctx); verifyEvidence(ctx, evidence, release);
@@ -169,6 +181,7 @@ function publish(ctx, evidence, request = api) {
   if (release.draft) {
     // Last read immediately before the one mutation; no delete/overwrite or rebuild fallback.
     release = request(`releases/${releaseId}`); verifyEvidence(ctx, evidence, release); available(ctx, request, release);
+    refreshSource(ctx, evidence.manifest.reservation, request);
     let failure;
     try { request(`releases/${releaseId}`, "PATCH", { tag_name: ctx.finalTag, target_commitish: ctx.source,
       name: `App v${ctx.version}`, draft: false, prerelease: false, make_latest: "true" }); } catch (error) { failure = error; }
@@ -248,5 +261,5 @@ function main() {
   assert.equal(command, "publish"); const evidence = readJson(file); retainedEvidence(ctx, evidence); publish(ctx, evidence);
 }
 module.exports = { ASSEMBLE, EVIDENCE, PUBLISH, available, reserve, originalRun, validateAsset, nativeAssets, verifyManifest,
-  retainAsset, assemble, verifyEvidence, publish, recoveryArtifact, retainedEvidence, verifyPublished };
+  retainAsset, assemble, verifyEvidence, refreshSource, publish, recoveryArtifact, retainedEvidence, verifyPublished };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi v2 release: ${error.message}`); process.exitCode = 1; } }

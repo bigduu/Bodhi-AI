@@ -83,8 +83,15 @@ function adapters(f) {
       return clone(f.release);
     }
     if (endpoint === `git/ref/tags/${ctx.finalTag}`) return clone(f.tag);
-    if (endpoint === `git/ref/heads/release/${S}`) return { object: { sha: f.frozen || S } };
-    if (endpoint === `git/commits/${S}`) return { tree: { sha: f.tree || T } };
+    if (endpoint === `git/ref/heads/release/${S}`) return f.frozen === null ? null : { object: { sha: f.frozen || S } };
+    if (endpoint === `git/commits/${S}`) return f.tree === null ? null : { tree: { sha: f.tree || T } };
+    if (endpoint === "branches/dev") return clone(f.branch || { protected: true, commit: { sha: f.dev || S }, protection: { required_status_checks: {
+      enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"], checks: ["Unit Tests", "E2E Tests"].map(context => ({ context, app_id: 15368 })) } } });
+    if (endpoint.startsWith("compare/")) {
+      if (f.comparisons?.[endpoint]) return clone(f.comparisons[endpoint]);
+      const [base, head] = endpoint.slice("compare/".length).split("...");
+      return { status: base === head ? "identical" : "ahead", behind_by: 0, merge_base_commit: { sha: base } };
+    }
     throw new Error(`Unexpected API call: ${method} ${endpoint}`);
   };
   const restore = (artifact, entries, destination) => {
@@ -160,6 +167,38 @@ test("rerun-all target selectors reuse earlier siblings without another physical
   f.jobs.push(f.job(31, `Build original (${target})`, 2, ["Select retained target output"]));
   const selected = out.selectTarget(ctx, f.reservation, target, a.request, a.restore, true);
   assert.equal(selected.receipt.jobId, 11); assert.equal(selected.receipt.attempt, 1); assert.equal(selected.artifact.id, 101);
+});
+test("observed GitHub failed-job retry projects the same successful execution under a new logical ID", () => {
+  const recorded = require("./tests/fixtures/github-success-projection.json"), [original, projection] = recorded.jobs;
+  assert.equal(recorded.runId, 40375990335); assert.equal(recorded.totalRows, 22);
+  assert.equal(original.id, 121759187383); assert.equal(projection.id, 121813921707);
+  assert.equal(original.started_at, "2026-10-26T18:14:55Z"); assert.equal(original.completed_at, "2026-10-26T18:18:14Z");
+  assert.notEqual(original.runner_group_id, projection.runner_group_id);
+  assert.equal(require("./release-source.cjs").executionOrigin(projection, recorded.jobs).id, original.id);
+});
+function targetProjection(f) {
+  const original = f.jobs[1];
+  original.steps.forEach((step, index) => Object.assign(step, { number: index + 1,
+    started_at: "2026-10-27T00:01:00Z", completed_at: "2026-10-27T00:02:00Z" }));
+  const projection = { ...clone(original), id: 31, run_attempt: 2 };
+  f.jobs.push(projection); return projection;
+}
+test("server projection keeps the original physical receipt/job/attempt/artifact and verifies latest logical success", () => {
+  const f = fixture(); targetProjection(f); const a = adapters(f);
+  const original = out.selectTarget(ctx, f.reservation, out.NATIVE_TARGETS[0], a.request, a.restore, true);
+  assert.equal(original.receipt.jobId, 11); assert.equal(original.receipt.attempt, 1); assert.equal(original.artifact.id, 101);
+});
+for (const [label, mutate] of [
+  ["latest failed logical job", (f, job) => { job.conclusion = "failure"; job.steps.find(step => step.name === out.BUILD).conclusion = "failure"; }],
+  ["different real execution", (f, job) => { job.started_at = "2026-10-27T00:00:01Z"; }],
+  ["different step execution", (f, job) => { job.steps[2].started_at = "2026-10-27T00:01:01Z"; }],
+  ["missing real step time", (f, job) => { delete job.steps[2].started_at; }],
+  ["same-attempt ambiguity", (f, job) => { job.run_attempt = 1; }],
+  ["a second physical output", f => f.artifacts.push({ ...clone(f.artifacts[1]), id: 151, name: out.artifactName(ctx, out.NATIVE_TARGETS[0], 2) })],
+]) test(`projection handling refuses ${label} without hiding a later build or failure`, () => {
+  const f = fixture(), projection = targetProjection(f); mutate(f, projection); const a = adapters(f);
+  for (const latest of [false, true]) assert.throws(() => out.selectTarget(ctx, f.reservation, out.NATIVE_TARGETS[0], a.request, a.restore, latest));
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
 });
 for (const [label, mutate] of [
   ["missing successful output", f => f.artifacts.splice(1, 1)],
@@ -259,6 +298,41 @@ test("lost publication before commit stops; retry uses originals and performs on
   assert.throws(() => finalizer.publish(ctx, evidence, a.request), /before commit/);
   f.patchWithoutCommit = false; finalizer.publish(ctx, evidence, a.request);
   assert.equal(f.calls.filter(call => call.method === "PATCH").length, 2); assert.equal(f.uploads.length, 7);
+});
+for (const [label, mutate] of [
+  ["frozen ref moved", f => { f.frozen = C; }],
+  ["frozen ref missing", f => { f.frozen = null; }],
+  ["source tree changed", f => { f.tree = C; }],
+  ["dev protection lost", f => { f.branch = { protected: false, commit: { sha: S } }; }],
+  ["required checks removed", f => { f.branch = { protected: true, commit: { sha: S }, protection: { required_status_checks: { enforcement_level: "everyone", contexts: [], checks: [] } } }; }],
+  ["dev source ancestry changed", f => { f.dev = C; f.comparisons = { [`compare/${S}...${C}`]: { status: "diverged", behind_by: 1, merge_base_commit: { sha: "9".repeat(40) } } }; }],
+  ["frozen ref API unknown", f => { f.failEndpoint = `git/ref/heads/release/${S}`; }],
+  ["dev API unknown", f => { f.failEndpoint = "branches/dev"; }],
+  ["source tree API unknown", f => { f.failEndpoint = `git/commits/${S}`; }],
+  ["ancestry API unknown", f => { f.failEndpoint = `compare/${S}...${S}`; }],
+]) test(`publication freshness refuses ${label} after assembly/evidence, before any PATCH`, t => {
+  const f = fixture(), evidence = assemble(t, f), original = clone(evidence.manifest.reservation), a = adapters(f);
+  mutate(f); assert.throws(() => finalizer.publish(ctx, evidence, a.request));
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 0); assert.equal(f.uploads.length, 7);
+  assert.deepEqual(evidence.manifest.reservation, original);
+});
+test("publication allows normal protected-dev advancement without rewriting original admission", t => {
+  const f = fixture(), evidence = assemble(t, f), original = clone(evidence.manifest.reservation), a = adapters(f); f.dev = C;
+  finalizer.publish(ctx, evidence, a.request); assert.deepEqual(evidence.manifest.reservation, original);
+  assert.equal(JSON.parse(f.release.body).admission.currentDev, S);
+});
+test("publication rejects a rewritten dev descendant even when S remains an ancestor", t => {
+  const f = fixture(), acceptedDev = "d".repeat(40), nextDev = "e".repeat(40);
+  f.reservation.admission.currentDev = acceptedDev; f.release.body = JSON.stringify(f.reservation);
+  f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation });
+  for (const id of [101, 102, 103]) {
+    const receipt = JSON.parse(f.files[id]["target-receipt.json"]); receipt.reservationSha256 = out.sha256(out.bytes(f.reservation));
+    f.files[id]["target-receipt.json"] = out.bytes(receipt);
+  }
+  const evidence = assemble(t, f), a = adapters(f); f.dev = nextDev;
+  f.comparisons = { [`compare/${acceptedDev}...${nextDev}`]: { status: "diverged", behind_by: 1, merge_base_commit: { sha: S } } };
+  assert.throws(() => finalizer.publish(ctx, evidence, a.request), /rewritten/);
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 0); assert.equal(f.uploads.length, 7);
 });
 test("publication requires the exact retained evidence artifact before PATCH", t => {
   const f = fixture(), evidence = assemble(t, f), a = adapters(f), job = f.jobs.at(-1);

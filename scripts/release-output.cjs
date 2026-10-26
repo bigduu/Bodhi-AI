@@ -217,11 +217,19 @@ function loadReservation(ctx, request = api, restore = download) {
 }
 function selectTarget(ctx, reservation, target, request = api, restore = download, requireLatestSuccess = false) {
   assert.ok(NATIVE_TARGETS.includes(target)); const rows = jobs(ctx, request).filter(job => job.name === `Build original (${target})`);
+  assert.equal(new Set(rows.map(job => job.run_attempt)).size, rows.length, "Ambiguous target job in one attempt");
   if (requireLatestSuccess) {
     const last = Math.max(...rows.map(job => job.run_attempt)), selected = rows.filter(job => job.run_attempt === last);
     assert.equal(selected.length, 1); passed(selected[0], ["Select retained target output"]);
   }
-  const built = rows.filter(job => job.steps.some(step => step.name === BUILD && step.conclusion === "success"));
+  const successfulBuilds = rows.filter(job => job.steps.some(step => step.name === BUILD && step.conclusion === "success"));
+  const completed = rows.filter(job => job.status === "completed").sort((a, b) => b.run_attempt - a.run_attempt);
+  if (successfulBuilds.length && completed.length) passed(completed[0], ["Select retained target output"]);
+  const built = [];
+  for (const job of successfulBuilds.sort((a, b) => a.run_attempt - b.run_attempt)) {
+    const original = admission.executionOrigin(job, rows);
+    if (!built.some(existing => existing.id === original.id)) built.push(original);
+  }
   assert.ok(built.length <= 1, "Multiple physical builds for one reserved target");
   const all = pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request);
   const candidates = all.filter(value => value.name.startsWith(`bodhi-v2-target-${ctx.runId}-`) && value.name.endsWith(`-${target}`));
