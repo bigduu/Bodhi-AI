@@ -102,12 +102,13 @@ historical v1 publication/recovery and frozen workflow bytes remain unchanged.
 Do not create a fake release ref to run the accepted-Dev verifier. A successful
 source check alone does not authorize Main bootstrap or promotion.
 
-`verifyPublished` in `scripts/release-finalizer-v2.cjs` is a read-only structural
-manifest component for a future consumer. Its caller must authenticate the
-expected controller/source/run; this export alone does not authorize main
-promotion. Bootstrap, required-check activation and that promotion boundary are
-separate work. Main receives stable source and references to the immutable
-published record, without a new source JSON file or another build.
+`verifyPublished` remains a structural component. The prepared
+`scripts/main-admission.cjs` authenticates its real controller/run, original
+source, jobs, retained bytes and publication before authorizing an exact Main
+postimage. Its bootstrap component does not activate the first trusted-D
+entrypoint, protection or production. Those remain separate Ops. Main receives
+stable source and references to the immutable published record, without a new
+source JSON file or another build.
 
 Successful jobs copied by GitHub into a later attempt keep their original
 physical job/attempt and source logs in the proof. The latest logical job is
@@ -302,3 +303,89 @@ There is no schema fallback or conversion of old runs into v2 evidence.
 Local policy/fixture tests and ZIP/Git CLI checks are not native installer,
 three-OS signing, production publication or main-promotion evidence. Verify
 those separately on the exact reviewed activated controller and admitted source.
+
+## Prepared read-only Main boundary
+
+Feature PRs target Dev and retain six real Unit/E2E jobs. The Main-capable CI
+producer adds exactly the known **skipped** `Main Admission` job on Dev; the
+original context producer remains a separate six-job contract. Both retain the
+same literal original-context writer and schema. Unknown graphs, missing tests,
+successful Main stubs or executed Main steps in feature evidence reject admission.
+
+Main PRs select only `Main Admission`. All feature producers and aggregates skip
+by event/base. There is no Main push producer, toolchain/cache restoration, npm
+installation, Unit/E2E, compiler, installer packaging or publication in that
+path. The job checks out the actual Main base B with read permissions; it does
+not execute candidate S/M scripts. Its actual workflow/merge remains M, while
+the release's original controller C and frozen product S retain their own roles.
+
+The normal verifier requires a completed original v2 release and all seven
+assets. It authenticates C in Main history, the fixed release workflow blob,
+actual run/attempt, original preflight reservation, each native physical build
+and latest logical result, immutable artifact IDs/ZIP digests/flat inventories/
+file hashes, original assembler, retained publication evidence, manifest and
+asset IDs/digests, tag→S, both source lock bytes and actual accepted Dev context.
+It does not require C to be S's ancestor. It refuses missing/expired originals
+and never repairs assets or rebuilds them. The existing publication-only failure
+followed by successful `recover-v2` is also checked read-only, including C1/C2
+and original versus projected jobs. There is no recovery-schema fallback.
+
+PR text supplies one locator, not proof. A normal promotion uses this form with
+actual immutable identities:
+
+```text
+<!-- bodhi-main-locator/v1
+{"mode":"promotion","source":"<40-character-S>","version":"2026.10.30","releaseId":123,"runId":456,"attempt":1}
+-->
+```
+
+For existing v2 recovery add `"recovery":{"runId":789,"attempt":1}`; `runId`
+and `attempt` at the top still identify the original release. All values are
+reconstructed and matched against real API evidence. Do not use a manual
+workflow result as a replacement for the required PR check.
+
+The actual Main merge M must have the current B/head parents. Its complete
+postimage must equal S, or S overlaid by the **entire** literal control closure
+from B. Partial mixtures, product edits, stamped versions, lock exceptions,
+unlisted entries and mode changes reject admission. M and its tree are recorded
+separately; an overlay is never described as the source that was compiled.
+PR head/base and locator, Main protection, original/recovery run identities,
+Release/reservation/manifest/assets, frozen ref, tag and protected Dev history
+are re-read before success.
+
+The one-time bootstrap proof accepts only legacy Main
+`aef64d4adce7296086a71b1a6c82fa65c7ccf42d`, tree
+`41baf69faf3b4c3da5f649a80b58b7283ed90400`, and actually accepted new-context
+Dev D from the Main-capable producer. Its locator is
+`{"mode":"bootstrap","source":"<D>","feature":{"pullRequest":123,"runId":456,"attempt":1}}`
+inside the same marker. The exact expected Main postimage overlays these regular
+files from D onto the legacy base:
+
+```text
+.github/workflows/ci.yml
+.github/workflows/release.yml
+.github/workflows/recover-release.yml
+scripts/release-source.cjs
+scripts/release-output.cjs
+scripts/release-finalizer-v2.cjs
+scripts/main-admission.cjs
+scripts/browser-runtime.cjs
+scripts/verify-assembly.cjs
+AGENTS.md
+docs/releasing.md
+```
+
+Every other Git entry, including all product source, both upstream locks and
+placeholder versions, keeps its exact base blob/mode. Another base, an already
+imported helper or a partial/unsupported control state fails. This is a proof
+component, not automatic permission to execute a D selected by PR text. The
+ordinary CLI refuses bootstrap until a later Ops child establishes a precise
+reviewed trusted-D entrypoint and a real PR check. The legacy Main base has no
+such verifier; the prepared base-checkout job fails closed there. Do not activate
+Main protection or claim bootstrap readiness from these local fixtures.
+
+Root/Ops must separately review and wire that initial anchor, establish the
+required Main PR check, perform the one source-only bootstrap, dispatch the first
+production release, and verify a real completed v2 promotion. This change does
+none of those operations. Historical v1 recovery, frozen fixtures and both
+upstream locks are unchanged.

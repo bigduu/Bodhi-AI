@@ -215,6 +215,20 @@ function readManifest(assetId) {
   return JSON.parse(execFileSync("gh", ["api", `repos/${REPOSITORY}/releases/assets/${assetId}`, "-H", "Accept: application/octet-stream"],
     { env: out.childEnv(), encoding: "utf8", maxBuffer: 128 * 1024 }));
 }
+function publicationEvidence(ctx, job, release, request = api, restore = out.download) {
+  // Passive consumer of an already completed original job. It never resumes it.
+  assert.equal(job.name, "Publish original release"); assert.equal(job.status, "completed");
+  assert.equal(job.run_id, ctx.runId); assert.equal(job.head_sha, ctx.controller);
+  assert.equal(job.run_attempt, ctx.attempt); out.gate(job, ASSEMBLE); out.gate(job, EVIDENCE);
+  const artifact = out.artifact(pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request), ctx.evidenceName, ctx, job);
+  const temporary = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "bodhi-main-evidence-"));
+  const directory = path.join(temporary, "original");
+  try {
+    restore(artifact, ["evidence.json"], directory);
+    const evidence = readJson(path.join(directory, "evidence.json")); verifyEvidence(ctx, evidence, release);
+    return { evidence, artifact };
+  } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+}
 // Structural component for a later main consumer, whose caller supplies an
 // authenticated expected C/S/run. This export alone does not admit a promotion.
 function verifyPublished(ctx, release, manifest) {
@@ -261,5 +275,5 @@ function main() {
   assert.equal(command, "publish"); const evidence = readJson(file); retainedEvidence(ctx, evidence); publish(ctx, evidence);
 }
 module.exports = { ASSEMBLE, EVIDENCE, PUBLISH, available, reserve, originalRun, validateAsset, nativeAssets, verifyManifest,
-  retainAsset, assemble, verifyEvidence, refreshSource, publish, recoveryArtifact, retainedEvidence, verifyPublished };
+  retainAsset, assemble, verifyEvidence, refreshSource, publish, recoveryArtifact, retainedEvidence, readManifest, publicationEvidence, verifyPublished };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi v2 release: ${error.message}`); process.exitCode = 1; } }

@@ -14,10 +14,10 @@ const job = (id) => {
   return match[1];
 };
 
-test("feature CI runs only for dev PRs and leaves main and release without a duplicate test/build entrypoint", () => {
+test("CI splits Dev tests from read-only Main admission with no push/release producer", () => {
   const triggers = workflow.slice(workflow.indexOf("on:"), workflow.indexOf("permissions:"));
-  assert.match(triggers, /pull_request:\n    branches: \[dev\]/);
-  assert.doesNotMatch(triggers, /push:|workflow_dispatch:|main|release|paths:/);
+  assert.match(triggers, /pull_request:\n    branches: \[dev, main\]/);
+  assert.doesNotMatch(triggers, /push:|workflow_dispatch:|release|paths:/);
   assert.match(workflow, /group: bodhi-feature-\$\{\{ github.event.pull_request.number \}\}/);
   assert.doesNotMatch(workflow, /contents: write|secrets\.|tauri-action|upload-artifact|cargo build|cargo test[^\n]*--release|release\/bundle|prepare-crates-io-build/);
 });
@@ -25,9 +25,11 @@ test("the six-job context producer agrees with admission and records before any 
   const blob = execFileSync("git", ["hash-object", "--stdin"], { input: workflow, encoding: "utf8", env: processEnv }).trim();
   assert.equal(blob, FEATURE_WORKFLOW_BLOB); assert.notEqual(blob, LEGACY_FEATURE_WORKFLOW_BLOB);
   assert.equal(FEATURE_CONTEXT_SCHEMA, "bodhi-feature-context/v1"); assert.equal(ADMISSION_SCHEMA, 2);
-  assert.equal([...workflow.matchAll(/^  [a-z][a-z0-9-]*:\n    name:/gm)].length, 4);
+  assert.equal([...workflow.matchAll(/^  [a-z][a-z0-9-]*:\n    name:/gm)].length, 5);
   const writers = [...workflow.matchAll(/          node <<'NODE'\n([\s\S]*?)^          NODE$/gm)].map(match => match[1]);
   assert.equal(writers.length, 2); assert.equal(writers[0], writers[1]);
+  const original = execFileSync("git", ["cat-file", "blob", require("./release-source.cjs").CONTEXT_WORKFLOW_BLOB], { encoding: "utf8", env: processEnv });
+  assert.deepEqual(writers, [...original.matchAll(/          node <<'NODE'\n([\s\S]*?)^          NODE$/gm)].map(match => match[1]), "Original context writer bytes must remain unchanged");
   assert.match(writers[0], /schema: 'bodhi-feature-context\/v1'/);
   assert.doesNotMatch(writers[0], /require\(['"]\.\//);
   for (const id of ["unit-node", "native-tests"]) {
@@ -36,6 +38,16 @@ test("the six-job context producer agrees with admission and records before any 
     assert.match(block.slice(0, record), /name: Require the exact feature merge source\n        shell: bash/);
   }
   assert.doesNotMatch(workflow, /GITHUB_(?:SHA|REF|RUN_ID|RUN_ATTEMPT)\s*[:=]/);
+});
+test("Main executes only the base controller verifier, and all feature jobs skip on Main", () => {
+  const main = job("main-admission");
+  assert.match(main, /name: Main Admission/); assert.match(main, /github.event_name == 'pull_request' && github.base_ref == 'main'/);
+  assert.match(main, /ref: \$\{\{ github.event.pull_request.base.sha \}\}/);
+  assert.match(main, /run: node scripts\/main-admission.cjs/);
+  assert.doesNotMatch(main, /needs:|setup-node|\brust\b|cache|npm |cargo |tauri|upload|contents: write|actions: write|head.sha|exit 0|\|\| true/);
+  assert.doesNotMatch(main, /!cancelled\(\)/, "A selected Main gate cannot become a successful conditional skip on cancellation");
+  for (const id of ["unit-node", "native-tests", "unit-tests", "e2e-tests"])
+    assert.match(job(id), /if: .*github.event_name == 'pull_request' && github.base_ref == 'dev'/);
 });
 
 test("each native target compiles once for Unit and E2E and consumes the same debug assembly", () => {

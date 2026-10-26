@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, main]
 
 permissions:
   contents: read
@@ -22,6 +22,7 @@ env:
 jobs:
   unit-node:
     name: Unit Tests (Node)
+    if: github.event_name == 'pull_request' && github.base_ref == 'dev'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -72,6 +73,7 @@ jobs:
 
   native-tests:
     name: Unit and E2E (${{ matrix.target }})
+    if: github.event_name == 'pull_request' && github.base_ref == 'dev'
     strategy:
       fail-fast: false
       matrix:
@@ -189,7 +191,7 @@ jobs:
   unit-tests:
     name: Unit Tests
     needs: [unit-node, native-tests]
-    if: always() && !cancelled()
+    if: always() && !cancelled() && github.event_name == 'pull_request' && github.base_ref == 'dev'
     runs-on: ubuntu-latest
     steps:
       - name: Require every unit test result
@@ -203,10 +205,31 @@ jobs:
   e2e-tests:
     name: E2E Tests
     needs: native-tests
-    if: always() && !cancelled()
+    if: always() && !cancelled() && github.event_name == 'pull_request' && github.base_ref == 'dev'
     runs-on: ubuntu-latest
     steps:
       - name: Require every native E2E result
         env:
           NATIVE_RESULT: ${{ needs.native-tests.result }}
         run: test "$NATIVE_RESULT" = success
+
+  main-admission:
+    name: Main Admission
+    if: always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Verify completed publication and exact main postimage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Only the admitted main-base verifier executes. The initial trusted-D
+        # bootstrap entrypoint is established separately by reviewed Ops.
+        run: node scripts/main-admission.cjs

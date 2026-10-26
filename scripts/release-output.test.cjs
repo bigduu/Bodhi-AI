@@ -8,7 +8,7 @@ const vm = require("node:vm");
 const { execFileSync, spawnSync } = require("node:child_process");
 const out = require("./release-output.cjs");
 const finalizer = require("./release-finalizer-v2.cjs");
-const { FEATURE_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
+const { FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
 const C = "c".repeat(40), S = "a".repeat(40), T = "b".repeat(40);
 const env = { GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: "2026.10.30", EXPECTED_SOURCE_SHA: S,
   GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "2", GITHUB_WORKFLOW_SHA: C };
@@ -149,6 +149,27 @@ test("reservation retains separate physical and latest logical feature identitie
   const { reservation } = fixture(); reservation.admission.attempt = 2;
   reservation.admission.jobs[0].logical = { id: 900, attempt: 2 };
   const original = clone(reservation); out.verifyReservation(reservation, ctx); assert.deepEqual(reservation, original);
+});
+test("prepared Main consumer accepts the original context producer without changing its source schema", () => {
+  const { reservation } = fixture(); reservation.admission.workflowBlob = CONTEXT_WORKFLOW_BLOB;
+  out.verifyReservation(reservation, ctx);
+});
+test("passive run identity does not relax publisher/recovery state predicates", () => {
+  const f = fixture(); f.run.status = "completed"; f.run.conclusion = "success";
+  assert.deepEqual(out.runIdentity(ctx, f.run), f.run);
+  assert.throws(() => out.run(ctx, adapters(f).request));
+  assert.throws(() => out.run(ctx, adapters(f).request, true));
+});
+test("passive publication evidence verifies the original retained bytes without writing GitHub", t => {
+  const f = fixture(), evidence = assemble(t, f), a = adapters(f), job = f.jobs.at(-1);
+  job.status = "completed"; job.conclusion = "success"; job.completed_at = "2026-10-27T00:05:00Z";
+  job.steps = [finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH].map(name => ({ name, status: "completed", conclusion: "success" }));
+  f.artifacts.push({ ...f.artifacts[0], id: 150, name: ctx.evidenceName }); f.files[150] = { "evidence.json": out.bytes(evidence) };
+  const before = f.calls.length;
+  assert.deepEqual(finalizer.publicationEvidence(ctx, job, f.release, a.request, a.restore).evidence, evidence);
+  assert.ok(f.calls.slice(before).every(call => call.method === "GET"));
+  f.files[150]["evidence.json"] = out.bytes({ ...evidence, manifestSha256: "0".repeat(64) });
+  assert.throws(() => finalizer.publicationEvidence(ctx, job, f.release, a.request, a.restore));
 });
 for (const [label, mutate] of [
   ["historical source schema", value => { value.admission.schemaVersion = 1; delete value.admission.kind; }],
