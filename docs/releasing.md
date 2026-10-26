@@ -72,6 +72,11 @@ parents and trees do not replace a confirmed PR receipt. The helper does not
 activate a publisher or authorize a release dispatch. Existing release/recovery
 workflows, schema-v1 evidence and runtime gates remain unchanged while target
 retention/reuse (#122) and the controller bootstrap are implemented separately.
+Successful jobs copied by GitHub into a later attempt keep their original
+physical job/attempt and source logs in the proof. The latest logical job is
+recorded separately and must pass; matching complete execution/step timestamps
+are required before recognizing a copy. Different executions, missing times,
+same-attempt ambiguity and later failures cannot be hidden as reuse.
 
 ## Prepare and dispatch
 
