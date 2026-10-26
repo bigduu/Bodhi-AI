@@ -16,7 +16,9 @@ const job = (id) => {
 
 test("CI splits Dev tests from read-only Main admission with no push/release producer", () => {
   const triggers = workflow.slice(workflow.indexOf("on:"), workflow.indexOf("permissions:"));
-  assert.match(triggers, /pull_request:\n    branches: \[dev, main\]/);
+  assert.match(triggers, /pull_request:\n    branches: \[dev\]/);
+  assert.match(triggers, /pull_request_target:\n    branches: \[main\]/);
+  assert.match(triggers, /types: \[opened, synchronize, reopened, edited, ready_for_review\]/);
   assert.doesNotMatch(triggers, /push:|workflow_dispatch:|release|paths:/);
   assert.match(workflow, /group: bodhi-feature-\$\{\{ github.event.pull_request.number \}\}/);
   assert.doesNotMatch(workflow, /contents: write|secrets\.|tauri-action|upload-artifact|cargo build|cargo test[^\n]*--release|release\/bundle|prepare-crates-io-build/);
@@ -41,13 +43,24 @@ test("the six-job context producer agrees with admission and records before any 
 });
 test("Main executes only the base controller verifier, and all feature jobs skip on Main", () => {
   const main = job("main-admission");
-  assert.match(main, /name: Main Admission/); assert.match(main, /github.event_name == 'pull_request' && github.base_ref == 'main'/);
-  assert.match(main, /ref: \$\{\{ github.event.pull_request.base.sha \}\}/);
+  assert.match(main, /name: Main Admission/); assert.match(main, /github.event_name == 'pull_request_target' && github.base_ref == 'main'/);
+  assert.match(main, /ref: \$\{\{ github.workflow_sha \}\}/);
   assert.match(main, /run: node scripts\/main-admission.cjs/);
   assert.doesNotMatch(main, /needs:|setup-node|\brust\b|cache|npm |cargo |tauri|upload|contents: write|actions: write|head.sha|exit 0|\|\| true/);
   assert.doesNotMatch(main, /!cancelled\(\)/, "A selected Main gate cannot become a successful conditional skip on cancellation");
   for (const id of ["unit-node", "native-tests", "unit-tests", "e2e-tests"])
     assert.match(job(id), /if: .*github.event_name == 'pull_request' && github.base_ref == 'dev'/);
+});
+test("a same-name candidate pull_request stub cannot change the trusted Target job definition", () => {
+  const triggers = workflow.slice(workflow.indexOf("on:"), workflow.indexOf("permissions:"));
+  assert.match(triggers, /pull_request_target:\n    branches: \[main\]/);
+  assert.doesNotMatch(triggers, /pull_request:\n    branches: \[[^\]]*main/);
+  const candidate = workflow.replace("run: node scripts/main-admission.cjs", "run: 'true'");
+  assert.match(candidate, /name: Main Admission/); assert.match(candidate, /run: 'true'/);
+  // GitHub selects the base definition for Target. Never select candidate text
+  // or a candidate checkout/dispatch to establish this Main check's authority.
+  assert.match(job("main-admission"), /github.event_name == 'pull_request_target'/);
+  assert.doesNotMatch(job("main-admission"), /run: 'true'|head.sha|pull\/.*merge|allow-unsafe-pr-checkout/);
 });
 
 test("each native target compiles once for Unit and E2E and consumes the same debug assembly", () => {

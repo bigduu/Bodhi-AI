@@ -213,6 +213,7 @@ for (const [name, change] of [
   ["wrong snapshot parents", f => { f.snapshot.parents[0].sha = S; }],
   ["wrong snapshot tree", f => { f.snapshot.tree.sha = S; }],
   ["unreviewed CI blob", f => { f.workflowBlob = B; }],
+  ["unpublished candidate-defined Main producer", f => { f.workflowBlob = "e2d177fd8f7efa9e514b8b48d27a41eeb161cd7b"; }],
   ["legacy producer with even a fabricated new context", f => { f.workflowBlob = LEGACY_FEATURE_WORKFLOW_BLOB; }],
 ]) test(`source admission refuses ${name}`, () => { const f = fixture(); change(f); assert.throws(() => f.verify()); });
 for (const conclusion of ["failure", "cancelled", "skipped", "neutral", null]) test(`source admission refuses ${conclusion} required job`, () => {

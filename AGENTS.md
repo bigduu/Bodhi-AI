@@ -63,12 +63,18 @@ a fake release cut merely to inspect an accepted Dev source.
 
 ## Main admission
 
-- Main PRs run only `Main Admission`, using the trusted Main-base verifier and
-  read permissions. Preserve the actual Main workflow/merge identity. Do not
+- Main metadata admission uses a Main-base-defined `pull_request_target` job,
+  read permissions and checkout of its actual workflow SHA B. Feature
+  `pull_request` runs target Dev only. Candidate M cannot replace the trusted
+  Main job definition with a same-name stub. Keep the actual Main Target
+  ref/SHA at B and prove PR merge M independently from Git/API. Do not
   checkout or execute product S to establish its own authority. The first
   trusted-D bootstrap entrypoint requires separate precise source/hash review;
   do not infer executable authority from PR text, branch/bot names or a manual
   workflow's successful check.
+- Bind the trigger event's locator to current API metadata and final fresh
+  reads. Locator edits require their own `edited` event check; an old run may
+  not authorize a new locator. Candidate P/S/M code is never executed by Target.
 - Normal promotion requires the completed seven-asset v2 release, original
   controller/run/jobs, retained reservation/target/publication evidence, actual
   immutable ZIP/file hashes and accepted source/locks. Recovery uses the existing

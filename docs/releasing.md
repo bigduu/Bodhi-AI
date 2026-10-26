@@ -312,12 +312,19 @@ original context producer remains a separate six-job contract. Both retain the
 same literal original-context writer and schema. Unknown graphs, missing tests,
 successful Main stubs or executed Main steps in feature evidence reject admission.
 
-Main PRs select only `Main Admission`. All feature producers and aggregates skip
-by event/base. There is no Main push producer, toolchain/cache restoration, npm
+Main metadata admission uses `pull_request_target` for Main, whose workflow/job
+definition comes from the trusted base, and selects only `Main Admission`.
+Feature `pull_request` triggers target Dev only. Candidate workflow edits or
+same-name stubs do not replace the Target definition. All feature producers and
+aggregates skip by event/base. There is no Main push producer, toolchain/cache restoration, npm
 installation, Unit/E2E, compiler, installer packaging or publication in that
-path. The job checks out the actual Main base B with read permissions; it does
-not execute candidate S/M scripts. Its actual workflow/merge remains M, while
-the release's original controller C and frozen product S retain their own roles.
+path. The job checks out its actual trusted `github.workflow_sha` B with read
+permissions; it never checks out or executes candidate P/S/M scripts. Its real
+Target `GITHUB_REF`, `GITHUB_SHA` and workflow SHA stay on Main B. Merge M is
+proved independently from the PR/API, while the release's original controller
+C and frozen product S retain their own roles. REST run/job `head_sha` and
+`head_branch` identify candidate P, not the workflow-definition B; both sides
+are independently matched without relabelling the runtime environment.
 
 The normal verifier requires a completed original v2 release and all seven
 assets. It authenticates C in Main history, the fixed release workflow blob,
@@ -341,7 +348,9 @@ actual immutable identities:
 
 For existing v2 recovery add `"recovery":{"runId":789,"attempt":1}`; `runId`
 and `attempt` at the top still identify the original release. All values are
-reconstructed and matched against real API evidence. Do not use a manual
+reconstructed and matched against real API evidence. `edited` events rerun the
+metadata gate; the trigger locator must match current API metadata and the final
+fresh read, so an old result cannot authorize an edited locator. Do not use a manual
 workflow result as a replacement for the required PR check.
 
 The actual Main merge M must have the current B/head parents. Its complete
@@ -381,7 +390,8 @@ imported helper or a partial/unsupported control state fails. This is a proof
 component, not automatic permission to execute a D selected by PR text. The
 ordinary CLI refuses bootstrap until a later Ops child establishes a precise
 reviewed trusted-D entrypoint and a real PR check. The legacy Main base has no
-such verifier; the prepared base-checkout job fails closed there. Do not activate
+trusted Target definition/verifier; missing admission cannot become a passing
+check. Do not activate
 Main protection or claim bootstrap readiness from these local fixtures.
 
 Root/Ops must separately review and wire that initial anchor, establish the

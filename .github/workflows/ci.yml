@@ -2,7 +2,10 @@ name: CI
 
 on:
   pull_request:
-    branches: [dev, main]
+    branches: [dev]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
 
 permissions:
   contents: read
@@ -215,7 +218,7 @@ jobs:
 
   main-admission:
     name: Main Admission
-    if: always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+    if: always() && github.event_name == 'pull_request_target' && github.base_ref == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -225,7 +228,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.workflow_sha }}
           persist-credentials: false
       - name: Verify completed publication and exact main postimage
         env:

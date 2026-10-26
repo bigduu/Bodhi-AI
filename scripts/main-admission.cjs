@@ -248,28 +248,36 @@ function verifyMain({ pullRequest, snapshot }, request = readOnly, options = {})
 }
 function main() {
   const env = process.env, event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
-  assert.equal(env.GITHUB_REPOSITORY, REPOSITORY); assert.equal(env.GITHUB_EVENT_NAME, "pull_request");
-  assert.equal(event.pull_request.base.ref, "main"); assert.equal(env.GITHUB_REF, `refs/pull/${event.number}/merge`);
-  assert.equal(env.GITHUB_WORKFLOW_SHA, env.GITHUB_SHA);
-  assert.equal(env.GITHUB_WORKFLOW_REF, `${REPOSITORY}/.github/workflows/ci.yml@refs/pull/${event.number}/merge`);
-  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: path.resolve(__dirname, ".."), env: out.childEnv(), encoding: "utf8" }).trim(), event.pull_request.base.sha);
+  assert.equal(env.GITHUB_REPOSITORY, REPOSITORY); assert.equal(env.GITHUB_EVENT_NAME, "pull_request_target");
+  assert.equal(event.pull_request.base.ref, "main"); assert.equal(env.GITHUB_REF, "refs/heads/main");
+  const verifier = sha(env.GITHUB_WORKFLOW_SHA); assert.equal(env.GITHUB_SHA, verifier);
+  assert.equal(event.pull_request.base.sha, verifier, "Main base changed after the Target event");
+  assert.equal(env.GITHUB_WORKFLOW_REF, `${REPOSITORY}/.github/workflows/ci.yml@refs/heads/main`);
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: path.resolve(__dirname, ".."), env: out.childEnv(), encoding: "utf8" }).trim(), verifier);
   assert.equal(execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: path.resolve(__dirname, ".."), env: out.childEnv(), encoding: "utf8" }).trim(), "");
-  assert.equal(readOnly(`contents/.github/workflows/ci.yml?ref=${sha(env.GITHUB_SHA)}`)?.sha, source.FEATURE_WORKFLOW_BLOB);
-  assert.notEqual(locator(event.pull_request.body).mode, "bootstrap", "The first trusted-D entrypoint requires separate Ops anchoring");
+  assert.equal(readOnly(`contents/.github/workflows/ci.yml?ref=${verifier}`)?.sha, source.FEATURE_WORKFLOW_BLOB);
+  const triggered = locator(event.pull_request.body), pr = readOnly(`pulls/${id(event.number)}`);
+  assert.equal(pr?.base.sha, verifier); assert.equal(pr.head.sha, event.pull_request.head.sha, "Main head changed after the Target event");
+  assert.equal(pr.head.ref, event.pull_request.head.ref);
+  assert.deepEqual(locator(pr.body), triggered, "Locator changed after this Target event; require the edited-event check");
+  assert.notEqual(triggered.mode, "bootstrap", "The first trusted-D entrypoint requires separate Ops anchoring");
+  const snapshot = sha(pr.merge_commit_sha); // M is independent PR/API evidence, never GITHUB_SHA.
   const runtime = () => {
     const runId = id(env.GITHUB_RUN_ID), attempt = id(env.GITHUB_RUN_ATTEMPT), run = readOnly(`actions/runs/${runId}`);
     assert.equal(run?.id, runId); assert.equal(run.run_attempt, attempt); assert.equal(run.repository.full_name, REPOSITORY);
-    assert.equal(run.event, "pull_request"); assert.equal(out.workflow(run.path), ".github/workflows/ci.yml");
-    assert.equal(run.head_sha, event.pull_request.head.sha); assert.equal(run.status, "in_progress"); assert.equal(run.conclusion, null);
+    assert.equal(run.event, "pull_request_target"); assert.equal(out.workflow(run.path), ".github/workflows/ci.yml");
+    // Target's definition/GITHUB_SHA are B, but REST run/job head fields name P.
+    assert.equal(run.head_sha, pr.head.sha); assert.equal(run.head_branch, pr.head.ref); assert.equal(run.status, "in_progress"); assert.equal(run.conclusion, null);
     const rows = out.pages(`actions/runs/${runId}/jobs?filter=all`, "jobs", readOnly);
     const selected = rows.filter(job => job.name === source.MAIN_GATE && job.run_attempt === attempt);
     assert.equal(selected.length, 1); const job = selected[0];
     assert.equal(job.run_id, runId); assert.equal(job.head_sha, run.head_sha); assert.equal(job.status, "in_progress"); assert.equal(job.conclusion, null);
     const steps = job.steps.filter(step => step.name === "Verify completed publication and exact main postimage");
     assert.equal(steps.length, 1); assert.equal(steps[0].status, "in_progress"); assert.equal(steps[0].conclusion, null);
-    return { runId, attempt, jobId: id(job.id) };
+    return { runId, attempt, jobId: id(job.id), verifier };
   };
-  const identity = runtime(), proof = verifyMain({ pullRequest: event.number, snapshot: env.GITHUB_SHA });
+  const identity = runtime(), proof = verifyMain({ pullRequest: event.number, snapshot });
+  assert.equal(proof.base, verifier); assert.deepEqual(locator(readOnly(`pulls/${event.number}`).body), triggered, "Target locator changed before returning success");
   assert.deepEqual(runtime(), identity, "Main execution changed while admitting source");
   console.log(JSON.stringify({ ...proof, runtime: identity }, null, 2));
 }

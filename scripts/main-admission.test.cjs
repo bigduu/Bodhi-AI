@@ -78,7 +78,7 @@ function fixture() {
     branch: { name: "main", protected: true, commit: { sha: B }, protection: { required_status_checks: { enforcement_level: "everyone", contexts: [source.MAIN_GATE],
       checks: [{ context: source.MAIN_GATE, app_id: 15368 }] } } },
     pr: { number: 23, state: "open", merged: false, mergeable: true, merge_commit_sha: M,
-      base: { ref: "main", sha: B, repo: { full_name: out.REPOSITORY } }, head: { sha: P, repo: { full_name: out.REPOSITORY } } },
+      base: { ref: "main", sha: B, repo: { full_name: out.REPOSITORY } }, head: { ref: "promotion/source", sha: P, repo: { full_name: out.REPOSITORY } } },
     commits: { [S]: { sha: S, tree: { sha: ST }, parents: [{ sha: FB }, { sha: F }] }, [FM]: { sha: FM, tree: { sha: ST }, parents: [{ sha: FB }, { sha: F }] },
       [B]: { sha: B, tree: { sha: "7".repeat(40) } }, [M]: { sha: M, tree: { sha: ST }, parents: [{ sha: B }, { sha: P }] } }, trees: {} };
   const entry = (file, hash) => ({ path: file, type: "blob", mode: "100644", sha: hash });
@@ -274,7 +274,7 @@ test("recovery changes after verification are rejected without another publicati
 test("the Main transport rejects every mutation before calling GitHub", () => {
   for (const method of ["POST", "PATCH", "PUT", "DELETE"]) assert.throws(() => main.readOnly("releases/99", method, {}), /read authority/);
 });
-test("actual Main CLI reads immutable ZIPs on the trusted base, preserves runtime M and rejects re-labelled/foreign execution", {
+test("actual Main CLI reads immutable ZIPs, preserves real Target B/independent M and rejects candidate-defined execution", {
   skip: process.platform === "win32" && "Main executes on hosted Linux; the CLI adapter uses POSIX executable shims",
 }, t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-main-cli-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -292,13 +292,14 @@ test("actual Main CLI reads immutable ZIPs on the trusted base, preserves runtim
   for (const target of f.manifest.targets) target.artifact.digest = f.artifacts.find(item => item.id === target.artifact.id).digest;
   refreshManifest(f); archive(f.artifacts.find(item => item.id === 150));
   f.verify();
-  const runtime = { id: 70, run_attempt: 1, repository: { full_name: out.REPOSITORY }, event: "pull_request", path: ".github/workflows/ci.yml",
-    head_sha: P, status: "in_progress", conclusion: null };
+  const runtime = { id: 70, run_attempt: 1, repository: { full_name: out.REPOSITORY }, event: "pull_request_target", path: ".github/workflows/ci.yml",
+    head_sha: P, head_branch: f.pr.head.ref, status: "in_progress", conclusion: null };
   const runtimeJobs = { total_count: 1, jobs: [{ id: 701, name: source.MAIN_GATE, run_id: 70, head_sha: P, run_attempt: 1, status: "in_progress", conclusion: null,
     steps: [{ name: "Verify completed publication and exact main postimage", status: "in_progress", conclusion: null }] }] };
   let currentHead = B;
   const save = () => fs.writeFileSync(database, JSON.stringify({ head: currentHead, responses: { ...f.responses,
     [`contents/.github/workflows/ci.yml?ref=${M}`]: { sha: source.FEATURE_WORKFLOW_BLOB }, "actions/runs/70": runtime,
+    [`contents/.github/workflows/ci.yml?ref=${B}`]: { sha: source.FEATURE_WORKFLOW_BLOB },
     "actions/runs/70/jobs?filter=all&per_page=100&page=1": runtimeJobs }, archives, manifest: f.manifest,
     logs: Object.fromEntries([500, 501, 502, 503].map(id => [id, f.options.readLog(id)])) }));
   save(); fs.writeFileSync(eventFile, JSON.stringify({ number: 23, pull_request: f.pr }));
@@ -312,13 +313,22 @@ if(zip)process.stdout.write(fs.readFileSync(f.archives[zip[1]]));else if(log)pro
 else if(route==="releases/assets/206")process.stdout.write(JSON.stringify(f.manifest,null,2)+"\\n");
 else if(Object.hasOwn(f.responses,route))process.stdout.write(JSON.stringify(f.responses[route]));else{process.stderr.write("Unknown readonly fixture route");process.exit(2);}`);
   const env = Object.freeze({ ...childEnv, PATH: `${bin}${path.delimiter}${childEnv.PATH}`,
-    GITHUB_REPOSITORY: out.REPOSITORY, GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile,
-    GITHUB_SHA: M, GITHUB_WORKFLOW_SHA: M, GITHUB_WORKFLOW_REF: `${out.REPOSITORY}/.github/workflows/ci.yml@refs/pull/23/merge`,
-    GITHUB_REF: "refs/pull/23/merge", GITHUB_RUN_ID: "70", GITHUB_RUN_ATTEMPT: "1" });
+    GITHUB_REPOSITORY: out.REPOSITORY, GITHUB_EVENT_NAME: "pull_request_target", GITHUB_EVENT_PATH: eventFile,
+    GITHUB_SHA: B, GITHUB_WORKFLOW_SHA: B, GITHUB_WORKFLOW_REF: `${out.REPOSITORY}/.github/workflows/ci.yml@refs/heads/main`,
+    GITHUB_REF: "refs/heads/main", GITHUB_RUN_ID: "70", GITHUB_RUN_ATTEMPT: "1" });
   const before = copy(env), run = extra => spawnSync(process.execPath, [path.join(__dirname, "main-admission.cjs")], { env: { ...env, ...extra }, encoding: "utf8" });
+  runtime.event = "pull_request"; runtime.head_sha = runtimeJobs.jobs[0].head_sha = P; save();
+  const candidate = run({ GITHUB_EVENT_NAME: "pull_request", GITHUB_SHA: M, GITHUB_WORKFLOW_SHA: M, GITHUB_REF: "refs/pull/23/merge",
+    GITHUB_WORKFLOW_REF: `${out.REPOSITORY}/.github/workflows/ci.yml@refs/pull/23/merge` });
+  assert.notEqual(candidate.status, 0, "A candidate pull_request definition cannot authorize the Main metadata gate");
+  runtime.event = "pull_request_target"; runtime.head_sha = runtimeJobs.jobs[0].head_sha = P; save();
   const result = run(); assert.equal(result.status, 0, result.stderr);
   const proof = JSON.parse(result.stdout); assert.equal(proof.snapshot, M); assert.equal(proof.controller, C); assert.equal(proof.source, S);
-  assert.equal(proof.runtime.jobId, 701); assert.deepEqual(env, before);
+  assert.equal(proof.runtime.jobId, 701); assert.equal(proof.runtime.verifier, B); assert.deepEqual(env, before);
+  const originalBody = f.responses["pulls/23"].body;
+  f.responses["pulls/23"].body = originalBody.replace('"releaseId":99', '"releaseId":100'); save();
+  const edited = run(); assert.notEqual(edited.status, 0); assert.match(edited.stderr, /Locator changed after this Target event/);
+  f.responses["pulls/23"].body = originalBody;
   for (const extra of [{ GITHUB_SHA: C }, { GITHUB_WORKFLOW_SHA: C }, { GITHUB_EVENT_NAME: "workflow_dispatch" }])
     assert.notEqual(run(extra).status, 0);
   currentHead = S; save(); assert.notEqual(run().status, 0); currentHead = B;
