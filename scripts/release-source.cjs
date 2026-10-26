@@ -13,7 +13,11 @@ const { readArtifactLock } = require("./lotus-next-artifact.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const FEATURE_WORKFLOW = ".github/workflows/ci.yml";
-const FEATURE_WORKFLOW_BLOB = "492770d810a8c51df8f63057ed95f1446426c7c6";
+const LEGACY_FEATURE_WORKFLOW_BLOB = "492770d810a8c51df8f63057ed95f1446426c7c6";
+const FEATURE_WORKFLOW_BLOB = "85fd611d3ee5171eb70b9c5a28d53c92a2c09c50";
+const FEATURE_CONTEXT_SCHEMA = "bodhi-feature-context/v1";
+const ADMISSION_SCHEMA = 2;
+const ADMISSION_KIND = "bodhi-accepted-dev";
 const SOURCE_GATE = "Require the exact feature merge source";
 const SHA = /^[0-9a-f]{40}$/;
 const digest = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -71,6 +75,25 @@ function sourceFromLog(log) {
   const rows = [...log.matchAll(/^\S+Z Feature source: ([0-9a-f]{40}) tree: ([0-9a-f]{40})\r?$/gm)];
   assert.equal(rows.length, 1, "Require one actual checkout source record");
   return { snapshot: rows[0][1], tree: rows[0][2] };
+}
+function featureContext(value) {
+  assert.deepEqual(Object.keys(value).sort(), ["schema", "repository", "runId", "physicalAttempt", "pullRequest", "base", "head", "snapshot", "tree"].sort(), "Unexpected feature context fields");
+  assert.equal(value.schema, FEATURE_CONTEXT_SCHEMA); assert.equal(value.repository, REPOSITORY);
+  for (const key of ["runId", "physicalAttempt", "pullRequest"]) assert.equal(value[key], id(value[key], key), `Numeric ${key} required`);
+  for (const key of ["base", "head", "snapshot", "tree"]) sha(value[key], key);
+  return value;
+}
+function contextFromLog(log) {
+  assert.equal(typeof log, "string");
+  const rows = log.split(/\r?\n/).filter(line => /^\S+Z Feature context:/.test(line));
+  assert.equal(rows.length, 1, "Require one original feature context");
+  const match = rows[0].match(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z Feature context: ([A-Za-z0-9+/]+={0,2})$/);
+  assert.ok(match && match[1].length <= 4096, "Invalid bounded feature context record");
+  const data = Buffer.from(match[1], "base64");
+  assert.equal(data.toString("base64"), match[1], "Noncanonical context encoding");
+  const value = JSON.parse(data.toString("utf8"));
+  assert.equal(data.toString("utf8"), JSON.stringify(value), "Noncanonical context JSON");
+  return featureContext(value);
 }
 function jobLog(jobId) {
   return execFileSync("gh", ["api", `repos/${REPOSITORY}/actions/jobs/${id(jobId, "job ID")}/logs`, "--method", "GET", "--allow-escape-sequences"],
@@ -136,7 +159,16 @@ function devHead(branch) {
   }
   return sha(branch.commit?.sha, "observed dev head");
 }
-function admitFeature({ source, pullRequest, runId, attempt }, request = api, readLog = jobLog) {
+function association(run, pullRequest, base, head) {
+  assert.ok(Array.isArray(run.pull_requests), "Missing feature association API state");
+  // GitHub can remove this array's entries after merge. Only the new pinned
+  // producer's original contexts below can supply the missing association.
+  if (!run.pull_requests.length) return;
+  assert.equal(run.pull_requests.length, 1, "Ambiguous feature association");
+  const item = run.pull_requests[0]; assert.equal(item.number, pullRequest, "Feature PR association differs");
+  assert.equal(item.base.ref, "dev"); assert.equal(item.base.sha, base); assert.equal(item.head.sha, head);
+}
+function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = api, readLog = jobLog) {
   sha(source, "accepted dev source");
   pullRequest = id(pullRequest, "feature PR"); runId = id(runId, "feature run"); attempt = id(attempt, "feature attempt");
   const pr = request(`pulls/${pullRequest}`);
@@ -155,7 +187,6 @@ function admitFeature({ source, pullRequest, runId, attempt }, request = api, re
   const observedDev = devHead(request("branches/dev"));
   const ancestry = request(`compare/${source}...${observedDev}`);
   assert.equal(ancestry?.merge_base_commit?.sha, source, "Cut is not in dev ancestry");
-  assert.equal(request(`git/ref/heads/release/${source}`)?.object?.sha, source, "Frozen branch differs from its cut");
   // This ordinary branch endpoint is readable by the controller token. The
   // administration-only /protection endpoint must not require extra authority.
   // Exact B/F merge parents and M/S tree equality above reject stale admission.
@@ -167,10 +198,7 @@ function admitFeature({ source, pullRequest, runId, attempt }, request = api, re
   assert.equal(run.head_sha, head, "Feature run belongs to another head");
   assert.equal(run.run_attempt, attempt, "Feature attempt changed");
   assert.equal(run.status, "completed"); assert.equal(run.conclusion, "success");
-  const association = run.pull_requests.filter((item) => item.number === pullRequest);
-  assert.equal(association.length, 1);
-  assert.equal(association[0].base.ref, "dev");
-  assert.equal(association[0].base.sha, base); assert.equal(association[0].head.sha, head);
+  association(run, pullRequest, base, head);
   const expected = new Map([
     ["Unit Tests (Node)", [SOURCE_GATE, "Run script unit tests"]],
     ...NATIVE_TARGETS.map((target) => [`Unit and E2E (${target})`, [SOURCE_GATE, "Stage accepted inputs for debug assembly",
@@ -194,7 +222,10 @@ function admitFeature({ source, pullRequest, runId, attempt }, request = api, re
     const logical = latest[0]; passed(logical, gates);
     const job = executionOrigin(logical, matching); passed(job, gates);
     if (gates.includes(SOURCE_GATE)) {
-      const observed = sourceFromLog(readLog(job.id));
+      const log = readLog(job.id), observed = contextFromLog(log);
+      assert.deepEqual(sourceFromLog(log), { snapshot: observed.snapshot, tree: observed.tree }, "Source and context records differ");
+      assert.equal(observed.runId, runId); assert.equal(observed.physicalAttempt, job.run_attempt, "Original context attempt differs");
+      assert.equal(observed.pullRequest, pullRequest); assert.equal(observed.base, base); assert.equal(observed.head, head);
       assert.equal(observed.tree, tree, "Actual tested tree differs from dev");
       if (snapshot) assert.equal(observed.snapshot, snapshot, "Selected jobs tested different snapshots");
       snapshot = observed.snapshot;
@@ -205,18 +236,31 @@ function admitFeature({ source, pullRequest, runId, attempt }, request = api, re
   const merge = request(`git/commits/${snapshot}`);
   assert.deepEqual(merge.parents.map((parent) => parent.sha), [base, head], "Actual snapshot parents differ");
   assert.equal(merge.tree.sha, tree);
-  assert.equal(request(`contents/${FEATURE_WORKFLOW}?ref=${snapshot}`)?.sha, FEATURE_WORKFLOW_BLOB, "Unreviewed feature workflow");
+  const blob = request(`contents/${FEATURE_WORKFLOW}?ref=${snapshot}`)?.sha;
+  assert.notEqual(blob, LEGACY_FEATURE_WORKFLOW_BLOB, "Legacy feature producer cannot authorize new releases or bootstrap");
+  assert.equal(blob, FEATURE_WORKFLOW_BLOB, "Unreviewed feature workflow");
   const fresh = request(`pulls/${pullRequest}`), latestRun = request(`actions/runs/${runId}`);
   assert.ok(fresh.merged && fresh.state === "closed" && fresh.merge_commit_sha === source && fresh.head.sha === head && fresh.base.sha === base, "Feature PR changed during admission");
+  assert.equal(fresh.number, pullRequest); assert.equal(fresh.base.ref, "dev");
+  assert.equal(fresh.base.repo.full_name, REPOSITORY); assert.equal(fresh.head.repo.full_name, REPOSITORY);
   assert.ok(latestRun.run_attempt === attempt && latestRun.status === "completed" && latestRun.conclusion === "success", "Feature run changed during admission");
-  assert.equal(request(`git/ref/heads/release/${source}`)?.object?.sha, source, "Frozen source changed during admission");
+  assert.equal(latestRun.id, runId); assert.equal(latestRun.repository.full_name, REPOSITORY);
+  assert.equal(latestRun.event, "pull_request"); assert.equal(workflow(latestRun.path), FEATURE_WORKFLOW); assert.equal(latestRun.head_sha, head);
+  association(latestRun, pullRequest, base, head);
   const currentDev = devHead(request("branches/dev"));
   if (currentDev !== observedDev) {
     const advance = request(`compare/${observedDev}...${currentDev}`);
     assert.ok(advance?.status === "ahead" && advance.behind_by === 0 && advance.merge_base_commit?.sha === observedDev, "Dev was rewritten during admission");
   }
-  return { schemaVersion: 1, repository: REPOSITORY, source, tree, pullRequest, base, head, snapshot, runId, attempt,
+  return { schemaVersion: ADMISSION_SCHEMA, kind: ADMISSION_KIND, repository: REPOSITORY, source, tree, pullRequest, base, head, snapshot, runId, attempt,
     observedDev, currentDev, workflowBlob: FEATURE_WORKFLOW_BLOB, jobs: selected };
+}
+function admitFeature(input, request = api, readLog = jobLog) {
+  const source = sha(input.source, "frozen source"), ref = `git/ref/heads/release/${source}`;
+  assert.equal(request(ref)?.object?.sha, source, "Frozen branch differs from its cut");
+  const proof = verifyAcceptedDev(input, request, readLog);
+  assert.equal(request(ref)?.object?.sha, source, "Frozen source changed during admission");
+  return proof;
 }
 function main() {
   const [command, output] = process.argv.slice(2);
@@ -229,5 +273,6 @@ function main() {
   fs.writeFileSync(output, JSON.stringify({ ...proof, controller, lockHashes: product.lockHashes,
     frontend: product.frontend }, null, 2) + "\n", { flag: "wx" });
 }
-module.exports = { FEATURE_WORKFLOW_BLOB, requireController, requireProduct, sourceFromLog, executionOrigin, devHead, admitFeature };
+module.exports = { LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND,
+  requireController, requireProduct, sourceFromLog, contextFromLog, executionOrigin, devHead, verifyAcceptedDev, admitFeature };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi source: ${error.message}`); process.exitCode = 1; } }

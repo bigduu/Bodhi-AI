@@ -8,7 +8,7 @@ const vm = require("node:vm");
 const { execFileSync, spawnSync } = require("node:child_process");
 const out = require("./release-output.cjs");
 const finalizer = require("./release-finalizer-v2.cjs");
-const { FEATURE_WORKFLOW_BLOB } = require("./release-source.cjs");
+const { FEATURE_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
 const C = "c".repeat(40), S = "a".repeat(40), T = "b".repeat(40);
 const env = { GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: "2026.10.30", EXPECTED_SOURCE_SHA: S,
   GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "2", GITHUB_WORKFLOW_SHA: C };
@@ -26,7 +26,7 @@ function directory(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root;
 }
 function fixture() {
-  const proof = { schemaVersion: 1, repository: out.REPOSITORY, source: S, tree: T, base: "d".repeat(40), head: "e".repeat(40), snapshot: "f".repeat(40),
+  const proof = { schemaVersion: ADMISSION_SCHEMA, kind: ADMISSION_KIND, repository: out.REPOSITORY, source: S, tree: T, base: "d".repeat(40), head: "e".repeat(40), snapshot: "f".repeat(40),
     observedDev: S, currentDev: S, pullRequest: 17, runId: 20, attempt: 1, workflowBlob: FEATURE_WORKFLOW_BLOB,
     jobs: ["Unit Tests (Node)", ...out.NATIVE_TARGETS.map(target => `Unit and E2E (${target})`), "Unit Tests", "E2E Tests"]
       .map((name, index) => ({ id: index + 500, name, attempt: 1, logical: { id: index + 500, attempt: 1 } })) };
@@ -151,6 +151,9 @@ test("reservation retains separate physical and latest logical feature identitie
   const original = clone(reservation); out.verifyReservation(reservation, ctx); assert.deepEqual(reservation, original);
 });
 for (const [label, mutate] of [
+  ["historical source schema", value => { value.admission.schemaVersion = 1; delete value.admission.kind; }],
+  ["foreign source proof kind", value => { value.admission.kind = "bodhi-main-bootstrap"; }],
+  ["legacy producer", value => { value.admission.workflowBlob = LEGACY_FEATURE_WORKFLOW_BLOB; }],
   ["missing logical identity", value => { delete value.admission.jobs[0].logical; }],
   ["future logical attempt", value => { value.admission.jobs[0].logical.attempt = 2; }],
   ["physical after logical", value => { value.admission.jobs[0].attempt = 2; }],

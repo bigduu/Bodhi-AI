@@ -31,10 +31,32 @@ jobs:
       - name: Require the exact feature merge source
         shell: bash
         run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain --untracked-files=all)"
-          git show -s --format='Feature source: %H tree: %T' HEAD
+          node <<'NODE'
+          const assert = require('node:assert/strict'), fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const env = process.env, event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+          const repository = 'bigduu/Bodhi-AI', pr = event.pull_request;
+          const positive = value => {
+            assert.match(String(value), /^[1-9][0-9]*$/);
+            const number = Number(value); assert.ok(Number.isSafeInteger(number)); return number;
+          };
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+          assert.equal(env.GITHUB_REPOSITORY, repository); assert.equal(env.GITHUB_EVENT_NAME, 'pull_request');
+          assert.equal(event.repository.full_name, repository); assert.equal(pr.base.repo.full_name, repository);
+          assert.equal(pr.head.repo.full_name, repository); assert.equal(pr.base.ref, 'dev'); assert.equal(event.number, pr.number);
+          assert.equal(env.GITHUB_REF, `refs/pull/${positive(pr.number)}/merge`);
+          const snapshot = git('rev-parse', 'HEAD'), tree = git('rev-parse', 'HEAD^{tree}');
+          assert.equal(env.GITHUB_SHA, snapshot); assert.equal(git('status', '--porcelain', '--untracked-files=all'), '');
+          // Raw commit headers retain parent IDs in checkout's depth-one clone.
+          const raw = git('cat-file', '-p', 'HEAD').split('\n\n', 1)[0];
+          assert.deepEqual([...raw.matchAll(/^parent ([0-9a-f]{40})$/gm)].map(match => match[1]), [pr.base.sha, pr.head.sha]);
+          const context = { schema: 'bodhi-feature-context/v1', repository, runId: positive(env.GITHUB_RUN_ID),
+            physicalAttempt: positive(env.GITHUB_RUN_ATTEMPT), pullRequest: positive(pr.number),
+            base: pr.base.sha, head: pr.head.sha, snapshot, tree };
+          for (const key of ['base', 'head', 'snapshot', 'tree']) assert.match(context[key], /^[0-9a-f]{40}$/);
+          console.log(`Feature source: ${snapshot} tree: ${tree}`);
+          console.log(`Feature context: ${Buffer.from(JSON.stringify(context)).toString('base64')}`);
+          NODE
 
       - uses: actions/setup-node@v6
         with:
@@ -76,10 +98,32 @@ jobs:
       - name: Require the exact feature merge source
         shell: bash
         run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test -z "$(git status --porcelain --untracked-files=all)"
-          git show -s --format='Feature source: %H tree: %T' HEAD
+          node <<'NODE'
+          const assert = require('node:assert/strict'), fs = require('node:fs');
+          const { execFileSync } = require('node:child_process');
+          const env = process.env, event = JSON.parse(fs.readFileSync(env.GITHUB_EVENT_PATH, 'utf8'));
+          const repository = 'bigduu/Bodhi-AI', pr = event.pull_request;
+          const positive = value => {
+            assert.match(String(value), /^[1-9][0-9]*$/);
+            const number = Number(value); assert.ok(Number.isSafeInteger(number)); return number;
+          };
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+          assert.equal(env.GITHUB_REPOSITORY, repository); assert.equal(env.GITHUB_EVENT_NAME, 'pull_request');
+          assert.equal(event.repository.full_name, repository); assert.equal(pr.base.repo.full_name, repository);
+          assert.equal(pr.head.repo.full_name, repository); assert.equal(pr.base.ref, 'dev'); assert.equal(event.number, pr.number);
+          assert.equal(env.GITHUB_REF, `refs/pull/${positive(pr.number)}/merge`);
+          const snapshot = git('rev-parse', 'HEAD'), tree = git('rev-parse', 'HEAD^{tree}');
+          assert.equal(env.GITHUB_SHA, snapshot); assert.equal(git('status', '--porcelain', '--untracked-files=all'), '');
+          // Raw commit headers retain parent IDs in checkout's depth-one clone.
+          const raw = git('cat-file', '-p', 'HEAD').split('\n\n', 1)[0];
+          assert.deepEqual([...raw.matchAll(/^parent ([0-9a-f]{40})$/gm)].map(match => match[1]), [pr.base.sha, pr.head.sha]);
+          const context = { schema: 'bodhi-feature-context/v1', repository, runId: positive(env.GITHUB_RUN_ID),
+            physicalAttempt: positive(env.GITHUB_RUN_ATTEMPT), pullRequest: positive(pr.number),
+            base: pr.base.sha, head: pr.head.sha, snapshot, tree };
+          for (const key of ['base', 'head', 'snapshot', 'tree']) assert.match(context[key], /^[0-9a-f]{40}$/);
+          console.log(`Feature source: ${snapshot} tree: ${tree}`);
+          console.log(`Feature context: ${Buffer.from(JSON.stringify(context)).toString('base64')}`);
+          NODE
 
       - name: Install native test dependencies
         if: runner.os == 'Linux'
