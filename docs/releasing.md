@@ -71,11 +71,36 @@ second product build phase.
 Feature CI is implemented. The v2 release path now connects
 `scripts/release-source.cjs` to source admission and output retention. Admission
 keeps trusted controller `C`, accepted dev merge `S`, PR base/head and actual
-tested snapshot `M` distinct. It requires a confirmed GitHub PR merge, normal
-merge parents, tested/accepted tree equality, exact successful Unit/E2E jobs,
-protected dev ancestry and `release/<S>` still pointing to `S`. The observed #118
-open/merged-false state remains a negative case; a matching Git tree does not
-supply the missing merge receipt.
+tested snapshot `M` distinct. New admission uses schema 2, kind
+`bodhi-accepted-dev`. It requires a confirmed GitHub PR merge, normal merge
+parents, tested/accepted tree equality, exact successful Unit/E2E jobs and
+protected Dev ancestry. `verifyAcceptedDev` checks that source without a release
+ref; the release wrapper `admitFeature` additionally requires `release/<S>` to
+point to `S` before and after verification. The historical #118 open/merged-false
+state remains a negative case; a matching Git tree does not supply a merge receipt.
+
+The Node job and all three native jobs run the same literal, byte-pinned workflow
+source step immediately after checkout, before staging or tests. It uses only
+Node built-ins and Git; it never loads a candidate source module to record its
+own identity. This records the actual clean merge and
+its raw parents, including in a shallow checkout, without changing `GITHUB_*`.
+Each original log contains one `Feature source:` line and one canonical bounded
+`Feature context:` record with schema `bodhi-feature-context/v1`, repository,
+run ID, physical attempt, PR, base/head, actual merge `M` and tree. Admission
+requires all four records to agree with their original job/attempt and API
+source evidence. The accepted `S` and tested `M` remain distinct commit identities.
+
+GitHub can return `run.pull_requests=[]` after a real PR merge. Only the new
+explicitly pinned producer's original context supplies that missing link. If an
+association is present it must still match exactly; missing API fields, conflicting
+or multiple contexts and unknown workflows reject admission. The old producer
+`492770d810a8c51df8f63057ed95f1446426c7c6` has no original PR context and cannot
+authorize a new release/bootstrap, even if its tests passed. Its historical
+source-line parser remains available as data, without a fallback into the new
+schema. No real v2 run or manifest existed when this evidence contract changed;
+historical v1 publication/recovery and frozen workflow bytes remain unchanged.
+Do not create a fake release ref to run the accepted-Dev verifier. A successful
+source check alone does not authorize Main bootstrap or promotion.
 
 `verifyPublished` in `scripts/release-finalizer-v2.cjs` is a read-only structural
 manifest component for a future consumer. Its caller must authenticate the

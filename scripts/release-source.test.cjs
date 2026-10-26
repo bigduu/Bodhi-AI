@@ -3,14 +3,23 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
-const { admitFeature, requireController, requireProduct, sourceFromLog, executionOrigin, FEATURE_WORKFLOW_BLOB } = require("./release-source.cjs");
+const { admitFeature, verifyAcceptedDev, requireController, requireProduct, sourceFromLog, contextFromLog,
+  executionOrigin, FEATURE_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
 const { NATIVE_TARGETS, REPOSITORY } = require("./release-finalizer.cjs");
 const S = "1".repeat(40), B = "2".repeat(40), F = "3".repeat(40), M = "4".repeat(40), T = "5".repeat(40), C = "6".repeat(40);
 const D = "7".repeat(40), D2 = "8".repeat(40);
 const sourceGate = "Require the exact feature merge source";
 const input = { source: S, pullRequest: 17, runId: 42, attempt: 1 };
+const processEnv = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "SystemRoot", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"]
+  .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+const originalContext = (overrides = {}) => ({ schema: FEATURE_CONTEXT_SCHEMA, repository: REPOSITORY, runId: 42, physicalAttempt: 1,
+  pullRequest: 17, base: B, head: F, snapshot: M, tree: T, ...overrides });
+function contextLog(value = originalContext()) {
+  return `2026-10-26T17:25:40.0279841Z Feature source: ${value.snapshot} tree: ${value.tree}\n` +
+    `2026-10-26T17:25:40.0280000Z Feature context: ${Buffer.from(JSON.stringify(value)).toString("base64")}\n`;
+}
 function fixture() {
   const gates = [["Unit Tests (Node)", [sourceGate, "Run script unit tests"]],
     ...NATIVE_TARGETS.map(target => [`Unit and E2E (${target})`, [sourceGate, "Stage accepted inputs for debug assembly", "Run native shell unit tests",
@@ -28,7 +37,7 @@ function fixture() {
     branch: { protected: true, commit: { sha: D }, protection: { required_status_checks: { enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"],
       checks: ["Unit Tests", "E2E Tests"].map(context => ({ context, app_id: 15368 })) } } },
     frozen: S, ancestor: S, workflowBlob: FEATURE_WORKFLOW_BLOB, total: undefined,
-    logs: Object.fromEntries(gates.slice(0, 4).map((_job, i) => [100 + i, `2026-10-26T17:25:40.0279841Z Feature source: ${M} tree: ${T}\n`])),
+    logs: Object.fromEntries(gates.slice(0, 4).map((_job, i) => [100 + i, contextLog()])),
   };
   f.request = endpoint => {
     const replies = { "pulls/17": f.pr, [`git/commits/${S}`]: f.accepted, [`git/commits/${M}`]: f.snapshot,
@@ -46,14 +55,48 @@ function fixture() {
 test("admission preserves actual feature snapshot separately from accepted dev and controller", () => {
   const proof = fixture().verify();
   assert.equal(proof.source, S); assert.equal(proof.snapshot, M); assert.equal(proof.tree, T);
+  assert.equal(proof.schemaVersion, ADMISSION_SCHEMA); assert.equal(proof.kind, ADMISSION_KIND);
   assert.equal(proof.base, B); assert.equal(proof.head, F); assert.equal(proof.workflowBlob, FEATURE_WORKFLOW_BLOB);
   assert.equal(proof.observedDev, D); assert.equal(proof.currentDev, D); assert.notEqual(proof.observedDev, proof.source);
   assert.deepEqual(proof.jobs.map(job => job.id), [100, 101, 102, 103, 104, 105]);
 });
+test("empty post-merge API association is supplied by all four original contexts", () => {
+  const f = fixture(); f.run.pull_requests = [];
+  const proof = f.verify(); assert.equal(proof.pullRequest, 17); assert.equal(proof.snapshot, M);
+  for (const jobId of [100, 101, 102, 103]) {
+    const missing = fixture(); missing.run.pull_requests = []; missing.logs[jobId] = missing.logs[jobId].split("\n")[0] + "\n";
+    assert.throws(() => missing.verify(), /original feature context/);
+  }
+});
+test("accepted-dev verification has no release-ref dependency while the release wrapper requires it", () => {
+  const f = fixture(), requests = []; f.frozen = null; f.run.pull_requests = [];
+  const proof = verifyAcceptedDev(input, endpoint => { requests.push(endpoint); return f.request(endpoint); }, job => f.logs[job]);
+  assert.equal(proof.source, S); assert.ok(requests.every(endpoint => !endpoint.includes("git/ref/heads/release/")));
+  assert.throws(() => f.verify(), /Frozen branch/);
+});
+for (const [key, value] of [["schema", "bodhi-feature-context/v2"], ["repository", "other/Bodhi-AI"], ["runId", 43],
+  ["runId", "42"], ["physicalAttempt", 2], ["physicalAttempt", 0], ["physicalAttempt", "1"], ["pullRequest", 18],
+  ["base", S], ["head", B], ["snapshot", B], ["tree", S], ["extra", true]]) {
+  test(`original context refuses mismatched ${key}=${value} even with empty association`, () => {
+    const f = fixture(); f.run.pull_requests = []; f.logs[101] = contextLog(originalContext({ [key]: value }));
+    assert.throws(() => f.verify());
+  });
+}
+test("the old source line and new context must agree in one physical log", () => {
+  const f = fixture(); f.logs[100] = f.logs[100].replace(`Feature source: ${M}`, `Feature source: ${B}`);
+  assert.throws(() => f.verify(), /Source and context/);
+});
+test("legacy 492 contexts cannot become new release or bootstrap admission", () => {
+  const f = fixture(); f.workflowBlob = LEGACY_FEATURE_WORKFLOW_BLOB;
+  assert.throws(() => verifyAcceptedDev(input, f.request, job => f.logs[job]), /Legacy feature producer/);
+  for (const jobId of [100, 101, 102, 103]) f.logs[jobId] = f.logs[jobId].split("\n")[0] + "\n";
+  f.run.pull_requests = [];
+  assert.throws(() => f.verify(), /original feature context/);
+});
 test("same-run failed-job-only rerun retains earlier successful jobs and their actual attempts", () => {
   const f = fixture(); f.run.run_attempt = 2;
   const failed = structuredClone(f.jobs[1]); failed.conclusion = "failure";
-  f.jobs[1].run_attempt = 2; f.jobs[1].id = 201; f.logs[201] = f.logs[101]; f.jobs.push(failed);
+  f.jobs[1].run_attempt = 2; f.jobs[1].id = 201; f.logs[201] = contextLog(originalContext({ physicalAttempt: 2 })); f.jobs.push(failed);
   const proof = f.verify({ attempt: 2 });
   assert.equal(proof.jobs[1].id, 201); assert.equal(proof.jobs[1].attempt, 2);
   assert.equal(proof.jobs[2].attempt, 1);
@@ -66,13 +109,19 @@ function timed(job, shift = 0) {
   return job;
 }
 test("GitHub copied success keeps physical job/attempt and reads original logs, while recording its logical attempt", () => {
-  const f = fixture(); f.run.run_attempt = 2;
+  const f = fixture(); f.run.run_attempt = 2; f.run.pull_requests = [];
   const original = timed(f.jobs[0]);
   f.jobs.push({ ...structuredClone(original), id: 200, run_attempt: 2 });
   const read = [];
   const proof = admitFeature({ ...input, attempt: 2 }, f.request, job => { read.push(job); assert.notEqual(job, 200); return f.logs[job]; });
   assert.deepEqual(proof.jobs[0], { id: 100, name: original.name, attempt: 1, logical: { id: 200, attempt: 2 } });
   assert.ok(read.includes(100));
+});
+test("a logical projection cannot replace the physical context attempt", () => {
+  const f = fixture(); f.run.run_attempt = 2;
+  f.jobs.push({ ...structuredClone(f.jobs[0]), id: 200, run_attempt: 2 });
+  f.logs[100] = contextLog(originalContext({ physicalAttempt: 2 }));
+  assert.throws(() => f.verify({ attempt: 2 }), /Original context attempt/);
 });
 test("a third logical projection still preserves the earliest physical execution", () => {
   const job = timed(fixture().jobs[0]), second = { ...structuredClone(job), id: 200, run_attempt: 2 };
@@ -131,6 +180,8 @@ for (const [name, change] of [
   ["incomplete run", f => { f.run.status = "in_progress"; }],
   ["failed run", f => { f.run.conclusion = "failure"; }],
   ["wrong PR association", f => { f.run.pull_requests[0].number++; }],
+  ["ambiguous PR associations", f => { f.run.pull_requests.push(structuredClone(f.run.pull_requests[0])); }],
+  ["missing association API field", f => { delete f.run.pull_requests; }],
   ["wrong historical base", f => { f.run.pull_requests[0].base.sha = S; }],
   ["truncated jobs", f => { f.total = f.jobs.length + 1; }],
   ["missing native job", f => { f.jobs.splice(2, 1); }],
@@ -149,6 +200,7 @@ for (const [name, change] of [
   ["wrong snapshot parents", f => { f.snapshot.parents[0].sha = S; }],
   ["wrong snapshot tree", f => { f.snapshot.tree.sha = S; }],
   ["unreviewed CI blob", f => { f.workflowBlob = B; }],
+  ["legacy producer with even a fabricated new context", f => { f.workflowBlob = LEGACY_FEATURE_WORKFLOW_BLOB; }],
 ]) test(`source admission refuses ${name}`, () => { const f = fixture(); change(f); assert.throws(() => f.verify()); });
 for (const conclusion of ["failure", "cancelled", "skipped", "neutral", null]) test(`source admission refuses ${conclusion} required job`, () => {
   const f = fixture(); f.jobs[1].conclusion = conclusion; assert.throws(() => f.verify());
@@ -159,6 +211,7 @@ test("latest failed required job cannot be hidden behind an older success", () =
   assert.throws(() => f.verify({ attempt: 2 }));
 });
 for (const [endpoint, mutate] of [["pulls/17", value => { value.head.sha = B; }], ["actions/runs/42", value => { value.run_attempt++; }],
+  ["actions/runs/42", value => { value.pull_requests[0].number++; }],
   [`git/ref/heads/release/${S}`, value => { value.object.sha = B; }]]) test(`admission catches a concurrent change to ${endpoint}`, () => {
   const f = fixture(); let reads = 0;
   assert.throws(() => admitFeature(input, key => { const value = f.request(key); if (key === endpoint && ++reads > 1) mutate(value); return value; }, job => f.logs[job]));
@@ -187,7 +240,7 @@ for (const [name, mutate] of [
   }, job => f.logs[job]));
 });
 test("observed #118 open/merged-false state blocks admission before inspecting its matching Git merge", () => {
-  assert.throws(() => admitFeature({ source: "1ff40d39ef6ec4580402890c8ccb75f85e79d652", pullRequest: 118, runId: 40368488426, attempt: 1 }, endpoint => {
+  assert.throws(() => verifyAcceptedDev({ source: "1ff40d39ef6ec4580402890c8ccb75f85e79d652", pullRequest: 118, runId: 40368488426, attempt: 1 }, endpoint => {
     assert.equal(endpoint, "pulls/118");
     return { number: 118, state: "open", merged: false };
   }, () => assert.fail("Unconfirmed PR must not acquire a fabricated source receipt")), /not confirmed/);
@@ -197,6 +250,52 @@ test("source records require exactly one actual timestamped checkout line", () =
   assert.deepEqual(sourceFromLog(line), { snapshot: M, tree: T });
   assert.throws(() => sourceFromLog(line + line));
   assert.throws(() => sourceFromLog(`echo Feature source: ${M} tree: ${T}`));
+});
+test("new contexts require one bounded canonical original record, preserving the historical parser only as data", () => {
+  const log = contextLog(), encoded = log.split("Feature context: ")[1].trim();
+  assert.deepEqual(contextFromLog(log), originalContext());
+  for (const changed of [log + log, log.replace("Z Feature context:", "Z echo Feature context:"), log.replace(encoded, "!"), log.replace(encoded, "A".repeat(4100)),
+    log.replace(encoded, Buffer.from(JSON.stringify(originalContext(), null, 2)).toString("base64")),
+    log.replace(encoded, Buffer.from(JSON.stringify(originalContext()).replace('"runId":42', '"runId":42,"runId":42')).toString("base64")),
+    log.replace(encoded, encoded + "=")]) assert.throws(() => contextFromLog(changed));
+  const historical = `2026-10-26T17:25:40.000Z Feature source: ${M} tree: ${T}\n`;
+  assert.deepEqual(sourceFromLog(historical), { snapshot: M, tree: T });
+  assert.throws(() => contextFromLog(historical), /original feature context/);
+});
+test("the literal source-step CLI proves a clean depth-one merge, event parents and unchanged GitHub identity", t => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-context-record-"));
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const root = path.join(temporary, "repository"), shallow = path.join(temporary, "shallow"), eventFile = path.join(temporary, "event.json");
+  fs.mkdirSync(root); fs.writeFileSync(path.join(root, "base.txt"), "base\n");
+  const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
+  const match = workflow.match(/          node <<'NODE'\n([\s\S]*?)^          NODE$/m); assert.ok(match);
+  const writer = match[1].replace(/^          /gm, "");
+  const execute = (directory, ...args) => execFileSync("git", ["-c", "user.name=Context fixture", "-c", "user.email=context@example.invalid",
+    "-c", "commit.gpgSign=false", "-c", `core.hooksPath=${path.join(temporary, "empty-hooks")}`, ...args],
+    { cwd: directory, env: processEnv, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  execute(root, "init", "-q", "--initial-branch=dev"); execute(root, "add", "."); execute(root, "commit", "-qm", "base");
+  const base = execute(root, "rev-parse", "HEAD"); execute(root, "checkout", "-qb", "feature");
+  fs.writeFileSync(path.join(root, "feature.txt"), "feature\n"); execute(root, "add", "."); execute(root, "commit", "-qm", "feature");
+  const head = execute(root, "rev-parse", "HEAD"); execute(root, "checkout", "-q", "dev"); execute(root, "merge", "--no-ff", "--no-edit", "-q", "feature");
+  const snapshot = execute(root, "rev-parse", "HEAD"), tree = execute(root, "rev-parse", "HEAD^{tree}");
+  execute(temporary, "clone", "--quiet", "--depth=1", "--no-local", root, shallow);
+  assert.equal(execute(shallow, "rev-parse", "--is-shallow-repository"), "true");
+  const event = { repository: { full_name: REPOSITORY }, number: 17, pull_request: { number: 17,
+    base: { sha: base, ref: "dev", repo: { full_name: REPOSITORY } }, head: { sha: head, repo: { full_name: REPOSITORY } } } };
+  fs.writeFileSync(eventFile, JSON.stringify(event));
+  const env = Object.freeze({ ...processEnv, GITHUB_REPOSITORY: REPOSITORY, GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile,
+    GITHUB_REF: "refs/pull/17/merge", GITHUB_SHA: snapshot, GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "1" });
+  const original = structuredClone(env), run = (extra = {}) => spawnSync(process.execPath, ["-e", writer],
+    { cwd: shallow, env: { ...env, ...extra }, encoding: "utf8" });
+  const result = run(); assert.equal(result.status, 0, result.stderr);
+  const lines = result.stdout.trim().split("\n").map(line => `2026-10-27T00:00:00.000Z ${line}`).join("\n");
+  assert.deepEqual(contextFromLog(lines), originalContext({ base, head, snapshot, tree }));
+  assert.deepEqual(env, original);
+  for (const extra of [{ GITHUB_SHA: head }, { GITHUB_RUN_ATTEMPT: "0" }, { GITHUB_REF: "refs/heads/dev" }, { GITHUB_EVENT_NAME: "workflow_dispatch" }])
+    assert.notEqual(run(extra).status, 0);
+  event.pull_request.base.sha = head; fs.writeFileSync(eventFile, JSON.stringify(event)); assert.notEqual(run().status, 0);
+  event.pull_request.base.sha = base; fs.writeFileSync(eventFile, JSON.stringify(event));
+  fs.writeFileSync(path.join(shallow, "untracked.txt"), "dirty\n"); const dirty = run(); assert.notEqual(dirty.status, 0); assert.equal(dirty.stdout, "");
 });
 const controllerEnv = () => ({ GITHUB_REPOSITORY: REPOSITORY, GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_REF: "refs/heads/main",
   GITHUB_WORKFLOW_REF: `${REPOSITORY}/.github/workflows/release.yml@refs/heads/main`, GITHUB_WORKFLOW_SHA: C, GITHUB_SHA: C });
@@ -230,6 +329,7 @@ test("actual read-only CLI emits the C/S proof and fails closed on unconfirmed P
   for (const file of ["bamboo-sidecar-lock.json", "frontend-package-lock.json"]) fs.copyFileSync(path.join(__dirname, file), path.join(product, "scripts", file));
   const f = fixture(), endpoints = ["pulls/17", `git/commits/${S}`, `git/commits/${M}`, `compare/${S}...${D}`, `git/ref/heads/release/${S}`,
     "branches/dev", "actions/runs/42", "actions/runs/42/jobs?filter=all&per_page=100&page=1", `contents/.github/workflows/ci.yml?ref=${M}`];
+  f.run.pull_requests = [];
   const save = () => fs.writeFileSync(database, JSON.stringify({ responses: Object.fromEntries(endpoints.map(endpoint => [endpoint, f.request(endpoint)])), logs: f.logs }));
   save();
   const stub = (name, body) => fs.writeFileSync(path.join(bin, name), `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
@@ -238,11 +338,12 @@ test("actual read-only CLI emits the C/S proof and fails closed on unconfirmed P
 if(process.env.SOURCE_API_FAILURE===endpoint){process.stderr.write("HTTP 503 service unavailable");process.exit(1)}
 const log=/^actions\\/jobs\\/(\\d+)\\/logs$/.exec(endpoint);if(log){if(!process.argv.includes("--allow-escape-sequences"))process.exit(3);process.stdout.write(f.logs[log[1]])}else if(Object.hasOwn(f.responses,endpoint))process.stdout.write(JSON.stringify(f.responses[endpoint]));else process.exit(2);`);
   const run = (file, extra = {}) => spawnSync(process.execPath, [path.join(__dirname, "release-source.cjs"), "admit", file], { encoding: "utf8", env: {
-    ...process.env, ...controllerEnv(), PATH: `${bin}${path.delimiter}${process.env.PATH}`, SOURCE_ROOT: product, SOURCE_DATABASE: database,
+    ...processEnv, ...controllerEnv(), PATH: `${bin}${path.delimiter}${process.env.PATH}`, SOURCE_ROOT: product, SOURCE_DATABASE: database,
     EXPECTED_SOURCE_SHA: S, FEATURE_PULL_REQUEST: "17", FEATURE_RUN_ID: "42", FEATURE_RUN_ATTEMPT: "1", ...extra } });
   const output = path.join(root, "accepted.json"), accepted = run(output);
   assert.equal(accepted.status, 0, accepted.stderr);
   const proof = JSON.parse(fs.readFileSync(output)); assert.equal(proof.controller, C); assert.equal(proof.source, S); assert.equal(proof.snapshot, M);
+  assert.equal(proof.schemaVersion, ADMISSION_SCHEMA); assert.equal(proof.kind, ADMISSION_KIND);
   assert.notEqual(run(output).status, 0, "An existing original receipt must not be overwritten");
   f.pr.state = "open"; f.pr.merged = false; save();
   const denied = path.join(root, "denied.json"); assert.notEqual(run(denied).status, 0); assert.equal(fs.existsSync(denied), false);

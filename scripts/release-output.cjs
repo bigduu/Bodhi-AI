@@ -179,7 +179,8 @@ function verifyReservation(value, ctx) {
   assert.match(ctx.controller || "", SHA);
   assert.equal(value.schemaVersion, 2); assert.equal(value.kind, "bodhi-original-release");
   for (const key of ["repository", "version", "source", "controller", "runId"]) assert.equal(value[key], ctx[key], `Reservation ${key} differs`);
-  assert.match(value.tree || "", SHA); assert.equal(value.admission.schemaVersion, 1);
+  assert.match(value.tree || "", SHA); assert.equal(value.admission.schemaVersion, admission.ADMISSION_SCHEMA);
+  assert.equal(value.admission.kind, admission.ADMISSION_KIND);
   assert.equal(value.admission.repository, REPOSITORY); assert.equal(value.admission.source, ctx.source); assert.equal(value.admission.tree, value.tree);
   for (const key of ["base", "head", "snapshot", "observedDev", "currentDev"]) assert.match(value.admission[key] || "", SHA);
   for (const key of ["pullRequest", "runId", "attempt"]) id(value.admission[key]);

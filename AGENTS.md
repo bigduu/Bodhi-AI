@@ -33,7 +33,7 @@ and publication (#122). It requires the real trusted `main` controller `C`, an
 explicit separate product checkout `S`, a confirmed protected-dev PR receipt and
 its exact successful feature run. Never relabel GitHub's SHA/ref variables.
 This branch does not activate trusted-main bootstrap, required checks or main
-promotion. An unconfirmed merge, including the observed #118 metadata
+promotion. An unconfirmed merge, including the historical #118 metadata
 inconsistency, fails admission even when Git trees match.
 
 New releases use v2 only. Preserve `scripts/release-finalizer.cjs` byte-for-byte
@@ -45,6 +45,19 @@ GitHub may copy a successful job into a later attempt without executing it
 again. Preserve its original physical job/attempt and logs, and record the latest
 logical result separately. Only identical complete job/step execution times can
 establish that reuse; a later failure or ambiguous attempt still blocks admission.
+
+The four actual feature source steps record `bodhi-feature-context/v1`: repository,
+run, physical attempt, PR, original base/head, actual tested merge and tree. New
+schema-2 `bodhi-accepted-dev` admission verifies every original context against
+the pinned producer, confirmed normal Dev merge and protected Dev ancestry.
+GitHub may return an empty run PR association after merge; only these original
+contexts can replace the missing association. A present association must match.
+Keep old producer `492770d8` and its source-line parser as historical data only;
+it cannot authorize a new release or bootstrap. Never manufacture a context.
+`verifyAcceptedDev` performs this read-only source check without a release ref;
+it does not authorize Main promotion/bootstrap. The release wrapper additionally
+checks the exact frozen `release/<S>` before and after admission. Do not create
+a fake release cut merely to inspect an accepted Dev source.
 
 ## Inputs and evidence
 

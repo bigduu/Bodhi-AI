@@ -1,8 +1,11 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
+const { FEATURE_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA } = require("./release-source.cjs");
+const processEnv = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "SystemRoot", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"]
+  .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
 
 const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
 const job = (id) => {
@@ -17,6 +20,22 @@ test("feature CI runs only for dev PRs and leaves main and release without a dup
   assert.doesNotMatch(triggers, /push:|workflow_dispatch:|main|release|paths:/);
   assert.match(workflow, /group: bodhi-feature-\$\{\{ github.event.pull_request.number \}\}/);
   assert.doesNotMatch(workflow, /contents: write|secrets\.|tauri-action|upload-artifact|cargo build|cargo test[^\n]*--release|release\/bundle|prepare-crates-io-build/);
+});
+test("the six-job context producer agrees with admission and records before any product or unit command", () => {
+  const blob = execFileSync("git", ["hash-object", "--stdin"], { input: workflow, encoding: "utf8", env: processEnv }).trim();
+  assert.equal(blob, FEATURE_WORKFLOW_BLOB); assert.notEqual(blob, LEGACY_FEATURE_WORKFLOW_BLOB);
+  assert.equal(FEATURE_CONTEXT_SCHEMA, "bodhi-feature-context/v1"); assert.equal(ADMISSION_SCHEMA, 2);
+  assert.equal([...workflow.matchAll(/^  [a-z][a-z0-9-]*:\n    name:/gm)].length, 4);
+  const writers = [...workflow.matchAll(/          node <<'NODE'\n([\s\S]*?)^          NODE$/gm)].map(match => match[1]);
+  assert.equal(writers.length, 2); assert.equal(writers[0], writers[1]);
+  assert.match(writers[0], /schema: 'bodhi-feature-context\/v1'/);
+  assert.doesNotMatch(writers[0], /require\(['"]\.\//);
+  for (const id of ["unit-node", "native-tests"]) {
+    const block = job(id), record = block.indexOf("node <<'NODE'");
+    assert.ok(record > block.indexOf("uses: actions/checkout@v6") && record < block.indexOf("uses: actions/setup-node@v6"));
+    assert.match(block.slice(0, record), /name: Require the exact feature merge source\n        shell: bash/);
+  }
+  assert.doesNotMatch(workflow, /GITHUB_(?:SHA|REF|RUN_ID|RUN_ATTEMPT)\s*[:=]/);
 });
 
 test("each native target compiles once for Unit and E2E and consumes the same debug assembly", () => {
@@ -55,7 +74,7 @@ test("feature aggregate gates reject failed, skipped, cancelled and absent nativ
     assert.ok(match);
     const script = match[1].replace(/^          /gm, "");
     const run = (overrides = {}) => spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], {
-      env: { ...process.env, NODE_RESULT: "success", NATIVE_RESULT: "success", ...overrides }, encoding: "utf8",
+      env: { ...processEnv, NODE_RESULT: "success", NATIVE_RESULT: "success", ...overrides }, encoding: "utf8",
     });
     assert.equal(run().status, 0);
     for (const NATIVE_RESULT of ["failure", "cancelled", "skipped", "", "unknown"]) {
