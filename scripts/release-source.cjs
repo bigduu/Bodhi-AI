@@ -14,7 +14,10 @@ const { readArtifactLock } = require("./lotus-next-artifact.cjs");
 const ROOT = path.resolve(__dirname, "..");
 const FEATURE_WORKFLOW = ".github/workflows/ci.yml";
 const LEGACY_FEATURE_WORKFLOW_BLOB = "492770d810a8c51df8f63057ed95f1446426c7c6";
-const FEATURE_WORKFLOW_BLOB = "85fd611d3ee5171eb70b9c5a28d53c92a2c09c50";
+const CONTEXT_WORKFLOW_BLOB = "85fd611d3ee5171eb70b9c5a28d53c92a2c09c50";
+const FEATURE_WORKFLOW_BLOB = "577c4f021a0f543c7ceb06232504d87d07cd9a05";
+const MAIN_GATE = "Main Admission";
+const FEATURE_PRODUCERS = new Map([[CONTEXT_WORKFLOW_BLOB, false], [FEATURE_WORKFLOW_BLOB, true]]);
 const FEATURE_CONTEXT_SCHEMA = "bodhi-feature-context/v1";
 const ADMISSION_SCHEMA = 2;
 const ADMISSION_KIND = "bodhi-accepted-dev";
@@ -211,7 +214,7 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
   ]);
   const jobs = pages(`actions/runs/${runId}/jobs?filter=all`, "jobs", request), selected = [];
   assert.equal(new Set(jobs.map((job) => job.id)).size, jobs.length, "Duplicate job evidence");
-  assert.ok(jobs.every((job) => expected.has(job.name)), "Foreign job in feature evidence");
+  assert.ok(jobs.every((job) => expected.has(job.name) || job.name === MAIN_GATE), "Foreign job in feature evidence");
   let snapshot;
   for (const [name, gates] of expected) {
     const matching = jobs.filter((job) => job.name === name);
@@ -243,7 +246,18 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
   assert.equal(merge.tree.sha, tree);
   const blob = request(`contents/${FEATURE_WORKFLOW}?ref=${snapshot}`)?.sha;
   assert.notEqual(blob, LEGACY_FEATURE_WORKFLOW_BLOB, "Legacy feature producer cannot authorize new releases or bootstrap");
-  assert.equal(blob, FEATURE_WORKFLOW_BLOB, "Unreviewed feature workflow");
+  assert.ok(FEATURE_PRODUCERS.has(blob), "Unreviewed feature workflow");
+  const skipped = jobs.filter(job => job.name === MAIN_GATE);
+  if (!FEATURE_PRODUCERS.get(blob)) assert.equal(skipped.length, 0, "Foreign main gate in original context producer");
+  else {
+    assert.ok(skipped.length, "Missing known skipped main gate");
+    assert.equal(new Set(skipped.map(job => job.run_attempt)).size, skipped.length, "Ambiguous skipped main gate");
+    for (const job of skipped) {
+      assert.equal(job.run_id, runId); assert.equal(job.head_sha, head); id(job.id, "main skip job");
+      assert.ok(id(job.run_attempt, "main skip attempt") <= attempt);
+      assert.equal(job.status, "completed"); assert.equal(job.conclusion, "skipped"); assert.deepEqual(job.steps, []);
+    }
+  }
   const fresh = request(`pulls/${pullRequest}`), latestRun = request(`actions/runs/${runId}`);
   assert.ok(fresh.merged && fresh.state === "closed" && fresh.merge_commit_sha === source && fresh.head.sha === head && fresh.base.sha === base, "Feature PR changed during admission");
   assert.equal(fresh.number, pullRequest); assert.equal(fresh.base.ref, "dev");
@@ -259,7 +273,7 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
     assert.ok(advance?.status === "ahead" && advance.behind_by === 0 && advance.merge_base_commit?.sha === observedDev, "Dev was rewritten during admission");
   }
   return { schemaVersion: ADMISSION_SCHEMA, kind: ADMISSION_KIND, repository: REPOSITORY, source, tree, pullRequest, mergedAt: pr.merged_at, base, head, snapshot, runId, attempt,
-    observedDev, currentDev, workflowBlob: FEATURE_WORKFLOW_BLOB, jobs: selected };
+    observedDev, currentDev, workflowBlob: blob, jobs: selected };
 }
 function admitFeature(input, request = api, readLog = jobLog) {
   const source = sha(input.source, "frozen source"), ref = `git/ref/heads/release/${source}`;
@@ -279,6 +293,6 @@ function main() {
   fs.writeFileSync(output, JSON.stringify({ ...proof, controller, lockHashes: product.lockHashes,
     frontend: product.frontend }, null, 2) + "\n", { flag: "wx" });
 }
-module.exports = { LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND,
+module.exports = { LEGACY_FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, FEATURE_WORKFLOW_BLOB, MAIN_GATE, FEATURE_PRODUCERS, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND,
   requireController, requireProduct, sourceFromLog, contextFromLog, executionOrigin, devHead, verifyAcceptedDev, admitFeature };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi source: ${error.message}`); process.exitCode = 1; } }

@@ -6,7 +6,7 @@ const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
 const { admitFeature, verifyAcceptedDev, requireController, requireProduct, sourceFromLog, contextFromLog,
-  executionOrigin, FEATURE_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
+  executionOrigin, FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, MAIN_GATE, LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
 const { NATIVE_TARGETS, REPOSITORY } = require("./release-finalizer.cjs");
 const S = "1".repeat(40), B = "2".repeat(40), F = "3".repeat(40), M = "4".repeat(40), T = "5".repeat(40), C = "6".repeat(40);
 const D = "7".repeat(40), D2 = "8".repeat(40);
@@ -39,6 +39,7 @@ function fixture() {
     frozen: S, ancestor: S, workflowBlob: FEATURE_WORKFLOW_BLOB, total: undefined,
     logs: Object.fromEntries(gates.slice(0, 4).map((_job, i) => [100 + i, contextLog()])),
   };
+  f.jobs.push({ id: 106, name: MAIN_GATE, run_id: 42, run_attempt: 1, head_sha: F, status: "completed", conclusion: "skipped", steps: [] });
   f.request = endpoint => {
     const replies = { "pulls/17": f.pr, [`git/commits/${S}`]: f.accepted, [`git/commits/${M}`]: f.snapshot,
       [`compare/${S}...${D}`]: { merge_base_commit: { sha: f.ancestor } }, [`git/ref/heads/release/${S}`]: { object: { sha: f.frozen } },
@@ -68,6 +69,18 @@ test("empty post-merge API association is supplied by all four original contexts
     assert.throws(() => missing.verify(), /original feature context/);
   }
 });
+test("the original context producer has six actual jobs and no Main skip", () => {
+  const f = fixture(); f.workflowBlob = CONTEXT_WORKFLOW_BLOB; f.jobs.pop();
+  const proof = f.verify(); assert.equal(proof.workflowBlob, CONTEXT_WORKFLOW_BLOB); assert.equal(proof.jobs.length, 6);
+});
+for (const [name, mutate] of [
+  ["missing skip", f => f.jobs.pop()], ["green stub", f => { f.jobs.at(-1).conclusion = "success"; }],
+  ["neutral stub", f => { f.jobs.at(-1).conclusion = "neutral"; }], ["running main gate", f => { f.jobs.at(-1).status = "in_progress"; }],
+  ["executed main step", f => { f.jobs.at(-1).steps.push({ name: "anything", conclusion: "skipped" }); }],
+  ["ambiguous skip", f => f.jobs.push({ ...f.jobs.at(-1), id: 107 })],
+  ["foreign skip run", f => { f.jobs.at(-1).run_id++; }], ["future skip attempt", f => { f.jobs.at(-1).run_attempt++; }],
+  ["skip on the old context producer", f => { f.workflowBlob = CONTEXT_WORKFLOW_BLOB; }],
+]) test(`finite producer graph refuses ${name}`, () => { const f = fixture(); mutate(f); assert.throws(() => f.verify()); });
 test("accepted-dev verification has no release-ref dependency while the release wrapper requires it", () => {
   const f = fixture(), requests = []; f.frozen = null; f.run.pull_requests = [];
   const proof = verifyAcceptedDev(input, endpoint => { requests.push(endpoint); return f.request(endpoint); }, job => f.logs[job]);
@@ -107,7 +120,7 @@ test("source time requires all six original executions to complete before admiss
 });
 test("source time retains the inclusive original completion boundary", () => {
   const f = fixture();
-  f.pr.merged_at = f.jobs.map(job => job.completed_at).sort().at(-1);
+  f.pr.merged_at = f.jobs.filter(job => job.conclusion === "success").map(job => job.completed_at).sort().at(-1);
   const proof = f.verify(); assert.equal(proof.mergedAt, f.pr.merged_at);
 });
 test("source time permits a later logical projection while preserving pre-merge physical completion", () => {
@@ -238,6 +251,7 @@ for (const [name, change] of [
   ["wrong snapshot parents", f => { f.snapshot.parents[0].sha = S; }],
   ["wrong snapshot tree", f => { f.snapshot.tree.sha = S; }],
   ["unreviewed CI blob", f => { f.workflowBlob = B; }],
+  ["unpublished candidate-defined Main producer", f => { f.workflowBlob = "e2d177fd8f7efa9e514b8b48d27a41eeb161cd7b"; }],
   ["legacy producer with even a fabricated new context", f => { f.workflowBlob = LEGACY_FEATURE_WORKFLOW_BLOB; }],
 ]) test(`source admission refuses ${name}`, () => { const f = fixture(); change(f); assert.throws(() => f.verify()); });
 for (const conclusion of ["failure", "cancelled", "skipped", "neutral", null]) test(`source admission refuses ${conclusion} required job`, () => {
