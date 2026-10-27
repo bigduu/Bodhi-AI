@@ -1,14 +1,23 @@
 # Publish Bodhi independently
 
+Read the complete local [delivery-flow/v1](delivery-workflow.md) and
+[Actions audit](ci-workflow-audit.md), copied from Zenith `874ee7c`. This guide
+adds Bodhi's concrete commands and receipts. Every agent continues from the same
+source checkpoint and original evidence, with no repeated successful build/test
+because ownership changed.
+
 The prepared v2 publisher is this repository's [release.yml](../.github/workflows/release.yml).
 It runs a trusted `main` controller `C` against a separate disposable checkout of
 an accepted, frozen dev merge `S`. Bamboo and Lotus Next remain independent
 producers; Bodhi consumes their exact committed artifact locks. Zenith is not a
 release prerequisite.
 
-This branch prepares #122 under tracker #119; it does not activate the trusted
-main bootstrap, protection changes or a main promotion workflow. Do not dispatch
-a new production release until that separate cutover is reviewed. Existing v1
+Tracker #119's source admission, original-output retention and Main gate are
+merged. Dedicated #132/PR134 bootstrapped only the reviewed controls onto main
+`19f11149`, preserving its product/dependency tree; strict Main Admission is now
+required. Actual negative PR135 was blocked and closed without merge. No new
+v2 production release or positive completed-release promotion has been exercised.
+This CI/documentation migration does not dispatch a production release. Existing v1
 runs, including #116, keep their original workflow snapshots, source locks,
 runtime gates and recovery contract. The new publisher never silently falls
 back to v1 when source admission fails.
