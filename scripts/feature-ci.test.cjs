@@ -1,5 +1,7 @@
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
@@ -8,6 +10,10 @@ const processEnv = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "SystemRoo
   .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
 
 const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
+// SHA256 of the 2,118 UTF-8 heredoc-body bytes (indentation/final LF included)
+// independently extracted from the real Alpha CI blob 85fd611d3ee5171eb70b9c5a28d53c92a2c09c50.
+// Keep this literal; runtime policy checks must not require historical Git objects.
+const ORIGINAL_CONTEXT_WRITER_SHA256 = "15d48e67b95f619f44bda9434ffe058c7b2bcd5d441bd6b37bccbf88a30c7093";
 const job = (id) => {
   const match = workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:|$(?![\\s\\S]))`, "m"));
   assert.ok(match, `Missing job ${id}`);
@@ -30,8 +36,8 @@ test("the six-job context producer agrees with admission and records before any 
   assert.equal([...workflow.matchAll(/^  [a-z][a-z0-9-]*:\n    name:/gm)].length, 5);
   const writers = [...workflow.matchAll(/          node <<'NODE'\n([\s\S]*?)^          NODE$/gm)].map(match => match[1]);
   assert.equal(writers.length, 2); assert.equal(writers[0], writers[1]);
-  const original = execFileSync("git", ["cat-file", "blob", require("./release-source.cjs").CONTEXT_WORKFLOW_BLOB], { encoding: "utf8", env: processEnv });
-  assert.deepEqual(writers, [...original.matchAll(/          node <<'NODE'\n([\s\S]*?)^          NODE$/gm)].map(match => match[1]), "Original context writer bytes must remain unchanged");
+  assert.deepEqual(writers.map(writer => createHash("sha256").update(writer, "utf8").digest("hex")),
+    [ORIGINAL_CONTEXT_WRITER_SHA256, ORIGINAL_CONTEXT_WRITER_SHA256], "Original Alpha writer bytes must remain unchanged");
   assert.match(writers[0], /schema: 'bodhi-feature-context\/v1'/);
   assert.doesNotMatch(writers[0], /require\(['"]\.\//);
   for (const id of ["unit-node", "native-tests"]) {
@@ -40,6 +46,27 @@ test("the six-job context producer agrees with admission and records before any 
     assert.match(block.slice(0, record), /name: Require the exact feature merge source\n        shell: bash/);
   }
   assert.doesNotMatch(workflow, /GITHUB_(?:SHA|REF|RUN_ID|RUN_ATTEMPT)\s*[:=]/);
+});
+test("context-writer policy works in a real depth-one checkout without historical Alpha objects", t => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-context-policy-shallow-"));
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const checkout = path.join(temporary, "checkout"), root = path.resolve(__dirname, "..");
+  execFileSync("git", ["-c", `core.hooksPath=${path.join(temporary, "empty-hooks")}`, "-c", "advice.detachedHead=false",
+    "clone", "--quiet", "--no-local", "--depth=1", root, checkout], { env: processEnv, stdio: "pipe" });
+  execFileSync("git", ["-c", `core.hooksPath=${path.join(temporary, "empty-hooks")}`, "checkout", "--quiet", "--detach"], { cwd: checkout, env: processEnv, stdio: "pipe" });
+  assert.equal(execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: checkout, env: processEnv, encoding: "utf8" }).trim(), "true");
+  assert.notEqual(spawnSync("git", ["symbolic-ref", "-q", "HEAD"], { cwd: checkout, env: processEnv }).status, 0);
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, env: processEnv, encoding: "utf8" }).trim(),
+    execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, env: processEnv, encoding: "utf8" }).trim());
+  const historical = spawnSync("git", ["cat-file", "-e", require("./release-source.cjs").CONTEXT_WORKFLOW_BLOB], { cwd: checkout, env: processEnv, encoding: "utf8" });
+  assert.notEqual(historical.status, 0, "Depth-one fixture must really lack the Alpha workflow blob");
+  // Run the current test bytes even while this regression is an uncommitted
+  // working-tree change. Filter the child to avoid recursively cloning itself.
+  fs.copyFileSync(__filename, path.join(checkout, "scripts/feature-ci.test.cjs"));
+  const child = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=^the six-job context producer agrees",
+    "scripts/feature-ci.test.cjs"], { cwd: checkout, env: processEnv, encoding: "utf8", maxBuffer: 1024 ** 2 });
+  assert.equal(child.status, 0, child.stdout + child.stderr);
+  assert.match(child.stdout, /ok \d+ - the six-job context producer agrees/);
 });
 test("Main executes only the base controller verifier, and all feature jobs skip on Main", () => {
   const main = job("main-admission");
