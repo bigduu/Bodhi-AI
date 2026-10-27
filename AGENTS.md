@@ -32,8 +32,10 @@ The feature workflow implements the first phase. The prepared schema-v2
 and publication (#122). It requires the real trusted `main` controller `C`, an
 explicit separate product checkout `S`, a confirmed protected-dev PR receipt and
 its exact successful feature run. Never relabel GitHub's SHA/ref variables.
-This branch does not activate trusted-main bootstrap, required checks or main
-promotion. An unconfirmed merge, including the historical #118 metadata
+The prepared Main admission boundary (#128) verifies completed v2 publication
+and exact Git postimages. Its bootstrap proof is a read-only component; initial
+trusted-D wiring, protection and production activation remain separate Ops.
+An unconfirmed merge, including the historical #118 metadata
 inconsistency, fails admission even when Git trees match.
 
 New releases use v2 only. Preserve `scripts/release-finalizer.cjs` byte-for-byte
@@ -58,6 +60,40 @@ it cannot authorize a new release or bootstrap. Never manufacture a context.
 it does not authorize Main promotion/bootstrap. The release wrapper additionally
 checks the exact frozen `release/<S>` before and after admission. Do not create
 a fake release cut merely to inspect an accepted Dev source.
+
+## Main admission
+
+- Main metadata admission uses a Main-base-defined `pull_request_target` job,
+  read permissions and checkout of its actual workflow SHA B. Feature
+  `pull_request` runs target Dev only. Candidate M cannot replace the trusted
+  Main job definition with a same-name stub. Keep the actual Main Target
+  ref/SHA at B and prove PR merge M independently from Git/API. Do not
+  checkout or execute product S to establish its own authority. The first
+  trusted-D bootstrap entrypoint requires separate precise source/hash review;
+  do not infer executable authority from PR text, branch/bot names or a manual
+  workflow's successful check.
+- Bind the trigger event's locator to current API metadata and final fresh
+  reads. Locator edits require their own `edited` event check; an old run may
+  not authorize a new locator. Candidate P/S/M code is never executed by Target.
+- Normal promotion requires the completed seven-asset v2 release, original
+  controller/run/jobs, retained reservation/target/publication evidence, actual
+  immutable ZIP/file hashes and accepted source/locks. Recovery uses the existing
+  publication-only failure route and authenticates original C1 and recovery C2.
+  Missing originals, a latest logical failure, replacement bytes or unknown API
+  state stop admission. Main never compiles, tests, packages or republishes.
+- Main's actual merge M must equal complete S, or complete S overlaid by the
+  entire literal controller closure from its current base B. Complete S requires
+  an admitted Main-capable producer and all eleven ordinary control files; an
+  Alpha release instead retains the entire B closure so future Target admission
+  remains available. Preserve M/tree
+  separately; C need not be S's ancestor. No per-file mixture or product/lock/
+  version exception is allowed. The bootstrap component instead accepts only
+  the fixed legacy base plus the complete reviewed control closure from an
+  actually accepted new-context Dev D, leaving all other Main entries unchanged.
+- The original context workflow and the Main-capable workflow are two finite
+  producer graphs. Feature acceptance still requires six actual jobs; only the
+  latter may additionally contain the known skipped Main job. Never replace a
+  real test with a green stub or accept an unregistered/skipped producer.
 
 ## Inputs and evidence
 

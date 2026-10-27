@@ -72,14 +72,17 @@ function workflow(value) {
   const [file, ref, extra] = String(value).split("@"); assert.ok(!extra && (ref === undefined || /^\S+$/.test(ref)));
   return file.startsWith(`${REPOSITORY}/`) ? file.slice(REPOSITORY.length + 1) : file;
 }
-function run(ctx, request = api, recovery = false) {
-  const value = request(`actions/runs/${ctx.runId}`);
+function runIdentity(ctx, value) {
   assert.equal(value?.id, ctx.runId); assert.equal(value.repository.full_name, REPOSITORY);
   assert.equal(value.run_attempt, ctx.attempt, "Release attempt changed");
   assert.equal(value.event, "workflow_dispatch"); assert.equal(workflow(value.path), ".github/workflows/release.yml");
   assert.equal(value.head_branch, "main"); assert.match(value.head_sha || "", SHA);
   if (ctx.controller) assert.equal(value.head_sha, ctx.controller, "Original controller differs");
   assert.equal(value.display_title, `Bodhi v2 v${ctx.version} @ ${ctx.source}`);
+  return value;
+}
+function run(ctx, request = api, recovery = false) {
+  const value = runIdentity(ctx, request(`actions/runs/${ctx.runId}`));
   assert.equal(value.status, recovery ? "completed" : "in_progress");
   assert.equal(value.conclusion, recovery ? "failure" : null);
   return value;
@@ -184,7 +187,7 @@ function verifyReservation(value, ctx) {
   assert.equal(value.admission.repository, REPOSITORY); assert.equal(value.admission.source, ctx.source); assert.equal(value.admission.tree, value.tree);
   for (const key of ["base", "head", "snapshot", "observedDev", "currentDev"]) assert.match(value.admission[key] || "", SHA);
   for (const key of ["pullRequest", "runId", "attempt"]) id(value.admission[key]);
-  assert.equal(value.admission.workflowBlob, admission.FEATURE_WORKFLOW_BLOB);
+  assert.ok(admission.FEATURE_PRODUCERS.has(value.admission.workflowBlob), "Unreviewed feature producer");
   assert.deepEqual(value.admission.jobs.map(job => job.name).sort(), ["Unit Tests (Node)", "Unit Tests", "E2E Tests", ...NATIVE_TARGETS.map(target => `Unit and E2E (${target})`)].sort());
   assert.equal(new Set(value.admission.jobs.map(job => id(job.id))).size, 6);
   assert.equal(new Set(value.admission.jobs.map(job => id(job.logical?.id))).size, 6);
@@ -366,6 +369,6 @@ function main() {
   verifyReceipt(receipt, ctx, reservation, target, job); write(path.join(output, "target-receipt.json"), receipt);
 }
 module.exports = { ROOT, REPOSITORY, NATIVE_TARGETS, BUILD, CAPTURE, RETAIN, PREFLIGHT, RESERVATION, MANIFEST, SHA, DIGEST, bytes, sha256,
-  childEnv, api, pages, context, controller, run, jobs, gate, passed, currentJob, readJson, write, names, artifactName, artifact, download, hashFile,
+  childEnv, api, pages, context, controller, workflow, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, names, artifactName, artifact, download, hashFile,
   verifyReservation, releaseReservation, loadReservation, selectTarget, verifyReceipt, checks, stamped, stamp, staticOutputs, outputs };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Original Bodhi output: ${error.message}`); process.exitCode = 1; } }

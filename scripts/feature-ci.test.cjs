@@ -1,5 +1,7 @@
 const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
@@ -8,16 +10,22 @@ const processEnv = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "SystemRoo
   .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
 
 const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
+// SHA256 of the 2,118 UTF-8 heredoc-body bytes (indentation/final LF included)
+// independently extracted from the real Alpha CI blob 85fd611d3ee5171eb70b9c5a28d53c92a2c09c50.
+// Keep this literal; runtime policy checks must not require historical Git objects.
+const ORIGINAL_CONTEXT_WRITER_SHA256 = "15d48e67b95f619f44bda9434ffe058c7b2bcd5d441bd6b37bccbf88a30c7093";
 const job = (id) => {
   const match = workflow.match(new RegExp(`^  ${id}:\\n([\\s\\S]*?)(?=^  [a-z][a-z0-9-]*:|$(?![\\s\\S]))`, "m"));
   assert.ok(match, `Missing job ${id}`);
   return match[1];
 };
 
-test("feature CI runs only for dev PRs and leaves main and release without a duplicate test/build entrypoint", () => {
+test("CI splits Dev tests from read-only Main admission with no push/release producer", () => {
   const triggers = workflow.slice(workflow.indexOf("on:"), workflow.indexOf("permissions:"));
   assert.match(triggers, /pull_request:\n    branches: \[dev\]/);
-  assert.doesNotMatch(triggers, /push:|workflow_dispatch:|main|release|paths:/);
+  assert.match(triggers, /pull_request_target:\n    branches: \[main\]/);
+  assert.match(triggers, /types: \[opened, synchronize, reopened, edited, ready_for_review\]/);
+  assert.doesNotMatch(triggers, /push:|workflow_dispatch:|release|paths:/);
   assert.match(workflow, /group: bodhi-feature-\$\{\{ github.event.pull_request.number \}\}/);
   assert.doesNotMatch(workflow, /contents: write|secrets\.|tauri-action|upload-artifact|cargo build|cargo test[^\n]*--release|release\/bundle|prepare-crates-io-build/);
 });
@@ -25,9 +33,11 @@ test("the six-job context producer agrees with admission and records before any 
   const blob = execFileSync("git", ["hash-object", "--stdin"], { input: workflow, encoding: "utf8", env: processEnv }).trim();
   assert.equal(blob, FEATURE_WORKFLOW_BLOB); assert.notEqual(blob, LEGACY_FEATURE_WORKFLOW_BLOB);
   assert.equal(FEATURE_CONTEXT_SCHEMA, "bodhi-feature-context/v1"); assert.equal(ADMISSION_SCHEMA, 2);
-  assert.equal([...workflow.matchAll(/^  [a-z][a-z0-9-]*:\n    name:/gm)].length, 4);
+  assert.equal([...workflow.matchAll(/^  [a-z][a-z0-9-]*:\n    name:/gm)].length, 5);
   const writers = [...workflow.matchAll(/          node <<'NODE'\n([\s\S]*?)^          NODE$/gm)].map(match => match[1]);
   assert.equal(writers.length, 2); assert.equal(writers[0], writers[1]);
+  assert.deepEqual(writers.map(writer => createHash("sha256").update(writer, "utf8").digest("hex")),
+    [ORIGINAL_CONTEXT_WRITER_SHA256, ORIGINAL_CONTEXT_WRITER_SHA256], "Original Alpha writer bytes must remain unchanged");
   assert.match(writers[0], /schema: 'bodhi-feature-context\/v1'/);
   assert.doesNotMatch(writers[0], /require\(['"]\.\//);
   for (const id of ["unit-node", "native-tests"]) {
@@ -36,6 +46,48 @@ test("the six-job context producer agrees with admission and records before any 
     assert.match(block.slice(0, record), /name: Require the exact feature merge source\n        shell: bash/);
   }
   assert.doesNotMatch(workflow, /GITHUB_(?:SHA|REF|RUN_ID|RUN_ATTEMPT)\s*[:=]/);
+});
+test("context-writer policy works in a real depth-one checkout without historical Alpha objects", t => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-context-policy-shallow-"));
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const checkout = path.join(temporary, "checkout"), root = path.resolve(__dirname, "..");
+  execFileSync("git", ["-c", `core.hooksPath=${path.join(temporary, "empty-hooks")}`, "-c", "advice.detachedHead=false",
+    "clone", "--quiet", "--no-local", "--depth=1", root, checkout], { env: processEnv, stdio: "pipe" });
+  execFileSync("git", ["-c", `core.hooksPath=${path.join(temporary, "empty-hooks")}`, "checkout", "--quiet", "--detach"], { cwd: checkout, env: processEnv, stdio: "pipe" });
+  assert.equal(execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: checkout, env: processEnv, encoding: "utf8" }).trim(), "true");
+  assert.notEqual(spawnSync("git", ["symbolic-ref", "-q", "HEAD"], { cwd: checkout, env: processEnv }).status, 0);
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, env: processEnv, encoding: "utf8" }).trim(),
+    execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, env: processEnv, encoding: "utf8" }).trim());
+  const historical = spawnSync("git", ["cat-file", "-e", require("./release-source.cjs").CONTEXT_WORKFLOW_BLOB], { cwd: checkout, env: processEnv, encoding: "utf8" });
+  assert.notEqual(historical.status, 0, "Depth-one fixture must really lack the Alpha workflow blob");
+  // Run the current test bytes even while this regression is an uncommitted
+  // working-tree change. Filter the child to avoid recursively cloning itself.
+  fs.copyFileSync(__filename, path.join(checkout, "scripts/feature-ci.test.cjs"));
+  const child = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=^the six-job context producer agrees",
+    "scripts/feature-ci.test.cjs"], { cwd: checkout, env: processEnv, encoding: "utf8", maxBuffer: 1024 ** 2 });
+  assert.equal(child.status, 0, child.stdout + child.stderr);
+  assert.match(child.stdout, /ok \d+ - the six-job context producer agrees/);
+});
+test("Main executes only the base controller verifier, and all feature jobs skip on Main", () => {
+  const main = job("main-admission");
+  assert.match(main, /name: Main Admission/); assert.match(main, /github.event_name == 'pull_request_target' && github.base_ref == 'main'/);
+  assert.match(main, /ref: \$\{\{ github.workflow_sha \}\}/);
+  assert.match(main, /run: node scripts\/main-admission.cjs/);
+  assert.doesNotMatch(main, /needs:|setup-node|\brust\b|cache|npm |cargo |tauri|upload|contents: write|actions: write|head.sha|exit 0|\|\| true/);
+  assert.doesNotMatch(main, /!cancelled\(\)/, "A selected Main gate cannot become a successful conditional skip on cancellation");
+  for (const id of ["unit-node", "native-tests", "unit-tests", "e2e-tests"])
+    assert.match(job(id), /if: .*github.event_name == 'pull_request' && github.base_ref == 'dev'/);
+});
+test("a same-name candidate pull_request stub cannot change the trusted Target job definition", () => {
+  const triggers = workflow.slice(workflow.indexOf("on:"), workflow.indexOf("permissions:"));
+  assert.match(triggers, /pull_request_target:\n    branches: \[main\]/);
+  assert.doesNotMatch(triggers, /pull_request:\n    branches: \[[^\]]*main/);
+  const candidate = workflow.replace("run: node scripts/main-admission.cjs", "run: 'true'");
+  assert.match(candidate, /name: Main Admission/); assert.match(candidate, /run: 'true'/);
+  // GitHub selects the base definition for Target. Never select candidate text
+  // or a candidate checkout/dispatch to establish this Main check's authority.
+  assert.match(job("main-admission"), /github.event_name == 'pull_request_target'/);
+  assert.doesNotMatch(job("main-admission"), /run: 'true'|head.sha|pull\/.*merge|allow-unsafe-pr-checkout/);
 });
 
 test("each native target compiles once for Unit and E2E and consumes the same debug assembly", () => {
