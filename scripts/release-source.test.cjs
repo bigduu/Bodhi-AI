@@ -26,7 +26,7 @@ function fixture() {
       "Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"]]),
     ["Unit Tests", ["Require every unit test result"]], ["E2E Tests", ["Require every native E2E result"]]];
   const f = {
-    pr: { number: 17, state: "closed", merged: true, merge_commit_sha: S, base: { sha: B, ref: "dev", repo: { full_name: REPOSITORY } },
+    pr: { number: 17, state: "closed", merged: true, merged_at: "2026-10-26T18:30:00Z", merge_commit_sha: S, base: { sha: B, ref: "dev", repo: { full_name: REPOSITORY } },
       head: { sha: F, repo: { full_name: REPOSITORY } } },
     run: { id: 42, repository: { full_name: REPOSITORY }, event: "pull_request", path: ".github/workflows/ci.yml", head_sha: F,
       run_attempt: 1, status: "completed", conclusion: "success", pull_requests: [{ number: 17, base: { ref: "dev", sha: B }, head: { sha: F } }] },
@@ -105,6 +105,44 @@ test("legacy 492 contexts cannot become new release or bootstrap admission", () 
   for (const jobId of [100, 101, 102, 103]) f.logs[jobId] = f.logs[jobId].split("\n")[0] + "\n";
   f.run.pull_requests = [];
   assert.throws(() => f.verify(), /original feature context/);
+});
+for (const value of [undefined, null, "", "unknown", "2026-10-26", 1793039400000]) {
+  test("source time refuses missing or invalid merge timestamp " + String(value), () => {
+    const f = fixture(); f.pr.merged_at = value;
+    assert.throws(() => f.verify(), /merge time/);
+  });
+}
+test("source time requires all six original executions to complete before admission", () => {
+  for (const index of [0, 1, 2, 3, 4, 5]) {
+    const f = fixture(); timed(f.jobs[index], 3600);
+    assert.throws(() => f.verify(), /completed after/);
+  }
+});
+test("source time retains the inclusive original completion boundary", () => {
+  const f = fixture();
+  f.pr.merged_at = f.jobs.filter(job => job.conclusion === "success").map(job => job.completed_at).sort().at(-1);
+  const proof = f.verify(); assert.equal(proof.mergedAt, f.pr.merged_at);
+});
+test("source time permits a later logical projection while preserving pre-merge physical completion", () => {
+  const f = fixture(); f.run.run_attempt = 2; f.run.updated_at = "2026-10-26T19:00:00Z";
+  for (const original of [...f.jobs]) f.jobs.push({ ...structuredClone(original), id: original.id + 1000,
+    run_attempt: 2, created_at: "2026-10-26T18:45:00Z" });
+  const proof = f.verify({ attempt: 2 });
+  assert.equal(proof.jobs[0].id, 100); assert.equal(proof.jobs[0].attempt, 1);
+  assert.equal(proof.jobs[0].logical.id, 1100); assert.equal(proof.mergedAt, f.pr.merged_at);
+});
+test("source time rejects a late original hidden by a green logical projection", () => {
+  const f = fixture(); f.run.run_attempt = 2;
+  timed(f.jobs[0], 3600); f.jobs.push({ ...structuredClone(f.jobs[0]), id: 200, run_attempt: 2 });
+  assert.throws(() => f.verify({ attempt: 2 }), /completed after/);
+});
+test("source time rereads the same confirmed merge timestamp before returning", () => {
+  const f = fixture(); let reads = 0;
+  assert.throws(() => admitFeature(input, endpoint => {
+    const value = f.request(endpoint);
+    if (endpoint === "pulls/17" && ++reads > 1) value.merged_at = "2026-10-26T18:31:00Z";
+    return value;
+  }, job => f.logs[job]), /merge time/);
 });
 test("same-run failed-job-only rerun retains earlier successful jobs and their actual attempts", () => {
   const f = fixture(); f.run.run_attempt = 2;

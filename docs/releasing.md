@@ -79,6 +79,13 @@ ref; the release wrapper `admitFeature` additionally requires `release/<S>` to
 point to `S` before and after verification. The historical #118 open/merged-false
 state remains a negative case; a matching Git tree does not supply a merge receipt.
 
+Admission also requires the confirmed PR merge timestamp. All six original
+physical jobs, including the Unit/E2E aggregates, must have completed at or
+before that timestamp. The final PR readback must preserve it. A copied logical
+success may appear later while retaining the original execution; an actual
+post-merge test run cannot supply feature-before-dev evidence. The source proof
+records the verified merge time without changing the context writer or schema.
+
 The Node job and all three native jobs run the same literal, byte-pinned workflow
 source step immediately after checkout, before staging or tests. It uses only
 Node built-ins and Git; it never loads a candidate source module to record its

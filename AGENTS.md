@@ -97,6 +97,11 @@ a fake release cut merely to inspect an accepted Dev source.
 
 ## Inputs and evidence
 
+Feature evidence must finish before dev admission. The source verifier requires
+the confirmed PR merge time and all six selected physical executions completed
+at or before it, then rereads that same merge time. Later logical copies retain
+the original physical times; current protection cannot waive a post-merge run.
+
 - Consume the exact published Bamboo and Lotus identities in
   `scripts/bamboo-sidecar-lock.json` and `scripts/frontend-package-lock.json`.
   Download and verify their bytes; never rebuild them as an automatic fallback.

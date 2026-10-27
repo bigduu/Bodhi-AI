@@ -31,7 +31,7 @@ function fixture() {
   const featureJobs = names.map((name, i) => timed(500 + i, name, 90, F, featureSteps[i]));
   featureJobs.push({ id: 506, name: source.MAIN_GATE, run_id: 90, head_sha: F, run_attempt: 1, status: "completed", conclusion: "skipped", steps: [] });
   const admission = { schemaVersion: source.ADMISSION_SCHEMA, kind: source.ADMISSION_KIND, repository: out.REPOSITORY, source: S, tree: ST,
-    pullRequest: 17, base: FB, head: F, snapshot: FM, runId: 90, attempt: 1, observedDev: D, currentDev: D, workflowBlob: source.FEATURE_WORKFLOW_BLOB,
+    pullRequest: 17, mergedAt: "2026-10-27T00:10:00Z", base: FB, head: F, snapshot: FM, runId: 90, attempt: 1, observedDev: D, currentDev: D, workflowBlob: source.FEATURE_WORKFLOW_BLOB,
     jobs: names.map((name, i) => ({ id: 500 + i, name, attempt: 1, logical: { id: 500 + i, attempt: 1 } })) };
   const value = { mode: "promotion", source: S, version: "2026.10.30", releaseId: 99, runId: 42, attempt: 1 };
   const ctx = out.context({ GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: value.version, EXPECTED_SOURCE_SHA: S, GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "1", GITHUB_WORKFLOW_SHA: C });
@@ -71,7 +71,7 @@ function fixture() {
       head_sha: C, head_branch: "main", display_title: `Bodhi v2 v${value.version} @ ${S}`, status: "completed", conclusion: "success" },
     featureRun: { id: 90, repository: { full_name: out.REPOSITORY }, event: "pull_request", path: ".github/workflows/ci.yml", head_sha: F,
       run_attempt: 1, status: "completed", conclusion: "success", pull_requests: [] },
-    featurePR: { number: 17, state: "closed", merged: true, merge_commit_sha: S,
+    featurePR: { number: 17, state: "closed", merged: true, merged_at: "2026-10-27T00:10:00Z", merge_commit_sha: S,
       base: { ref: "dev", sha: FB, repo: { full_name: out.REPOSITORY } }, head: { sha: F, repo: { full_name: out.REPOSITORY } } },
     dev: { name: "dev", protected: true, commit: { sha: D }, protection: { required_status_checks: { enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"],
       checks: ["Unit Tests", "E2E Tests"].map(context => ({ context, app_id: 15368 })) } } },
