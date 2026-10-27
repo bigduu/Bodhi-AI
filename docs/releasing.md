@@ -410,3 +410,5 @@ required Main PR check, perform the one source-only bootstrap, dispatch the firs
 production release, and verify a real completed v2 promotion. This change does
 none of those operations. Historical v1 recovery, frozen fixtures and both
 upstream locks are unchanged.
+
+<!-- Isolated Main Admission negative probe for #132; never merge this branch. -->
