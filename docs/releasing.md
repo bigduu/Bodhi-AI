@@ -1,7 +1,7 @@
 # Publish Bodhi independently
 
 Read the complete local [delivery-flow/v1](delivery-workflow.md) and
-[Actions audit](ci-workflow-audit.md), copied from Zenith `874ee7c`. This guide
+[Actions audit](ci-workflow-audit.md), copied from Zenith `28b6e0e`. This guide
 adds Bodhi's concrete commands and receipts. Every agent continues from the same
 source checkpoint and original evidence, with no repeated successful build/test
 because ownership changed.
