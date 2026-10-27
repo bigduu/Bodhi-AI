@@ -19,14 +19,17 @@ function signingIdentity() {
   return tauri.bundle?.macOS?.signingIdentity || null;
 }
 
-function targetDetails(target) {
-  const details = LOCK.targets[target];
+function targetDetails(target, lock = LOCK) {
+  if (lock?.schemaVersion !== 1 || !lock.targets || ["nodeVersion", "playwrightCoreVersion", "chromiumVersion", "chromiumRevision"]
+    .some(key => typeof lock[key] !== "string" || !lock[key])) throw new Error("Unsupported browser runtime lock data.");
+  const details = lock.targets[target];
   if (!details || !/^[a-z0-9_-]+$/.test(target)) {
     throw new Error(`Unsupported browser target: ${target}`);
   }
   if (!/^[a-f0-9]{64}$/.test(details.nodeSha256) || !/^[a-f0-9]{64}$/.test(details.browserSha256)) {
     throw new Error(`Browser downloads for ${target} need pinned SHA-256 values.`);
   }
+  if (typeof details.platform !== "string" || !/^[a-z0-9_-]+$/.test(details.platform)) throw new Error("Invalid browser platform directory.");
   return details;
 }
 
@@ -87,8 +90,8 @@ function treeHash(root) {
   return digest.digest("hex");
 }
 
-function browserPaths(runtime, target) {
-  const { platform } = targetDetails(target);
+function browserPaths(runtime, target, lock = LOCK) {
+  const { platform } = targetDetails(target, lock);
   return {
     node: path.join(runtime, "node", target.includes("windows") ? "node.exe" : "node"),
     host: path.join(runtime, "host.cjs"),
@@ -146,13 +149,13 @@ function verifyArchitecture(file, target) {
   if (!matches) throw new Error(`${file} does not contain the ${target} CPU architecture.`);
 }
 
-function verifyRuntime(runtime, target, source = null) {
-  targetDetails(target);
+function verifyRuntime(runtime, target, source = null, lock = LOCK) {
+  targetDetails(target, lock);
   const runtimeStat = fs.lstatSync(runtime);
   if (!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink()) {
     throw new Error(`Browser runtime root is not an owned directory: ${runtime}`);
   }
-  const { node, host, browser } = browserPaths(runtime, target);
+  const { node, host, browser } = browserPaths(runtime, target, lock);
   regularFile(node, true);
   regularFile(path.join(runtime, "node", "LICENSE"));
   regularFile(host);
@@ -163,13 +166,13 @@ function verifyRuntime(runtime, target, source = null) {
   const pkg = JSON.parse(fs.readFileSync(path.join(runtime, "node_modules", "playwright-core", "package.json"), "utf8"));
   const browsers = JSON.parse(fs.readFileSync(path.join(runtime, "node_modules", "playwright-core", "browsers.json"), "utf8"));
   const shell = browsers.browsers.find((item) => item.name === "chromium-headless-shell");
-  if (pkg.version !== LOCK.playwrightCoreVersion || shell?.revision !== LOCK.chromiumRevision || shell?.browserVersion !== LOCK.chromiumVersion) {
+  if (pkg.version !== lock.playwrightCoreVersion || shell?.revision !== lock.chromiumRevision || shell?.browserVersion !== lock.chromiumVersion) {
     throw new Error("Staged Playwright or Chromium does not match browser-runtime.lock.json.");
   }
   const receipt = JSON.parse(fs.readFileSync(path.join(runtime, "receipt.json"), "utf8"));
-  if (receipt.schemaVersion !== 1 || receipt.target !== target || receipt.nodeVersion !== LOCK.nodeVersion ||
-      receipt.playwrightCoreVersion !== LOCK.playwrightCoreVersion || receipt.chromiumVersion !== LOCK.chromiumVersion ||
-      receipt.chromiumRevision !== LOCK.chromiumRevision || receipt.filesSha256 !== treeHash(runtime)) {
+  if (receipt.schemaVersion !== 1 || receipt.target !== target || receipt.nodeVersion !== lock.nodeVersion ||
+      receipt.playwrightCoreVersion !== lock.playwrightCoreVersion || receipt.chromiumVersion !== lock.chromiumVersion ||
+      receipt.chromiumRevision !== lock.chromiumRevision || receipt.filesSha256 !== treeHash(runtime)) {
     throw new Error("Browser runtime receipt or file inventory does not match this target.");
   }
   if (source && (receipt.hostSha256 !== sha256File(path.join(source, "host.cjs")) ||
@@ -182,7 +185,7 @@ function verifyRuntime(runtime, target, source = null) {
       execFileSync("codesign", ["--verify", "--strict", executable], { stdio: "pipe" });
     }
   }
-  return { ...receipt, ...browserPaths(runtime, target) };
+  return { ...receipt, ...browserPaths(runtime, target, lock) };
 }
 
 function download(file, url, sha256) {

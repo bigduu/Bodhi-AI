@@ -129,8 +129,7 @@ function verifySidecar(root, target) {
   return { binary, size: metadata.size, architecture: expected.name };
 }
 
-function verifyBundledFrontend(app, expected) {
-  const frontend = path.join(app, "Contents", "Resources", "frontend");
+function verifyFrontendDirectory(frontend, expected) {
   const directory = fs.lstatSync(frontend);
   const receiptPath = path.join(frontend, "receipt.json");
   const receiptFile = fs.lstatSync(receiptPath);
@@ -153,10 +152,14 @@ function verifyBundledFrontend(app, expected) {
   }
 }
 
-function verifyBundledRuntime(runtime, staged, target) {
+function verifyBundledFrontend(app, expected) {
+  verifyFrontendDirectory(path.join(app, "Contents", "Resources", "frontend"), expected);
+}
+
+function verifyBundledRuntime(runtime, staged, target, runtimeLock) {
   const { verifyRuntime } = require("./browser-runtime.cjs");
-  verifyRuntime(staged, target);
-  const bundled = verifyRuntime(runtime, target);
+  verifyRuntime(staged, target, null, runtimeLock);
+  const bundled = verifyRuntime(runtime, target, null, runtimeLock);
   // Bind the complete receipt, including the host/package lock and signing
   // identity, to the selected build instead of accepting any valid old runtime.
   if (!fs.readFileSync(path.join(runtime, "receipt.json"))
@@ -166,7 +169,7 @@ function verifyBundledRuntime(runtime, staged, target) {
   return bundled;
 }
 
-function verifyMacosBundle(root, target, receipt, appPath) {
+function verifyMacosBundle(root, target, receipt, appPath, runtimeLock) {
   const app = appPath
     ? path.resolve(appPath)
     : path.join(root, "target", target, "release", "bundle", "macos", "Bodhi AI.app");
@@ -177,13 +180,35 @@ function verifyMacosBundle(root, target, receipt, appPath) {
   verifyBundledFrontend(app, receipt);
   const browser = verifyBundledRuntime(
     path.join(app, "Contents", "Resources", "browser-runtime"),
-    path.join(root, "src-tauri", "browser-runtime"), target,
+    path.join(root, "src-tauri", "browser-runtime"), target, runtimeLock,
   );
   execFileSync("codesign", ["--verify", "--deep", "--strict", app], { stdio: "pipe" });
   return browser;
 }
 
-module.exports = { verifySidecar, expectedArchitecture, elfCpuType, peCpuType, verifyBundledFrontend, verifyBundledRuntime, verifyMacosBundle };
+function verifyDebugAssembly(root, target, receipt) {
+  const staged = verifySidecar(root, target);
+  const directory = path.join(root, "target", target, "debug");
+  const metadata = fs.lstatSync(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("The debug assembly must be a real Cargo output directory.");
+  }
+  const binary = path.join(directory, target.includes("windows") ? "bamboo.exe" : "bamboo");
+  const sidecar = fs.lstatSync(binary);
+  if (!sidecar.isFile() || sidecar.isSymbolicLink() || sidecar.size !== staged.size) {
+    throw new Error("The debug assembly sidecar differs from the staged native executable.");
+  }
+  const { sha256File } = require("./browser-runtime.cjs");
+  if (sha256File(binary) !== sha256File(staged.binary)) {
+    throw new Error("The debug assembly sidecar differs from the staged native executable.");
+  }
+  verifyFrontendDirectory(path.join(directory, "frontend"), receipt);
+  const runtime = path.join(directory, "browser-runtime");
+  verifyBundledRuntime(runtime, path.join(root, "src-tauri", "browser-runtime"), target);
+  return { binary, staticDirectory: path.join(directory, "frontend", "dist"), runtime };
+}
+
+module.exports = { verifySidecar, expectedArchitecture, elfCpuType, peCpuType, verifyBundledFrontend, verifyBundledRuntime, verifyMacosBundle, verifyDebugAssembly };
 
 if (require.main === module) {
   try {
@@ -193,7 +218,14 @@ if (require.main === module) {
     if (process.env.BAMBOO_SIDECAR_SOURCE === "release") {
       require("./bamboo-sidecar.cjs").installedRelease(ROOT, target);
     }
-    if (target.endsWith("-apple-darwin")) {
+    const mode = process.argv[3];
+    if (mode?.startsWith("--") && mode !== "--assembly=debug") {
+      throw new Error("Use --assembly=debug for a feature fixture, or pass a release app path.");
+    }
+    if (mode === "--assembly=debug") {
+      if (process.argv.length !== 4) throw new Error("Debug assembly does not accept a release app path.");
+      verifyDebugAssembly(ROOT, target, receipt);
+    } else if (target.endsWith("-apple-darwin")) {
       verifyMacosBundle(ROOT, target, receipt, process.argv[3]);
     } else {
       require("./browser-runtime.cjs").verifyRuntime(path.join(ROOT, "src-tauri/browser-runtime"), target);
