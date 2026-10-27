@@ -4,8 +4,10 @@ Use one owner, Issue, branch and isolated worktree per acceptance slice. Preserv
 other workers' checkouts, outputs and original failure evidence. Feature and
 integration PRs target `dev`; `main` records stable source and published versions.
 Follow [releasing.md](docs/releasing.md) for current commands and activation state.
-The common phase contract is
-[delivery-flow/v1](https://github.com/bigduu/Zenith/blob/main/docs/delivery-workflow.md).
+The complete common [delivery-flow/v1](docs/delivery-workflow.md) and
+[Actions ownership audit](docs/ci-workflow-audit.md) are stored here. Every agent
+uses the same phase ownership and source/evidence checkpoint procedure together
+with Bodhi's local commands, then verifies current activation and remote state.
 
 ## Phase ownership
 
@@ -32,9 +34,12 @@ The feature workflow implements the first phase. The prepared schema-v2
 and publication (#122). It requires the real trusted `main` controller `C`, an
 explicit separate product checkout `S`, a confirmed protected-dev PR receipt and
 its exact successful feature run. Never relabel GitHub's SHA/ref variables.
-The prepared Main admission boundary (#128) verifies completed v2 publication
-and exact Git postimages. Its bootstrap proof is a read-only component; initial
-trusted-D wiring, protection and production activation remain separate Ops.
+The Main admission boundary (#128) verifies completed v2 publication and exact
+Git postimages. The source-only bootstrap (#132/PR134) installed its reviewed
+controls on main `19f11149`; strict Main Admission protection is active. The
+actual negative PR135 was blocked and closed without merge. A new-contract
+production release and positive completed-release promotion remain unexercised;
+the negative probe is not their acceptance evidence.
 An unconfirmed merge, including the historical #118 metadata
 inconsistency, fails admission even when Git trees match.
 
