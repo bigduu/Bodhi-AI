@@ -7,7 +7,8 @@ Follow [releasing.md](docs/releasing.md) for current commands and activation sta
 The complete common [delivery-flow/v1](docs/delivery-workflow.md) and
 [Actions ownership audit](docs/ci-workflow-audit.md) are stored here. Every agent
 uses the same phase ownership and source/evidence checkpoint procedure together
-with Bodhi's local commands, then verifies current activation and remote state.
+with Bodhi's local commands. The shared migration table is historical; verify
+current activation in the local guide and live workflows before releasing.
 
 ## Phase ownership
 
