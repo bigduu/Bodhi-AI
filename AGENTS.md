@@ -132,8 +132,11 @@ the original physical times; current protection cannot waive a post-merge run.
   An active current selector may revalidate originals after a selector-only API
   failure whose Build/capture/retention steps never ran. Finalization still
   requires the latest logical job to succeed; real Build failures remain fatal.
-- Native builders have read permissions only; publisher credentials belong to
-  version reservation and finalization/recovery. Preserve original release and
+- Native builders have read permissions only. They authenticate the original
+  preflight reservation artifact, job and frozen source instead of querying the
+  private draft; finalization still verifies the live draft and exact receipt.
+  Publisher credentials belong to version reservation and finalization/recovery.
+  Preserve original release and
   asset IDs after partial uploads or lost responses. Never delete/overwrite
   conflicting assets to make a rerun pass. Cache contents are not release proof.
 - Immediately before publication, recheck the frozen ref/tree, dev protection
