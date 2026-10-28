@@ -233,6 +233,18 @@ is not reported as repaired or passed.
 
 ## Original target outputs and publication
 
+Native builders use read-only Actions and Git access to authenticate the
+original successful preflight job and retained reservation artifact. GitHub does
+not expose draft Releases to these tokens, so builders do not query the draft.
+They verify the artifact digest, run/controller/source/version, physical
+preflight job, frozen ref and source tree before using that reservation. The
+write-authorized finalizer independently verifies the live draft against the same
+retained bytes before publication; a changed or missing draft stops finalization.
+Builders cannot observe changes to that draft after preflight, so such a change
+may only be detected after the original build has finished.
+This change applies to new controllers. A rerun of an older workflow uses its
+original controller and does not acquire this fix automatically.
+
 Each native job reads the reserved source/version and selected locks, then
 stamps only its disposable `S` Cargo manifest, Cargo package-lock entry and Tauri
 configuration. Source commits keep their placeholders. The Tauri hook alone

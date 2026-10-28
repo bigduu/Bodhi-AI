@@ -469,6 +469,52 @@ for (const [label, mutate] of [
 ]) test(`source-bound reservation refuses ${label}`, () => {
   const f = fixture(); mutate(f); const a = adapters(f); assert.throws(() => out.loadReservation(ctx, a.request, a.restore));
 });
+test("read-only build admission reuses the original reservation without accessing a draft release", () => {
+  const f = fixture(), a = adapters(f);
+  f.release = null; // A contents:read token cannot see the draft.
+  const result = out.loadBuildReservation(ctx, a.request, a.restore);
+  assert.equal(result.releaseId, 99); assert.deepEqual(result.reservation, f.reservation); assert.equal(result.artifact.id, 100);
+  assert.ok(f.calls.every(call => call.method === "GET" && !call.endpoint.startsWith("releases")));
+});
+test("read-only admission authenticates the physical preflight even with a later logical projection", () => {
+  const f = fixture(), a = adapters(f);
+  f.jobs.push({ ...clone(f.jobs[0]), id: 90, run_attempt: 2 });
+  assert.deepEqual(out.loadBuildReservation(ctx, a.request, a.restore).reservation, f.reservation);
+});
+test("read-only admission refuses a receipt relabelled as a later logical preflight", () => {
+  const f = fixture(), a = adapters(f);
+  f.jobs.push({ ...clone(f.jobs[0]), id: 90, run_attempt: 2 });
+  f.reservation.preflight = { jobId: 90, attempt: 2 };
+  f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation });
+  assert.throws(() => out.loadBuildReservation(ctx, a.request, a.restore), /physical preflight/);
+});
+for (const [label, mutate] of [
+  ["missing receipt", f => { f.artifacts.shift(); }],
+  ["duplicate receipt", f => { f.artifacts.push({ ...clone(f.artifacts[0]), id: 150 }); }],
+  ["expired receipt", f => { f.artifacts[0].expired = true; }],
+  ["oversized receipt", f => { f.artifacts[0].size_in_bytes = 1024 ** 2 + 1; }],
+  ["receipt with no digest", f => { f.artifacts[0].digest = null; }],
+  ["foreign receipt run", f => { f.artifacts[0].workflow_run.id = 43; }],
+  ["foreign receipt controller", f => { f.artifacts[0].workflow_run.head_sha = S; }],
+  ["receipt outside preflight", f => { f.artifacts[0].created_at = "2026-10-27T00:06:00Z"; }],
+  ["failed preflight", f => { f.jobs[0].conclusion = "failure"; }],
+  ["unretained preflight", f => { f.jobs[0].steps.at(-1).conclusion = "skipped"; }],
+  ["foreign preflight job", f => { f.reservation.preflight.jobId = 123; f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation }); }],
+  ["wrong preflight attempt", f => { f.reservation.preflight.attempt = 2; f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation }); }],
+  ["changed source", f => { f.reservation.source = C; f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation }); }],
+  ["changed controller", f => { f.reservation.controller = S; f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation }); }],
+  ["changed run", f => { f.reservation.runId = 43; f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation }); }],
+  ["changed version", f => { f.reservation.version = "2026.10.31"; f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation }); }],
+  ["missing release ID", f => { f.files[100]["reservation.json"] = out.bytes({ reservation: f.reservation }); }],
+  ["nonnumeric release ID", f => { f.files[100]["reservation.json"] = out.bytes({ releaseId: "99", reservation: f.reservation }); }],
+  ["extra receipt field", f => { f.files[100]["reservation.json"] = out.bytes({ releaseId: 99, reservation: f.reservation, extra: true }); }],
+  ["moved frozen source", f => { f.frozen = C; }],
+  ["changed source tree", f => { f.tree = C; }],
+]) test(`read-only build admission refuses ${label}`, () => {
+  const f = fixture(); mutate(f); const a = adapters(f);
+  assert.throws(() => out.loadBuildReservation(ctx, a.request, a.restore));
+  assert.ok(f.calls.every(call => call.method === "GET" && !call.endpoint.startsWith("releases")));
+});
 test("finalization uploads all six originals plus manifest; ambiguous upload and PATCH responses read back same IDs", t => {
   const f = fixture(); f.lostUpload = true; f.lostPatch = true;
   const evidence = assemble(t, f), a = adapters(f), before = clone(evidence.assets);
