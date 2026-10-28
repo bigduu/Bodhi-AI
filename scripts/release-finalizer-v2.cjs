@@ -13,17 +13,34 @@ const { REPOSITORY, NATIVE_TARGETS, MANIFEST, api, pages, bytes, sha256, readJso
 const ASSEMBLE = "Verify original target receipts and upload assets";
 const EVIDENCE = "Retain original publication evidence";
 const PUBLISH = "Publish the original draft";
+const RESERVATION_READBACK_DELAYS = Object.freeze([1000, 2000, 4000, 8000, 16000]);
+const waitForReadback = delay => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
 const assetIdentity = asset => ({ id: asset.id, name: asset.name, size: asset.size, digest: asset.digest, state: asset.state });
 const identities = release => release.assets.map(assetIdentity).sort((a, b) => a.name.localeCompare(b.name));
-function available(ctx, request = api, allowed) {
+const versionReservations = (ctx, releases) => releases.filter(release => release.tag_name === ctx.finalTag ||
+  release.tag_name.startsWith(`bodhi-draft-v${ctx.version}-`) || release.tag_name.startsWith(`bodhi-v2-draft-v${ctx.version}-`));
+function available(ctx, request = api, allowed, requireOwn = false) {
   legacy.requireUnused(ctx, request, allowed?.id);
-  const reservations = pages("releases", undefined, request).filter(release => release.tag_name === ctx.finalTag ||
-    release.tag_name.startsWith(`bodhi-draft-v${ctx.version}-`) || release.tag_name.startsWith(`bodhi-v2-draft-v${ctx.version}-`));
+  const reservations = versionReservations(ctx, pages("releases", undefined, request));
   assert.ok(reservations.every(release => release.id === allowed?.id), "Version is reserved by another release/run");
+  if (requireOwn) {
+    assert.ok(allowed, "An original reservation is required");
+    assert.equal(reservations.filter(release => release.id === allowed.id && release.tag_name === allowed.tag_name).length, 1,
+      "The original reservation is not visible in the version list");
+  }
   const tag = request(`git/ref/tags/${ctx.finalTag}`);
   if (tag) assert.ok(allowed?.draft === false && tag.object.type === "commit" && tag.object.sha === ctx.source, "Final tag is occupied or changed");
 }
-function reserve(ctx, product, proof, request = api) {
+function readReservationById(id, request, wait, label) {
+  assert.ok(Number.isSafeInteger(id) && id > 0, "Missing release ID");
+  for (let attempt = 0; attempt <= RESERVATION_READBACK_DELAYS.length; attempt++) {
+    const release = request(`releases/${id}`);
+    if (release) { assert.equal(release.id, id); return release; }
+    if (attempt < RESERVATION_READBACK_DELAYS.length) wait(RESERVATION_READBACK_DELAYS[attempt]);
+  }
+  throw new Error(`${label} release could not be read back`);
+}
+function reserve(ctx, product, proof, request = api, wait = waitForReadback) {
   const releases = pages("releases", undefined, request);
   assert.ok(!releases.some(release => release.tag_name === ctx.draftTag), "Use the authenticated original reservation on a rerun");
   available(ctx, request);
@@ -35,13 +52,31 @@ function reserve(ctx, product, proof, request = api) {
     draft: true, prerelease: false, make_latest: "false" };
   let created, failure;
   try { created = request("releases", "POST", body); } catch (error) { failure = error; }
-  // Resolve a lost create response by identity. Never blindly create another reservation.
-  const matches = pages("releases", undefined, request).filter(release => release.tag_name === ctx.draftTag);
+  let release;
+  if (created) {
+    // A successful POST gives the exact ID even if the release list is stale.
+    assert.ok(Number.isSafeInteger(created.id) && created.id > 0, "Missing created release ID");
+    release = readReservationById(created.id, request, wait, "Created");
+  }
+  // The list must see the original before it can be used to exclude another
+  // reservation. Only read again on an absent match; never repeat the POST.
+  let matches;
+  for (let attempt = 0; attempt <= RESERVATION_READBACK_DELAYS.length; attempt++) {
+    const reservations = versionReservations(ctx, pages("releases", undefined, request));
+    matches = reservations.filter(item => item.tag_name === ctx.draftTag);
+    assert.ok(matches.length <= 1, "Ambiguous version reservation");
+    assert.ok(reservations.every(item => item.tag_name === ctx.draftTag), "Version is reserved by another release/run");
+    if (created && matches.length === 1) assert.equal(matches[0].id, created.id, "Created release ID differs from the version list");
+    if (matches.length === 1) break;
+    if (attempt < RESERVATION_READBACK_DELAYS.length) wait(RESERVATION_READBACK_DELAYS[attempt]);
+  }
   if (matches.length !== 1) throw failure || new Error("Version reservation was not retained");
-  const release = request(`releases/${matches[0].id}`);
-  if (created) assert.equal(release.id, created.id);
+  if (created) assert.equal(matches[0].id, created.id, "Created release ID differs from the version list");
+  else {
+    release = readReservationById(matches[0].id, request, wait, "Recovered");
+  }
   assert.deepEqual(out.releaseReservation(release, ctx), reservation); assert.equal(release.draft, true);
-  assert.deepEqual(release.assets, []); available(ctx, request, release);
+  assert.deepEqual(release.assets, []); available(ctx, request, release, true);
   return { releaseId: release.id, reservation };
 }
 function originalRun(ctx, request = api, recovery = false) {
