@@ -176,6 +176,13 @@ response is resolved by readback, without a second reservation request. If a
 reservation exists but its original admission artifact was never retained,
 stop rather than inventing admission or replacing the reservation.
 
+When create returns a release ID, authenticate it directly. In either response
+case, require exactly the original reservation in the complete version list. A
+temporarily missing ID or list entry receives bounded read-only retries; duplicate
+identities, another reservation or an unresolved absence still stop the release.
+Readback never repeats the create request. This safeguards later reservations;
+it does not turn an earlier failed preflight into a retained admission record.
+
 The following two sections retain historical consumer evidence; their versions
 are not overrides for the current source's committed locks.
 
