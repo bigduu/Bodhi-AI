@@ -128,12 +128,16 @@ function names(version, target) {
   return [`Bodhi.AI_${version}_x64-setup.exe`];
 }
 function artifactName(ctx, target, attempt) { return `bodhi-v2-target-${ctx.runId}-${id(attempt)}-${target}`; }
-function artifact(artifacts, name, ctx, job, active = false) {
+function artifactMetadata(artifacts, name, ctx, maximum = 8 * 1024 ** 3) {
   const matches = artifacts.filter(value => value.name === name); assert.equal(matches.length, 1, `Original artifact missing or ambiguous: ${name}`);
   const value = matches[0]; id(value.id); assert.equal(value.expired, false, "Original artifact expired");
   assert.match(value.digest || "", DIGEST, "Immutable artifact digest required");
-  assert.ok(Number.isSafeInteger(value.size_in_bytes) && value.size_in_bytes > 0 && value.size_in_bytes <= 8 * 1024 ** 3);
+  assert.ok(Number.isSafeInteger(value.size_in_bytes) && value.size_in_bytes > 0 && value.size_in_bytes <= maximum);
   assert.equal(value.workflow_run.id, ctx.runId); assert.equal(value.workflow_run.head_sha, ctx.controller);
+  return value;
+}
+function artifact(artifacts, name, ctx, job, active = false) {
+  const value = artifactMetadata(artifacts, name, ctx);
   if (active) { assert.equal(job.status, "in_progress"); assert.equal(job.run_attempt, ctx.attempt); }
   const created = Date.parse(value.created_at), start = Date.parse(job.started_at), end = active ? Date.now() : Date.parse(job.completed_at);
   assert.ok(Number.isFinite(created) && created >= start && created <= end, "Artifact is outside its original job");
@@ -222,6 +226,34 @@ function loadReservation(ctx, request = api, restore = download) {
   assert.equal(request(`git/ref/heads/release/${ctx.source}`)?.object?.sha, ctx.source, "Frozen source moved");
   assert.equal(request(`git/commits/${ctx.source}`)?.tree?.sha, reservation.tree);
   return { release, reservation, artifact: original };
+}
+// Build jobs have read-only tokens, which cannot see a draft GitHub Release.
+// Authenticate the retained original preflight instead; the write-authorized
+// finalizer still checks the live draft against these exact bytes before publishing.
+function loadBuildReservation(ctx, request = api, restore = download) {
+  const all = pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request);
+  const candidate = artifactMetadata(all, ctx.reservationName, ctx, 1024 ** 2);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-v2-build-admission-"));
+  const directory = path.join(root, "original");
+  try {
+    restore(candidate, ["reservation.json"], directory);
+    const value = readJson(path.join(directory, "reservation.json"));
+    assert.deepEqual(Object.keys(value).sort(), ["releaseId", "reservation"]);
+    assert.equal(value.releaseId, id(value.releaseId), "Original release ID must be numeric");
+    const reservation = verifyReservation(value.reservation, ctx);
+    const preflights = jobs(ctx, request).filter(item => item.name === "Reserve admitted release");
+    const job = preflights.find(item => item.id === reservation.preflight.jobId);
+    assert.ok(job); assert.equal(job.name, "Reserve admitted release"); assert.equal(job.run_attempt, reservation.preflight.attempt);
+    passed(job, [PREFLIGHT, RESERVATION]);
+    const physical = admission.executionOrigin(job, preflights);
+    assert.equal(physical.id, job.id, "Reservation must name the physical preflight job");
+    assert.equal(physical.run_attempt, job.run_attempt, "Reservation must name the physical preflight attempt");
+    const original = artifact(all, ctx.reservationName, ctx, job);
+    assert.equal(original.id, candidate.id);
+    assert.equal(request(`git/ref/heads/release/${ctx.source}`)?.object?.sha, ctx.source, "Frozen source moved");
+    assert.equal(request(`git/commits/${ctx.source}`)?.tree?.sha, reservation.tree);
+    return { releaseId: value.releaseId, reservation, artifact: original };
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 function selectorOnlyFailure(job) {
   const failed = job.steps.filter(step => step.conclusion === "failure");
@@ -342,7 +374,7 @@ function outputs(values) {
 function main() {
   const [command, target] = process.argv.slice(2), ctx = context();
   controller(); run(ctx);
-  const { reservation } = loadReservation(ctx);
+  const { reservation } = loadBuildReservation(ctx);
   if (command === "plan") {
     const existing = selectTarget(ctx, reservation, target);
     outputs({ reuse: Boolean(existing), artifact_name: artifactName(ctx, target, ctx.attempt) }); return;
@@ -370,5 +402,5 @@ function main() {
 }
 module.exports = { ROOT, REPOSITORY, NATIVE_TARGETS, BUILD, CAPTURE, RETAIN, PREFLIGHT, RESERVATION, MANIFEST, SHA, DIGEST, bytes, sha256,
   childEnv, api, pages, context, controller, workflow, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, names, artifactName, artifact, download, hashFile,
-  verifyReservation, releaseReservation, loadReservation, selectTarget, verifyReceipt, checks, stamped, stamp, staticOutputs, outputs };
+  verifyReservation, releaseReservation, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks, stamped, stamp, staticOutputs, outputs };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Original Bodhi output: ${error.message}`); process.exitCode = 1; } }
