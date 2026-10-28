@@ -130,6 +130,155 @@ test("version reservation precedes every original build and binds separate contr
   assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
   assert.throws(() => finalizer.reserve(ctx, reservation, reservation.admission, a.request), /authenticated original reservation/);
 });
+test("a successful create waits for its exact release to appear in the list", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  let created = false, staleReads = 0;
+  const waits = [];
+  const request = (endpoint, method = "GET", body) => {
+    if (created && endpoint.startsWith("releases?") && staleReads++ < 2) return [];
+    const result = a.request(endpoint, method, body);
+    if (endpoint === "releases" && method === "POST") created = true;
+    return result;
+  };
+  const result = finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request, delay => waits.push(delay));
+  assert.equal(result.releaseId, 99);
+  assert.equal(result.reservation.source, S);
+  assert.deepEqual(waits, [1000, 2000]);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+  assert.equal(f.calls.filter(call => call.endpoint === "releases/99" && call.method === "GET").length, 1);
+});
+test("a created reservation that stays invisible in the list fails without another create", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  let created = false;
+  const waits = [];
+  const request = (endpoint, method = "GET", body) => {
+    if (created && endpoint.startsWith("releases?")) return [];
+    const result = a.request(endpoint, method, body);
+    if (endpoint === "releases" && method === "POST") created = true;
+    return result;
+  };
+  assert.throws(() => finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request, delay => waits.push(delay)),
+    /Version reservation was not retained/);
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000]);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+  assert.equal(f.release.tag_name, ctx.draftTag);
+});
+test("a lost create response is recovered only after the exact draft becomes visible", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = []; f.lostCreate = true;
+  let created = false, staleReads = 0;
+  const waits = [];
+  const request = (endpoint, method = "GET", body) => {
+    if (created && endpoint.startsWith("releases?") && staleReads++ < 2) return [];
+    try { return a.request(endpoint, method, body); }
+    finally { if (endpoint === "releases" && method === "POST" && f.release) created = true; }
+  };
+  const result = finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request, delay => waits.push(delay));
+  assert.equal(result.releaseId, 99);
+  assert.deepEqual(waits, [1000, 2000]);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+});
+test("a conflicting release ID in the post-create list fails without another create", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  let created = false;
+  const request = (endpoint, method = "GET", body) => {
+    if (created && endpoint.startsWith("releases?")) return [{ ...clone(f.release), id: 100 }];
+    const result = a.request(endpoint, method, body);
+    if (endpoint === "releases" && method === "POST") created = true;
+    return result;
+  };
+  assert.throws(() => finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request),
+    /Created release ID differs from the version list/);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+});
+test("a previously reserved release absent from the version list fails closed", () => {
+  const f = fixture(), a = adapters(f);
+  const request = (endpoint, method = "GET", body) => endpoint.startsWith("releases?") ? [] : a.request(endpoint, method, body);
+  assert.throws(() => finalizer.available(ctx, request, f.release, true), /original reservation is not visible/);
+  assert.equal(f.calls.filter(call => call.method !== "GET").length, 0);
+});
+test("a published release can be confirmed while its list still shows the same draft ID", () => {
+  const f = fixture(), a = adapters(f);
+  const published = { ...clone(f.release), draft: false, tag_name: ctx.finalTag };
+  f.tag = { object: { type: "commit", sha: S } };
+  assert.doesNotThrow(() => finalizer.available(ctx, a.request, published));
+});
+test("a created reservation that cannot be read by ID fails without another create", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  const waits = [];
+  const request = (endpoint, method = "GET", body) => {
+    const result = a.request(endpoint, method, body);
+    return endpoint === "releases/99" && method === "GET" ? null : result;
+  };
+  assert.throws(() => finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request, delay => waits.push(delay)),
+    /Created release could not be read back/);
+  assert.deepEqual(waits, [1000, 2000, 4000, 8000, 16000]);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+  assert.equal(f.release.tag_name, ctx.draftTag);
+});
+test("a temporarily invisible created release is read by the same ID without another create", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  const waits = []; let reads = 0;
+  const request = (endpoint, method = "GET", body) => {
+    const result = a.request(endpoint, method, body);
+    return endpoint === "releases/99" && method === "GET" && reads++ < 2 ? null : result;
+  };
+  const result = finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request, delay => waits.push(delay));
+  assert.equal(result.releaseId, 99);
+  assert.deepEqual(waits, [1000, 2000]);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+});
+test("a concurrent different reservation is still rejected after direct readback", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  const request = (endpoint, method = "GET", body) => {
+    const result = a.request(endpoint, method, body);
+    if (endpoint === "releases" && method === "POST")
+      f.extraReleases.push({ ...clone(f.release), id: 100, tag_name: `bodhi-v2-draft-v${ctx.version}-101` });
+    return result;
+  };
+  assert.throws(() => finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request),
+    /reserved by another release\/run/);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+});
+test("a visible conflicting reservation stops immediately while the original is absent", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  let created = false, reads = 0;
+  const waits = [];
+  const request = (endpoint, method = "GET", body) => {
+    if (created && endpoint.startsWith("releases?") && reads++ === 0)
+      return [{ ...clone(f.release), id: 100, tag_name: `bodhi-v2-draft-v${ctx.version}-101` }];
+    const result = a.request(endpoint, method, body);
+    if (endpoint === "releases" && method === "POST") created = true;
+    return result;
+  };
+  assert.throws(() => finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request, delay => waits.push(delay)),
+    /reserved by another release\/run/);
+  assert.deepEqual(waits, []);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+});
+test("duplicate entries for the original reservation fail without another create", () => {
+  const f = fixture(), a = adapters(f), { reservation } = f;
+  f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
+  let created = false;
+  const waits = [];
+  const request = (endpoint, method = "GET", body) => {
+    if (created && endpoint.startsWith("releases?")) return [clone(f.release), { ...clone(f.release), id: 100 }];
+    const result = a.request(endpoint, method, body);
+    if (endpoint === "releases" && method === "POST") created = true;
+    return result;
+  };
+  assert.throws(() => finalizer.reserve(ctx, { lockHashes: reservation.lockHashes, frontend: reservation.frontend }, reservation.admission, request, delay => waits.push(delay)),
+    /Ambiguous version reservation/);
+  assert.deepEqual(waits, []);
+  assert.equal(f.calls.filter(call => call.method === "POST").length, 1);
+});
 for (const [field, value] of [["run_attempt", 1], ["head_sha", S], ["head_branch", "dev"], ["event", "push"],
   ["path", "foreign/Bodhi-AI/.github/workflows/release.yml@main"], ["display_title", `Bodhi v${ctx.version} @ ${S}`],
   ["status", "completed"], ["conclusion", "success"]]) test(`v2 run rejects different ${field}`, () => {
