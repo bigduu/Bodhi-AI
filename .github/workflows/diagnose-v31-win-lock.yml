@@ -1,0 +1,63 @@
+name: Diagnose Bodhi v31 Windows lock change
+on:
+  push:
+    branches: [bodhi/debug/v31-win-lock-20261029]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ebd73744e75ea20ecd068a730213eeeb3f26e52b
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Stamp disposable source and show initial status
+        working-directory: product
+        run: |
+          node -e "require('../controller/scripts/release-output.cjs').stamp(process.cwd(),'2026.10.31')"
+          git status --porcelain
+          git diff -- yarn.lock
+      - name: Install locked shell CLI and inspect lock
+        working-directory: product
+        run: |
+          npm ci --prefer-offline --no-audit --ignore-scripts
+          git status --porcelain
+          git diff -- yarn.lock
+      - name: Stage exact immutable Lotus package and inspect lock
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" '@bigduu/lotus-next@2026.10.29' > "$RUNNER_TEMP/lotus-pack.json"
+          python ../controller/scripts/stage-v20261031-lotus.py "$RUNNER_TEMP/bigduu-lotus-next-2026.10.29.tgz" node_modules/@bigduu/lotus-next
+          git status --porcelain
+          git diff -- yarn.lock
+      - name: Stop at the Tauri build hook and inspect lock
+        working-directory: product
+        shell: pwsh
+        run: |
+          $override = Join-Path $env:RUNNER_TEMP 'bodhi-diagnostic-override.json'
+          Set-Content -Path $override -Value '{"build":{"beforeBuildCommand":"exit 73"}}' -NoNewline -Encoding utf8
+          $log = Join-Path $env:RUNNER_TEMP 'bodhi-tauri-diagnostic.log'
+          npm run tauri:build -- --target x86_64-pc-windows-msvc --bundles nsis --verbose --config "$override" *> $log
+          $result = $LASTEXITCODE
+          Get-Content $log | Select-Object -Last 30
+          if ($result -eq 0) { throw 'Diagnostic must stop before building' }
+          if (-not (Select-String -Path $log -Pattern 'beforeBuildCommand')) { throw 'The build hook was not reached' }
+          if (Select-String -Path $log -Pattern 'Compiling|cargo  build') { throw 'Unexpected compiler execution' }
+          git status --porcelain
+          git diff -- yarn.lock
