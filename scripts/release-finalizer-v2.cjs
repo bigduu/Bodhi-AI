@@ -237,9 +237,21 @@ function recoveryArtifact(ctx, request = api) {
   const artifact = out.artifact(pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request), ctx.evidenceName, ctx, job);
   return { ctx, artifact };
 }
-function retainedEvidence(ctx, evidence, request = api, restore = out.download) {
-  const job = out.currentJob(ctx, "Publish original release", request);
-  out.gate(job, ASSEMBLE); out.gate(job, EVIDENCE);
+function retainedEvidence(ctx, evidence, request = api, restore = out.download, wait = waitForReadback) {
+  // Actions can start the next step before its API projection marks the
+  // preceding upload complete. Retry only that exact in-progress state.
+  let job;
+  for (let attempt = 0; ; attempt++) {
+    job = out.currentJob(ctx, "Publish original release", request);
+    out.gate(job, ASSEMBLE);
+    const steps = job.steps.filter(step => step.name === EVIDENCE);
+    assert.equal(steps.length, 1, "Missing or ambiguous publication evidence gate");
+    if (steps[0].status === "completed") { out.gate(job, EVIDENCE); break; }
+    assert.equal(steps[0].status, "in_progress", "Unexpected evidence gate state");
+    assert.equal(steps[0].conclusion, null, "Unexpected evidence gate result");
+    assert.ok(attempt < 4, "Publication evidence gate did not become visible");
+    wait(1000 * 2 ** attempt);
+  }
   const artifact = out.artifact(pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request), ctx.evidenceName, ctx, job, true);
   const directory = path.join(require("node:os").tmpdir(), `bodhi-v2-evidence-${require("node:crypto").randomUUID()}`);
   restore(artifact, ["evidence.json"], directory);

@@ -120,6 +120,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - name: Select retained target output
         id: original
         working-directory: controller
@@ -163,15 +166,26 @@ jobs:
           key: bodhi-bamboo-assets-v1-${{ matrix.target }}-${{ hashFiles('product/scripts/bamboo-sidecar-lock.json') }}
       - name: Install shell dependencies
         if: steps.original.outputs.reuse != 'true'
-        working-directory: product
-        run: npm ci --prefer-offline --no-audit
+        working-directory: controller
+        run: node scripts/release-install-shell.cjs
       - name: Install accepted frontend package
         if: steps.original.outputs.reuse != 'true'
         working-directory: product
         shell: bash
         env:
           LOTUS_VERSION: ${{ needs.preflight.outputs.frontend_version }}
-        run: npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}" > "$RUNNER_TEMP/bodhi-frontend-pack.json"
+          python ../controller/scripts/stage-release-frontend.py "$RUNNER_TEMP/bodhi-frontend-pack.json"
+          node - <<'NODE'
+          const assert = require('node:assert/strict');
+          const lotus = require('../controller/scripts/lotus-dist.cjs');
+          const source = lotus.resolveSource(process.env, process.cwd());
+          assert.equal(source.version, process.env.LOTUS_VERSION);
+          lotus.sourceIdentity(source);
+          NODE
+          git diff --exit-code -- yarn.lock package-lock.json
       - name: Verify source boundaries
         if: steps.original.outputs.reuse != 'true'
         working-directory: product
@@ -179,6 +193,7 @@ jobs:
           node scripts/verify-boundaries.cjs migration
           node scripts/verify-boundaries.cjs docs-boundary
       - name: Build original Tauri installers
+        id: native_build
         if: steps.original.outputs.reuse != 'true'
         working-directory: product
         run: npm run tauri:build -- --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --verbose
@@ -195,6 +210,32 @@ jobs:
         with:
           name: ${{ steps.original.outputs.artifact_name }}
           path: ${{ runner.temp }}/original-output/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Preserve successful build files if capture fails
+        if: failure() && steps.native_build.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bodhi-v2-emergency-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+          path: |
+            product/target/${{ matrix.target }}/release/bundle/
+            product/target/${{ matrix.target }}/release/bodhi*
+            product/src-tauri/browser-runtime/
+            product/src-tauri/binaries/
+            product/src-tauri/.bamboo-sidecar-cache/
+            product/.lotus-dist/
+            product/.bodhi-frontend/
+            product/node_modules/@bigduu/lotus-next/
+            product/Cargo.lock
+            product/yarn.lock
+            product/package-lock.json
+            product/src-tauri/Cargo.toml
+            product/src-tauri/tauri.conf.json
+            product/scripts/frontend-package-lock.json
+            product/scripts/bamboo-sidecar-lock.json
+            product/scripts/browser-runtime.lock.json
+            ${{ runner.temp }}/original-output/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 

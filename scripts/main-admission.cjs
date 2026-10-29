@@ -18,6 +18,7 @@ const { REPOSITORY, NATIVE_TARGETS, SHA, MANIFEST } = out;
 const LEGACY_BASE = "aef64d4adce7296086a71b1a6c82fa65c7ccf42d";
 const LEGACY_TREE = "41baf69faf3b4c3da5f649a80b58b7283ed90400";
 const RELEASE_BLOB = "ff91ec4ca4c3047d6c23c5dc06d575f15fe190e3";
+const CURRENT_RELEASE_BLOB = "7b666dc5f0f8f2f79e9b2064acdfe8cc4fa881ca";
 const RECOVERY_BLOB = "bebaa01d241bc33c3f968cac5292735845876c78";
 const RECOVERY31_BLOB = "3f201b9725f5e1da751841569f41f174db8f00e2";
 const FINALIZER31_BLOB = "0fc7de135db1718c7fa5147a3a4512e2db191583";
@@ -27,7 +28,7 @@ const PUBLISHER31_RUN = 40797223393;
 const PUBLISHER31_CONTROLLER = "250ab6d8c827385d885f624828179409561e9b27";
 const PUBLISHER31_BLOB = "66e95e96b7311a22af0959ac8202b1c88be89219";
 const CONTROLS = Object.freeze([".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/recover-release.yml",
-  "scripts/release-source.cjs", "scripts/release-output.cjs", "scripts/release-finalizer-v2.cjs", "scripts/main-admission.cjs",
+  "scripts/release-source.cjs", "scripts/release-output.cjs", "scripts/release-finalizer-v2.cjs", "scripts/main-admission.cjs", "scripts/main-admission.test.cjs",
   "scripts/browser-runtime.cjs", "scripts/verify-assembly.cjs", "AGENTS.md", "docs/releasing.md",
   ".github/workflows/replace-v20261031.yml", ".github/workflows/finalize-replacement-v20261031.yml", "scripts/replace-v20261031.cjs",
   "scripts/replace-v20261031.test.cjs", "scripts/finalize-replacement-v20261031.cjs", "scripts/finalize-replacement-v20261031.test.cjs",
@@ -35,7 +36,9 @@ const CONTROLS = Object.freeze([".github/workflows/ci.yml", ".github/workflows/r
   "scripts/release-output.test.cjs", ".github/workflows/finalize-salvaged-v20261031.yml",
   "scripts/finalize-salvaged-v20261031.cjs", "scripts/finalize-salvaged-v20261031.test.cjs",
   "scripts/v31-windows-proof.cjs", "scripts/verify-v31-windows.cjs", "scripts/v31-linux-proof.cjs", "scripts/verify-v31-linux.cjs",
-  ".github/workflows/publish-v31-preserved.yml", "scripts/publish-v31-preserved.cjs"]);
+  ".github/workflows/publish-v31-preserved.yml", "scripts/publish-v31-preserved.cjs",
+  "scripts/release-install-shell.cjs", "scripts/release-install-shell.test.cjs",
+  "scripts/stage-release-frontend.py", "scripts/stage-release-frontend.test.py"]);
 const LOCKS = ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"];
 function id(value) { assert.match(String(value), /^[1-9][0-9]*$/); assert.ok(Number.isSafeInteger(Number(value))); return Number(value); }
 function sha(value) { assert.match(value || "", SHA); return value; }
@@ -129,7 +132,8 @@ function sourceReceipt(reservation, request, readLog) {
 }
 function controller(commit, base, workflow, blob, request) {
   ancestor(commit, base, request);
-  assert.equal(request(`contents/.github/workflows/${workflow}?ref=${commit}`)?.sha, blob, "Unreviewed original workflow producer");
+  const allowed = Array.isArray(blob) ? blob : [blob];
+  assert.ok(allowed.includes(request(`contents/.github/workflows/${workflow}?ref=${commit}`)?.sha), "Unreviewed original workflow producer");
 }
 function releaseContext(value, original) {
   // Parse explicit release identity with the existing formatter. These are
@@ -226,7 +230,7 @@ function published(value, base, request = readOnly, options = {}) {
     return published31(value, base, request, options);
   const original = request(`actions/runs/${id(value.runId)}`), ctx = releaseContext(value, original);
   out.runIdentity(ctx, original); assert.equal(original.status, "completed");
-  controller(ctx.controller, base, "release.yml", RELEASE_BLOB, request);
+  controller(ctx.controller, base, "release.yml", [RELEASE_BLOB, CURRENT_RELEASE_BLOB], request);
   const release = request(`releases/${id(value.releaseId)}`);
   assert.equal(release?.id, id(value.releaseId)); const reservation = out.releaseReservation(release, ctx);
   const read = options.readManifest || finalizer.readManifest;
