@@ -1,0 +1,60 @@
+name: Verify retained Bodhi v31 Linux output
+on:
+  push:
+    branches: [bodhi/recover/v31-linux-output-20261029]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    name: Verify saved Linux output
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_ROOT: ${{ github.workspace }}/product
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ebd73744e75ea20ecd068a730213eeeb3f26e52b
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install package inspection tool
+        run: sudo apt-get update && sudo apt-get install -y rpm
+      - name: Authenticate and download the saved original
+        working-directory: controller
+        env:
+          EMERGENCY_ZIP: ${{ runner.temp }}/bodhi-v31-original-linux.zip
+          BUILD_LOG: ${{ runner.temp }}/bodhi-v31-original-linux.log
+        run: node scripts/verify-v31-linux.cjs prepare
+      - name: Restore saved staging and verify logged Cargo versions
+        working-directory: controller
+        env:
+          EMERGENCY_ZIP: ${{ runner.temp }}/bodhi-v31-original-linux.zip
+          BUILD_LOG: ${{ runner.temp }}/bodhi-v31-original-linux.log
+        run: |
+          python scripts/restore-v31-linux.py "$EMERGENCY_ZIP" "$SOURCE_ROOT"
+          python scripts/check-v31-cargo-log.py "$SOURCE_ROOT/Cargo.lock" "$BUILD_LOG"
+      - name: Verify original Linux installers and staging
+        working-directory: controller
+        env:
+          TARGET_OUTPUT: ${{ runner.temp }}/bodhi-v31-verified-linux
+        run: node scripts/verify-v31-linux.cjs capture
+      - name: Retain verified Linux output
+        uses: actions/upload-artifact@v7
+        with:
+          name: bodhi-v31-verified-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodhi-v31-verified-linux/
+          if-no-files-found: error
+          retention-days: 90
