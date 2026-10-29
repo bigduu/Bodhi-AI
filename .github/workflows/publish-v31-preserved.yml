@@ -1,0 +1,29 @@
+name: Publish preserved Bodhi 2026.10.31 assets
+run-name: Publish Bodhi v2026.10.31 preserved assets
+on:
+  workflow_dispatch:
+concurrency:
+  group: bodhi-release-2026.10.31
+  cancel-in-progress: false
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+  checks: read
+jobs:
+  publish:
+    name: Publish verified Bodhi release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - name: Verify original evidence and publish its reserved draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/publish-v31-preserved.cjs publish
