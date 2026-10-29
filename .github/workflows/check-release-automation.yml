@@ -69,7 +69,7 @@ jobs:
           assert.equal(source.version, process.env.LOTUS_VERSION);
           lotus.sourceIdentity(source);
           const status = require('node:child_process').execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {encoding: 'utf8'})
-            .trim().split(/\r?\n/).filter(Boolean).map(line => line.slice(3)).sort();
+            .trimEnd().split(/\r?\n/).filter(Boolean).map(line => line.slice(3)).sort();
           assert.deepEqual(status, ['Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json']);
           NODE
       - name: Verify Tauri reaches its hook without building
