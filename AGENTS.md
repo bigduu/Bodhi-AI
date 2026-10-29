@@ -79,11 +79,14 @@ a fake release cut merely to inspect an accepted Dev source.
   controller/run/jobs, retained reservation/target/publication evidence, actual
   immutable ZIP/file hashes and accepted source/locks. Recovery uses the existing
   publication-only failure route and authenticates original C1 and recovery C2.
+  One user-authorized exception replaces the lost 2026.10.31 macOS output;
+  its manifest preserves the original failed run, the lost build's real job,
+  and the separate replacement run and artifact identities.
   Missing originals, a latest logical failure, replacement bytes or unknown API
   state stop admission. Main never compiles, tests, packages or republishes.
 - Main's actual merge M must equal complete S, or complete S overlaid by the
   entire literal controller closure from its current base B. Complete S requires
-  an admitted Main-capable producer and all eleven ordinary control files; an
+  an admitted Main-capable producer and the entire controller closure; an
   Alpha release instead retains the entire B closure so future Target admission
   remains available. Preserve M/tree
   separately; C need not be S's ancestor. No per-file mixture or product/lock/

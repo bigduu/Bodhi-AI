@@ -8,6 +8,7 @@ const windows = require("./v31-windows-proof.cjs");
 const win = require("./verify-v31-windows.cjs");
 const linux = require("./v31-linux-proof.cjs");
 const lin = require("./verify-v31-linux.cjs");
+const main = require("./main-admission.cjs");
 
 function sample() {
   const reservation = { source: original.FIXED.source };
@@ -74,4 +75,32 @@ test("recovered installer evidence binds original source, physical jobs and exac
   }
   const wrongRelease = structuredClone(release); wrongRelease.assets[0].digest = "sha256:" + "f".repeat(64);
   assert.throws(() => recovery.verifyManifest(manifest, wrongRelease, reservation));
+});
+
+test("Main binds preserved Linux and Windows outputs to their actual verification jobs", () => {
+  const { manifest } = sample();
+  const run = { id: recovery.RECOVERY_RUN, head_sha: recovery.RECOVERY_CONTROLLER, run_attempt: 1 };
+  const start = "2026-10-28T00:00:00Z", end = "2026-10-28T00:10:00Z";
+  const steps = ["Select existing recovered target", "Verify frozen source and stamp version", "Stage the exact prebuilt Lotus package",
+    "Verify source boundaries", original.BUILD, original.CAPTURE, original.RETAIN].map((name, index) => ({
+      name, number: index + 1, status: "completed", conclusion: "success", started_at: start, completed_at: end }));
+  const native = manifest.targets.filter(item => ![windows.TARGET, linux.TARGET].includes(item.receipt.target));
+  const jobs = native.map(item => ({ id: item.receipt.recovery.jobId, run_id: run.id, run_attempt: 1,
+    name: `Build recovered (${item.receipt.target})`, head_sha: run.head_sha, status: "completed", conclusion: "success",
+    started_at: start, completed_at: end, steps: structuredClone(steps) }));
+  const artifacts = native.map(item => ({ ...item.artifact, expired: false, size_in_bytes: 100,
+    created_at: "2026-10-28T00:05:00Z", workflow_run: { id: run.id, head_sha: run.head_sha } }));
+  const winItem = manifest.targets.find(item => item.receipt.target === windows.TARGET);
+  const winProof = { physical: { id: windows.JOB, run_attempt: 1 }, logical: { id: windows.JOB, run_attempt: 1 }, artifact: winItem.artifact };
+  const linItem = manifest.targets.find(item => item.receipt.target === linux.TARGET);
+  const linProof = { physical: { id: linux.JOB, run_attempt: 1 }, logical: { id: linux.JOB, run_attempt: 1 }, artifact: linItem.artifact };
+  assert.doesNotThrow(() => main.recovered31Targets({ run, jobs, artifacts }, manifest, winProof, linProof));
+  const badJob = structuredClone(jobs); badJob[0].steps[4].conclusion = "failure";
+  assert.throws(() => main.recovered31Targets({ run, jobs: badJob, artifacts }, manifest, winProof, linProof));
+  const badArtifact = structuredClone(artifacts); badArtifact[0].digest = "sha256:" + "f".repeat(64);
+  assert.throws(() => main.recovered31Targets({ run, jobs, artifacts: badArtifact }, manifest, winProof, linProof));
+  const badWindows = structuredClone(manifest); badWindows.targets.find(item => item.receipt.target === windows.TARGET).artifact.id++;
+  assert.throws(() => main.recovered31Targets({ run, jobs, artifacts }, badWindows, winProof, linProof));
+  const badLinux = structuredClone(manifest); badLinux.targets.find(item => item.receipt.target === linux.TARGET).artifact.id++;
+  assert.throws(() => main.recovered31Targets({ run, jobs, artifacts }, badLinux, winProof, linProof));
 });
