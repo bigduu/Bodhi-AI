@@ -1,0 +1,23 @@
+name: Verify Bodhi 2026.10.31 public downloads
+on:
+  push:
+    branches: [bodhi/verify/v31-public-downloads-20261029]
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Hash public Bodhi release downloads
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - name: Verify every public download against published SHA-256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-v31-public.cjs
