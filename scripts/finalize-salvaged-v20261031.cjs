@@ -13,6 +13,7 @@ const source = require("./release-source.cjs");
 const original = require("./replace-v20261031.cjs");
 const finalizer = require("./release-finalizer-v2.cjs");
 const windows = require("./v31-windows-proof.cjs");
+const linux = require("./v31-linux-proof.cjs");
 
 const RECOVERY_RUN = 40791597216;
 const RECOVERY_CONTROLLER = "977d4dfeb715f8ce688173d067ab5a9361520d0d";
@@ -79,11 +80,12 @@ function verifyReceipt(receipt, reservation, target, job, run) {
     assert.ok(Number.isSafeInteger(file.size) && file.size >= 1024 ** 2 && file.size <= 4 * 1024 ** 3);
   }
 }
-function recoveredTargets(proof, windowsProof, reservation, destination, restore = out.download) {
+function recoveredTargets(proof, windowsProof, linuxProof, reservation, destination, restore = out.download) {
   const { run, jobs, artifacts } = proof;
   const ctx = { runId: run.id, attempt: run.run_attempt, controller: run.head_sha };
   return out.NATIVE_TARGETS.map(target => {
     if (target === windows.TARGET) return windows.select(windowsProof, reservation, path.join(destination, target), restore);
+    if (target === linux.TARGET) return linux.select(linuxProof, reservation, path.join(destination, target), restore);
     const rows = jobs.filter(job => job.name === `Build recovered (${target})`);
     assert.ok(rows.length); const latest = rows.filter(job => job.run_attempt === Math.max(...rows.map(item => item.run_attempt)));
     assert.equal(latest.length, 1); out.passed(latest[0], ["Select existing recovered target"]);
@@ -140,7 +142,7 @@ function verifyManifest(manifest, release, reservation) {
   assert.match(manifest.publisher.controller || "", out.SHA);
   assert.deepEqual(manifest.targets.map(item => item.receipt.target).sort(), [...out.NATIVE_TARGETS].sort());
   assert.equal(new Set(manifest.targets.map(item => item.artifact.id)).size, 3);
-  assert.equal(new Set(manifest.targets.map(item => item.receipt.target === windows.TARGET ? item.receipt.builder.jobId : item.receipt.recovery.jobId)).size, 3);
+  assert.equal(new Set(manifest.targets.map(item => [windows.TARGET, linux.TARGET].includes(item.receipt.target) ? item.receipt.builder.jobId : item.receipt.recovery.jobId)).size, 3);
   assert.equal(new Set(manifest.targets.map(item => item.logical.id)).size, 3);
   assert.equal(new Set(manifest.assets.map(item => item.id)).size, 6);
   const names = [];
@@ -150,6 +152,11 @@ function verifyManifest(manifest, release, reservation) {
       assert.equal(item.artifact.name, `bodhi-v31-verified-windows-${windows.RUN}-1`);
       assert.equal(item.artifact.id, windows.ARTIFACT); assert.equal(item.artifact.digest, windows.DIGEST);
       assert.deepEqual(item.logical, { id: windows.JOB, attempt: 1 });
+    } else if (item.receipt.target === linux.TARGET) {
+      linux.verifyReceipt(item.receipt, reservation, { physical: { id: linux.JOB, run_attempt: 1 } });
+      assert.equal(item.artifact.name, `bodhi-v31-verified-linux-${linux.RUN}-1`);
+      assert.equal(item.artifact.id, linux.ARTIFACT); assert.equal(item.artifact.digest, linux.DIGEST);
+      assert.deepEqual(item.logical, { id: linux.JOB, attempt: 1 });
     } else {
       const job = { id: item.receipt.recovery.jobId, run_attempt: item.receipt.recovery.attempt };
       verifyReceipt(item.receipt, reservation, item.receipt.target, job, { id: RECOVERY_RUN, head_sha: RECOVERY_CONTROLLER });
@@ -170,12 +177,12 @@ function verifyManifest(manifest, release, reservation) {
   return manifest;
 }
 function assemble(ctx, output) {
-  const retained = originalProof(), proof = recoveryRun(), windowsProof = windows.evidence();
+  const retained = originalProof(), proof = recoveryRun(), windowsProof = windows.evidence(), linuxProof = linux.evidence();
   assert.equal(retained.release.draft, true);
   const allowed = [...out.NATIVE_TARGETS.flatMap(target => out.names(original.FIXED.version, target)), MANIFEST];
   assert.ok(retained.release.assets.every(asset => allowed.includes(asset.name)), "Foreign release asset");
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-v31-recovered-"));
-  const targets = recoveredTargets(proof, windowsProof, retained.reservation, temporary);
+  const targets = recoveredTargets(proof, windowsProof, linuxProof, retained.reservation, temporary);
   const assets = [];
   for (const target of targets) for (const file of target.receipt.files) {
     assets.push(finalizer.retainAsset(retained.release.id, path.join(target.directory, file.name), file.name, original.originalContext()));
@@ -223,6 +230,10 @@ function publish(ctx, file) {
   const savedWindows = evidence.manifest.targets.find(target => target.receipt.target === windows.TARGET);
   assert.ok(savedWindows); windows.verifyReceipt(savedWindows.receipt, retained.reservation, windowsProof);
   assert.deepEqual(savedWindows.artifact, { id: windowsProof.artifact.id, name: windowsProof.artifact.name, digest: windowsProof.artifact.digest });
+  const linuxProof = linux.evidence();
+  const savedLinux = evidence.manifest.targets.find(target => target.receipt.target === linux.TARGET);
+  assert.ok(savedLinux); linux.verifyReceipt(savedLinux.receipt, retained.reservation, linuxProof);
+  assert.deepEqual(savedLinux.artifact, { id: linuxProof.artifact.id, name: linuxProof.artifact.name, digest: linuxProof.artifact.digest });
   assert.deepEqual(evidence.assets, sortedAssets(retained.release));
   const matches = retained.release.assets.filter(asset => asset.name === MANIFEST); assert.equal(matches.length, 1);
   assert.deepEqual(identity(matches[0]), evidence.manifestAsset);

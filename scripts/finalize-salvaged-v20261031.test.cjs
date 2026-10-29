@@ -6,6 +6,8 @@ const original = require("./replace-v20261031.cjs");
 const recovery = require("./finalize-salvaged-v20261031.cjs");
 const windows = require("./v31-windows-proof.cjs");
 const win = require("./verify-v31-windows.cjs");
+const linux = require("./v31-linux-proof.cjs");
+const lin = require("./verify-v31-linux.cjs");
 
 function sample() {
   const reservation = { source: original.FIXED.source };
@@ -19,17 +21,19 @@ function sample() {
         browser_download_url: `https://github.com/${out.REPOSITORY}/releases/download/${original.originalContext().draftTag}/${name}` });
       return { name, size, sha256 };
     });
-    if (target === windows.TARGET) {
-      targets.push({ receipt: { schemaVersion: 1, kind: "bodhi-v31-revalidated-windows", source: original.FIXED.source,
+    if ([windows.TARGET, linux.TARGET].includes(target)) {
+      const platform = target === windows.TARGET ? "windows" : "linux";
+      const proof = platform === "windows" ? windows : linux, verifier = platform === "windows" ? win : lin;
+      targets.push({ receipt: { schemaVersion: 1, kind: `bodhi-v31-revalidated-${platform}`, source: original.FIXED.source,
         version: original.FIXED.version, target, reservationSha256: out.sha256(out.bytes(reservation)),
-        builder: { runId: win.BUILD_RUN, attempt: 1, controller: win.BUILD_CONTROLLER, jobId: win.BUILD_JOB },
-        emergency: { id: win.EMERGENCY_ID, digest: win.EMERGENCY_DIGEST },
-        diagnostic: { runId: win.DIAG_RUN, attempt: 1, controller: win.DIAG_CONTROLLER, jobId: win.DIAG_JOB, yarnBlob: win.DIAG_YARN_BLOB },
+        builder: { runId: verifier.BUILD_RUN, attempt: 1, controller: verifier.BUILD_CONTROLLER, jobId: verifier.BUILD_JOB },
+        emergency: { id: verifier.EMERGENCY_ID, digest: verifier.EMERGENCY_DIGEST },
+        diagnostic: { runId: verifier.DIAG_RUN, attempt: 1, controller: verifier.DIAG_CONTROLLER, jobId: verifier.DIAG_JOB, yarnBlob: verifier.DIAG_YARN_BLOB },
         limitations: { originalYarnLockRetained: false, originalCargoLockRetained: false },
-        validation: { runId: windows.RUN, attempt: 1, controller: windows.CONTROLLER, jobId: windows.JOB },
+        validation: { runId: proof.RUN, attempt: 1, controller: proof.CONTROLLER, jobId: proof.JOB },
         checks: [...out.checks(target), "locked-cargo-log-versions", "reproduced-npm-platform-lock"], files },
-        artifact: { id: windows.ARTIFACT, name: `bodhi-v31-verified-windows-${windows.RUN}-1`, digest: windows.DIGEST },
-        logical: { id: windows.JOB, attempt: 1 } });
+        artifact: { id: proof.ARTIFACT, name: `bodhi-v31-verified-${platform}-${proof.RUN}-1`, digest: proof.DIGEST },
+        logical: { id: proof.JOB, attempt: 1 } });
       return;
     }
     targets.push({ receipt: { schemaVersion: 1, kind: "bodhi-v31-recovered-target", source: original.FIXED.source,
@@ -62,6 +66,8 @@ test("recovered installer evidence binds original source, physical jobs and exac
     value => { value.targets[0].receipt.recovery.runId = 999; },
     value => { value.targets[2].receipt.emergency.id = 999; },
     value => { value.targets[2].receipt.limitations.originalCargoLockRetained = true; },
+    value => { value.targets.find(item => item.receipt.target === linux.TARGET).receipt.validation.jobId++; },
+    value => { value.targets.find(item => item.receipt.target === linux.TARGET).receipt.limitations.originalYarnLockRetained = true; },
   ]) {
     const changed = structuredClone(manifest); mutate(changed);
     assert.throws(() => recovery.verifyManifest(changed, release, reservation));
