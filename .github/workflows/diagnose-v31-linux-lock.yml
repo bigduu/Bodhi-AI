@@ -1,0 +1,70 @@
+name: Diagnose Bodhi v31 Linux lock change
+on:
+  push:
+    branches: [bodhi/debug/v31-linux-lock-20261029]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      BAMBOO_SIDECAR_SOURCE: release
+      BAMBOO_SIDECAR_TARGET: x86_64-unknown-linux-gnu
+      LOTUS_SOURCE: package
+      LOTUS_PACKAGE_NAME: '@bigduu/lotus-next'
+      NPM_CONFIG_AUDIT: 'false'
+      NPM_CONFIG_FUND: 'false'
+      NPM_CONFIG_PROGRESS: 'false'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ebd73744e75ea20ecd068a730213eeeb3f26e52b
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Stamp disposable source and show initial status
+        working-directory: product
+        run: |
+          node -e "require('../controller/scripts/release-output.cjs').stamp(process.cwd(),'2026.10.31')"
+          git status --porcelain
+          git diff -- yarn.lock
+      - name: Install locked shell CLI and inspect lock
+        working-directory: product
+        run: |
+          npm ci --prefer-offline --no-audit --ignore-scripts
+          git status --porcelain
+          git diff -- yarn.lock
+      - name: Stage exact immutable Lotus package and inspect lock
+        working-directory: product
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" '@bigduu/lotus-next@2026.10.29' > "$RUNNER_TEMP/lotus-pack.json"
+          python ../controller/scripts/stage-v20261031-lotus.py "$RUNNER_TEMP/bigduu-lotus-next-2026.10.29.tgz" node_modules/@bigduu/lotus-next
+          git status --porcelain
+          git diff -- yarn.lock
+      - name: Stop at the Tauri build hook and inspect lock
+        working-directory: product
+        run: |
+          set -euo pipefail
+          override="$RUNNER_TEMP/bodhi-diagnostic-override.json"
+          printf '%s' '{"build":{"beforeBuildCommand":"exit 73"}}' > "$override"
+          log="$RUNNER_TEMP/bodhi-tauri-diagnostic.log"
+          result=0
+          npm run tauri:build -- --target x86_64-unknown-linux-gnu --bundles appimage,deb,rpm --verbose --config "$override" > "$log" 2>&1 || result=$?
+          tail -30 "$log"
+          test "$result" -ne 0
+          grep -F beforeBuildCommand "$log"
+          if grep -E 'Compiling|cargo  build' "$log"; then exit 1; fi
+          git status --porcelain
+          git diff -- yarn.lock
