@@ -1,0 +1,58 @@
+name: Verify retained Bodhi v31 Windows output
+on:
+  push:
+    branches: [bodhi/recover/v31-windows-output-20261029]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  verify:
+    name: Verify saved Windows output
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_ROOT: ${{ github.workspace }}/product
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ebd73744e75ea20ecd068a730213eeeb3f26e52b
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Authenticate and download the saved original
+        working-directory: controller
+        env:
+          EMERGENCY_ZIP: ${{ runner.temp }}/bodhi-v31-original-windows.zip
+          BUILD_LOG: ${{ runner.temp }}/bodhi-v31-original-windows.log
+        run: node scripts/verify-v31-windows.cjs prepare
+      - name: Restore saved staging and verify logged Cargo versions
+        working-directory: controller
+        env:
+          EMERGENCY_ZIP: ${{ runner.temp }}/bodhi-v31-original-windows.zip
+          BUILD_LOG: ${{ runner.temp }}/bodhi-v31-original-windows.log
+        run: |
+          python scripts/restore-v31-windows.py "$env:EMERGENCY_ZIP" "$env:SOURCE_ROOT"
+          python scripts/check-v31-cargo-log.py "$env:SOURCE_ROOT/Cargo.lock" "$env:BUILD_LOG"
+      - name: Verify original Windows installer and staging
+        working-directory: controller
+        env:
+          TARGET_OUTPUT: ${{ runner.temp }}/bodhi-v31-verified-windows
+        run: node scripts/verify-v31-windows.cjs capture
+      - name: Retain verified Windows output
+        uses: actions/upload-artifact@v7
+        with:
+          name: bodhi-v31-verified-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodhi-v31-verified-windows/
+          if-no-files-found: error
+          retention-days: 90
