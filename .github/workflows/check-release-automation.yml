@@ -1,0 +1,88 @@
+name: Check Bodhi release dependency preparation
+on:
+  push:
+    branches: [bodhi/ci/release-automation-check-20261032]
+permissions:
+  contents: read
+jobs:
+  check:
+    name: Check release preparation (${{ matrix.target }})
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            bundles: app,dmg
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb,rpm
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+    env:
+      SOURCE_ROOT: ${{ github.workspace }}/product
+      BAMBOO_SIDECAR_SOURCE: release
+      BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
+      LOTUS_SOURCE: package
+      LOTUS_PACKAGE_NAME: '@bigduu/lotus-next'
+      LOTUS_VERSION: '2026.10.29'
+      NPM_CONFIG_AUDIT: 'false'
+      NPM_CONFIG_FUND: 'false'
+      NPM_CONFIG_PROGRESS: 'false'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: 69edd81366d8f9d5556f76ac0daef44770c02af0
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Stamp disposable checkpoint
+        working-directory: controller
+        run: node -e "require('./scripts/release-output.cjs').stamp(process.env.SOURCE_ROOT,'2026.10.32')"
+      - name: Install the locked shell without changing source locks
+        working-directory: controller
+        run: node scripts/release-install-shell.cjs
+      - name: Stage and verify the exact frontend package
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm pack --ignore-scripts --json --pack-destination "$RUNNER_TEMP" "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}" > "$RUNNER_TEMP/bodhi-frontend-pack.json"
+          python ../controller/scripts/stage-release-frontend.py "$RUNNER_TEMP/bodhi-frontend-pack.json"
+          node - <<'NODE'
+          const assert = require('node:assert/strict');
+          const lotus = require('../controller/scripts/lotus-dist.cjs');
+          const source = lotus.resolveSource(process.env, process.cwd());
+          assert.equal(source.version, process.env.LOTUS_VERSION);
+          lotus.sourceIdentity(source);
+          const status = require('node:child_process').execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {encoding: 'utf8'})
+            .trim().split(/\r?\n/).filter(Boolean).map(line => line.slice(3)).sort();
+          assert.deepEqual(status, ['Cargo.lock', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json']);
+          NODE
+      - name: Verify Tauri reaches its hook without building
+        working-directory: product
+        shell: bash
+        run: |
+          set -euo pipefail
+          override="$RUNNER_TEMP/bodhi-hook-only.json"
+          printf '%s' '{"build":{"beforeBuildCommand":"exit 73"}}' > "$override"
+          log="$RUNNER_TEMP/bodhi-hook-only.log"
+          result=0
+          npm run tauri:build -- --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --verbose --config "$override" > "$log" 2>&1 || result=$?
+          tail -30 "$log"
+          test "$result" -ne 0
+          grep -F beforeBuildCommand "$log"
+          if grep -E 'Compiling |cargo  build' "$log"; then exit 1; fi
