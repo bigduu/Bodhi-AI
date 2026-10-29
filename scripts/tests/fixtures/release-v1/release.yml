@@ -1,0 +1,332 @@
+name: "publish"
+
+run-name: Bodhi v${{ inputs.bodhi_version }} @ ${{ inputs.expected_source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_source_sha:
+        description: "Full exact Bodhi source SHA selected with --ref"
+        required: true
+        type: string
+      bodhi_version:
+        description: "Unused Bodhi app version in YYYY.M.N form"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# A release version has one durable public tag. Serialize dispatches targeting
+# that version, while each run writes only to its own draft tag below. Keeping
+# cancel-in-progress false ensures an active release assembly is never cut off
+# by a duplicate dispatch.
+concurrency:
+  group: bodhi-release-${{ inputs.bodhi_version }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Validate independent release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      frontend_package: ${{ steps.identity.outputs.frontend_package }}
+      frontend_version: ${{ steps.identity.outputs.frontend_version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - name: Validate source, locked inputs and unused version
+        id: identity
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+          RELEASE_VERSION: ${{ inputs.bodhi_version }}
+        run: node scripts/release-finalizer.cjs preflight
+
+  publish-tauri:
+    name: Build Bodhi (${{ matrix.target }})
+    needs: preflight
+    env:
+      BAMBOO_SIDECAR_SOURCE: release
+      LOTUS_SOURCE: package
+      LOTUS_PACKAGE_NAME: ${{ needs.preflight.outputs.frontend_package }}
+      NPM_CONFIG_AUDIT: "false"
+      NPM_CONFIG_FUND: "false"
+      NPM_CONFIG_PROGRESS: "false"
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "macos-latest"
+            target: "aarch64-apple-darwin"
+            args: "--target aarch64-apple-darwin"
+            artifact_name: "macos-arm64"
+            artifact_paths: |
+              target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+              target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+          - platform: "ubuntu-22.04"
+            target: "x86_64-unknown-linux-gnu"
+            args: "--target x86_64-unknown-linux-gnu"
+            artifact_name: "linux-x64"
+            artifact_paths: |
+              target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
+              target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
+          - platform: "windows-latest"
+            target: "x86_64-pc-windows-msvc"
+            args: "--target x86_64-pc-windows-msvc --bundles nsis"
+            artifact_name: "windows-x64"
+            artifact_paths: |
+              target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Require the exact accepted release source
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+        run: |
+          [[ "${EXPECTED_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          test "${GITHUB_SHA}" = "${EXPECTED_SOURCE_SHA}"
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SOURCE_SHA}"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Verify migration boundary
+        run: node scripts/verify-boundaries.cjs migration
+
+      - name: Verify docs boundary
+        run: node scripts/verify-boundaries.cjs docs-boundary
+
+      # Version validation and collision checks ran before the native matrix.
+      # Stamping affects only this temporary publishing checkout.
+      - name: Set Bodhi app version (workflow override)
+        shell: bash
+        run: |
+          TARGET_VERSION="${{ needs.preflight.outputs.version }}"
+          export TARGET_VERSION
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          const target = process.env.TARGET_VERSION;
+          const cargoPath = 'src-tauri/Cargo.toml';
+          const tauriConfigPath = 'src-tauri/tauri.conf.json';
+
+          const cargoBefore = fs.readFileSync(cargoPath, 'utf8');
+          const cargoVersionPattern = /^version\s*=\s*"[^"]+"/m;
+          if (!cargoVersionPattern.test(cargoBefore)) {
+            throw new Error('Unable to find version entry in src-tauri/Cargo.toml');
+          }
+          const cargoAfter = cargoBefore.replace(/^version\s*=\s*"[^"]+"/m, `version = "${target}"`);
+          if (cargoBefore !== cargoAfter) {
+            fs.writeFileSync(cargoPath, cargoAfter);
+          }
+
+          const tauriConfig = JSON.parse(fs.readFileSync(tauriConfigPath, 'utf8'));
+          tauriConfig.version = target;
+          fs.writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`);
+          NODE
+
+          echo "Using bodhi version override: ${TARGET_VERSION}"
+          grep '^version = ' src-tauri/Cargo.toml | head -1
+          node -p "require('./src-tauri/tauri.conf.json').version"
+
+      - name: Require the accepted published Bamboo contract
+        shell: bash
+        run: |
+          node scripts/bamboo-sidecar.cjs check-lock
+
+      - name: Cache exact published Bamboo assets
+        uses: actions/cache@v5
+        with:
+          path: src-tauri/.bamboo-sidecar-cache
+          key: bodhi-bamboo-assets-v1-${{ matrix.target }}-${{ hashFiles('scripts/bamboo-sidecar-lock.json') }}
+
+      - name: Download and verify the accepted platform sidecar
+        shell: bash
+        run: node scripts/bamboo-sidecar.cjs install "${{ matrix.target }}"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust target
+        shell: bash
+        run: rustup target add "${{ matrix.target }}"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          # Cache the Tauri shell only; Bamboo is a verified published executable.
+          shared-key: "bodhi-ci-${{ matrix.target }}"
+          cache-on-failure: true
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('package-lock.json') }}
+
+      - name: Install shell dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit
+
+      - name: Install Lotus package
+        shell: bash
+        run: |
+          LOTUS_VERSION="${{ needs.preflight.outputs.frontend_version }}"
+          echo "Using ${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
+          npm install --no-save --ignore-scripts --package-lock=false "${LOTUS_PACKAGE_NAME}@${LOTUS_VERSION}"
+
+      - name: Stage Lotus dist for bundling
+        shell: bash
+        run: |
+          npm run web:build
+          node scripts/lotus-dist.cjs verify-staged
+
+      - name: Print Lotus source resolution
+        run: npm run web:source:info
+
+      - name: Build Tauri app
+        id: tauri_build
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The hook revalidates the accepted executable and browser host cache.
+          BAMBOO_SIDECAR_SOURCE: release
+          BAMBOO_SIDECAR_TARGET: ${{ matrix.target }}
+          # Ad-hoc macOS signing: the runner keychain has no "Zenith Nova Code
+          # Signing" cert (no Apple secrets configured), so the real identity in
+          # tauri.conf can't be used and the build fails at codesign. "-" signs
+          # ad-hoc so macOS bundles build. TODO: for distribution + persistent
+          # TCC grants, add the cert as a secret, import it into the keychain
+          # here, and drop this override so the real identity is used.
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          # Draft tags are run-scoped, so no other dispatch can add or replace
+          # assets in this run's unverified release.
+          tagName: bodhi-draft-v${{ needs.preflight.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          releaseName: "App v${{ needs.preflight.outputs.version }}"
+          releaseBody: "See the assets to download this version and install."
+          # Matrix jobs may upload only to a draft. The final job publishes it
+          # after every target and post-build assembly gate has succeeded.
+          releaseDraft: true
+          releaseCommitish: ${{ github.sha }}
+          prerelease: false
+          args: ${{ matrix.args }} --verbose
+
+      - name: Diagnose failed Mac DMG assembly
+        if: failure() && runner.os == 'macOS' && steps.tauri_build.conclusion == 'failure'
+        continue-on-error: true
+        shell: bash
+        env:
+          BODHI_DIAGNOSTIC_TARGET: ${{ matrix.target }}
+          BODHI_DIAGNOSTIC_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          df -h "$RUNNER_TEMP" .
+          /usr/bin/hdiutil info
+          node <<'NODE' > "$RUNNER_TEMP/dmg-failure-source.json"
+          const { execFileSync } = require('node:child_process');
+          const git = args => execFileSync('git', args, {encoding:'utf8'}).trim();
+          console.log(JSON.stringify({sourceSha:process.env.BODHI_DIAGNOSTIC_SOURCE,checkoutSha:git(['rev-parse','HEAD']),bambooRelease:require('./scripts/bamboo-sidecar.cjs').installedRelease(process.cwd(),process.env.BODHI_DIAGNOSTIC_TARGET),target:process.env.BODHI_DIAGNOSTIC_TARGET,acceptance:false},null,2));
+          NODE
+          bundle="target/$BODHI_DIAGNOSTIC_TARGET/release/bundle"
+          if [ -d "$bundle/macos" ] && [ -d "$bundle/dmg" ]; then
+            # tar preserves the original executable modes, symlinks and signature.
+            tar -czf "$RUNNER_TEMP/dmg-failure-bundle.tar.gz" -C "$bundle" macos dmg
+          fi
+
+      - name: Retain failed Mac DMG assembly diagnostics
+        if: failure() && runner.os == 'macOS' && steps.tauri_build.conclusion == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: dmg-failure-${{ matrix.artifact_name }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dmg-failure-source.json
+            ${{ runner.temp }}/dmg-failure-bundle.tar.gz
+            target/${{ matrix.target }}/release/bundle/dmg/bundle_dmg.sh
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Verify exact frontend and real target sidecar
+        shell: bash
+        run: npm run verify:assembly -- "${{ matrix.target }}"
+
+      - name: Smoke native bundled sidecar actor transport
+        shell: bash
+        run: node scripts/sidecar-bundle-smoke.cjs "${{ matrix.target }}"
+
+      - name: Smoke bundled browser host
+        shell: bash
+        env:
+          BODHI_BROWSER_TARGET: ${{ matrix.target }}
+        run: |
+          runtime="src-tauri/browser-runtime"
+          if [[ "$BODHI_BROWSER_TARGET" == *apple-darwin ]]; then
+            runtime="target/$BODHI_BROWSER_TARGET/release/bundle/macos/Bodhi AI.app/Contents/Resources/browser-runtime"
+          fi
+          node scripts/browser-bundle-smoke.cjs "$BODHI_BROWSER_TARGET" "$runtime"
+
+      - name: Upload Build Artifacts to Workflow
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-build-${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error
+
+  finalize-release:
+    name: Publish fully verified release
+    needs: [preflight, publish-tauri]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Require the exact accepted release source
+        run: node scripts/release-finalizer.cjs identity
+
+      - name: Verify original release assets
+        run: node scripts/release-finalizer.cjs verify "${{ runner.temp }}/bodhi-release-evidence.json"
+
+      # Save the original IDs/digests before PATCH so recovery never has to
+      # adopt replacement assets or infer identity from a matching version.
+      - name: Retain original release evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: bodhi-release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodhi-release-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish the completed draft
+        run: node scripts/release-finalizer.cjs publish "${{ runner.temp }}/bodhi-release-evidence.json"

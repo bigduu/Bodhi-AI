@@ -10,6 +10,24 @@ const frontend = require("./lotus-dist.cjs");
 const artifact = require("./lotus-next-artifact.cjs");
 const { verifySidecar } = require("./verify-assembly.cjs");
 
+test("Mac bundle verification threads the selected S browser lock to staged and bundled C verifiers", t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-mac-selected-lock-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const app = path.join(root, "candidate.app"), staged = path.join(root, "src-tauri/browser-runtime"), bundled = path.join(app, "Contents/Resources/browser-runtime");
+  const receipt = { packageName: "@bigduu/lotus", schemaVersion: 1 }, selected = { schemaVersion: 1, nodeVersion: "99.0.1" }, calls = [];
+  for (const directory of [staged, bundled, path.join(app, "Contents/Resources/frontend")]) {
+    fs.mkdirSync(directory, { recursive: true }); fs.writeFileSync(path.join(directory, "receipt.json"), JSON.stringify(receipt));
+  }
+  const sandbox = { module: { exports: {} }, __dirname, Buffer, process, JSON, require(name) {
+    if (name === "./browser-runtime.cjs") return { verifyRuntime(...args) { calls.push(args); return {}; } };
+    if (name === "node:child_process") return { execFileSync(program) { assert.equal(program, "codesign"); } };
+    return require(name);
+  } };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "verify-assembly.cjs"), "utf8"), sandbox);
+  sandbox.module.exports.verifyMacosBundle(root, "aarch64-apple-darwin", receipt, app, selected);
+  assert.deepEqual(calls.map(args => args[0]), [staged, bundled]);
+  assert.ok(calls.every(args => args[3] === selected));
+});
+
 function write(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
@@ -592,39 +610,24 @@ test("assembly verification rejects placeholders and validates target binaries",
   assert.throws(() => verifySidecar(root, "../outside"), /Invalid sidecar/);
 });
 
-test("workflow artifact uploads follow the root Cargo workspace target", () => {
-  for (const workflowName of ["ci.yml", "release.yml"]) {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, `../.github/workflows/${workflowName}`),
-      "utf8",
-    );
-    assert.doesNotMatch(workflow, /src-tauri\/target\/[^\n]+\/bundle\//);
-    assert.match(
-      workflow,
-      /target\/x86_64-unknown-linux-gnu\/release\/bundle\/appimage\/\*\.AppImage/,
-    );
-    assert.match(
-      workflow,
-      /target\/x86_64-pc-windows-msvc\/release\/bundle\/nsis\/\*\.exe/,
-    );
-    assert.match(workflow, /if-no-files-found: error/);
-  }
-  const release = fs.readFileSync(
-    path.join(__dirname, "../.github/workflows/release.yml"),
-    "utf8",
-  );
-  for (const target of ["aarch64-apple-darwin"]) {
-    assert.match(
-      release,
-      new RegExp(`target/${target}/release/bundle/dmg/\\*\\.dmg`),
-    );
-  }
+test("release captures original root-workspace installers before finalization", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/release.yml"), "utf8");
+  const output = fs.readFileSync(path.join(__dirname, "release-output.cjs"), "utf8");
+  assert.doesNotMatch(workflow, /src-tauri\/target\/|tauri-apps\/tauri-action/);
+  assert.equal((workflow.match(/npm run tauri:build/g) || []).length, 1);
+  assert.match(workflow, /scripts\/release-output\.cjs capture/);
+  assert.match(workflow, /if-no-files-found: error/);
+  assert.ok(output.includes('path.join(root, "target", target, "release")'));
+  assert.ok(output.includes('["appimage", "deb", "rpm"]'));
+  assert.ok(output.includes('["dmg", "macos"]'));
+  assert.ok(output.includes('["nsis"]'));
 });
 
 // The installed package must match the committed universal artifact lock.
 test("CI installs the committed frontend identity before exact staging", () => {
   const lock = JSON.parse(fs.readFileSync(path.join(__dirname, "frontend-package-lock.json"), "utf8"));
   const ci = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
-  assert.equal(ci.match(/^  LOTUS_VERSION: "([^"]+)"$/m)?.[1], lock.packageVersion);
+  assert.doesNotMatch(ci, /^  LOTUS_VERSION:/m);
+  assert.ok(ci.includes("require('./scripts/frontend-package-lock.json').packageVersion"));
   assert.equal(ci.match(/^  LOTUS_PACKAGE_NAME: "([^"]+)"$/m)?.[1], lock.packageName);
 });
