@@ -41,7 +41,9 @@ def restore(archive, product):
             allowed = (rel in FILES or any(rel.startswith(prefix) for prefix in TREES)
                        or rel.startswith(TARGET + "bundle/") or rel.startswith(TARGET + "bodhi"))
             assert allowed, "Unexpected preserved path: " + rel
-            assert not stat.S_ISLNK(entry.external_attr >> 16), "Preserved links are not accepted"
+            mode = entry.external_attr >> 16
+            assert not stat.S_ISLNK(mode), "Preserved links are not accepted"
+            assert not mode & 0o7000, "Special permission bits are not accepted"
             total += entry.file_size
             assert entry.file_size <= 4 * 1024 ** 3 and total <= 8 * 1024 ** 3
             selected = rel in FILES or any(rel.startswith(prefix) for prefix in TREES)
@@ -53,10 +55,13 @@ def restore(archive, product):
                 continue
             if rel in LOCKS:
                 assert target.is_file() and saved.read(entry) == target.read_bytes(), "Preserved lock or version differs: " + rel
+                assert stat.S_IMODE(target.stat().st_mode) == stat.S_IMODE(mode), "Preserved lock mode differs: " + rel
             else:
+                assert stat.S_ISREG(mode), "Preserved output must be a regular file: " + rel
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with saved.open(entry) as source, target.open("xb") as destination:
                     shutil.copyfileobj(source, destination)
+                target.chmod(stat.S_IMODE(mode))
             restored.add(rel)
     required = FILES | {"src-tauri/browser-runtime/receipt.json", ".bodhi-frontend/receipt.json"}
     for name in required:
