@@ -320,9 +320,13 @@ finally { fs.writeFileSync(process.env.BODHI_FIXTURE, JSON.stringify(f)); }
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("workflows bind independent inputs, original evidence and unchanged native acceptance", () => {
-  const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/release.yml"), "utf8");
-  const recovery = fs.readFileSync(path.join(__dirname, "../.github/workflows/recover-release.yml"), "utf8");
+test("frozen v1 workflows bind original evidence and historical native acceptance", () => {
+  const workflow = fs.readFileSync(path.join(__dirname, "tests/fixtures/release-v1/release.yml"), "utf8");
+  const recovery = fs.readFileSync(path.join(__dirname, "tests/fixtures/release-v1/recover-release.yml"), "utf8");
+  const digest = text => require("node:crypto").createHash("sha256").update(text).digest("hex");
+  assert.equal(digest(workflow), "d215ea742e352ef590fb386a143d853ba58613153e61e0a831d48b8a9aff3184");
+  assert.equal(digest(recovery), "a00dc4dc9c46794240c9ce64524b02d1eb1d2923f2221790c5e2d551337dc11e");
+  assert.equal(digest(fs.readFileSync(path.join(__dirname, "release-finalizer.cjs"))), "a5e188d837e869d031938196dbb1f44a855a6d32af921c1b095da7822fdcb366");
   const inputs = workflow.slice(workflow.indexOf("    inputs:"), workflow.indexOf("permissions:"));
   assert.deepEqual([...inputs.matchAll(/^      (\w+):$/gm)].map(match => match[1]), ["expected_source_sha", "bodhi_version"]);
   assert.doesNotMatch(workflow, /inputs\.(?:bamboo_version|bamboo_ref|lotus_version|frontend_package)|release.train|RELEASE_ORCHESTRATOR_TOKEN/);
@@ -336,14 +340,17 @@ test("workflows bind independent inputs, original evidence and unchanged native 
 });
 
 // Bamboo publishes four reusable targets; this Bodhi release supports three.
-test("both native matrices match supported finalizer targets and exclude Intel packaging", () => {
+test("feature native tests and release packaging preserve the supported target contract", () => {
   assert.deepEqual(NATIVE_TARGETS, ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]);
   assert.equal(require("./bamboo-sidecar.cjs").TARGETS.length, 4);
   for (const name of ["ci.yml", "release.yml"]) {
-    const body = fs.readFileSync(path.join(__dirname, "../.github/workflows", name), "utf8");
+    const body = fs.readFileSync(path.join(__dirname, name === "release.yml" ? "tests/fixtures/release-v1/release.yml" : "../.github/workflows/ci.yml"), "utf8");
     const targets = [...body.matchAll(/^            target: "?([a-z0-9_-]+)"?$/gm)].map(match => match[1]);
     assert.deepEqual(targets.sort(), [...NATIVE_TARGETS].sort());
     assert.doesNotMatch(body, /macos-15-intel|x86_64-apple-darwin/);
-    for (const gate of ["Verify exact frontend and real target sidecar", "Smoke native bundled sidecar actor transport", "Smoke bundled browser host"]) assert.ok(body.includes(`- name: ${gate}`));
+    const gates = name === "ci.yml"
+      ? ["Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"]
+      : ["Verify exact frontend and real target sidecar", "Smoke native bundled sidecar actor transport", "Smoke bundled browser host"];
+    for (const gate of gates) assert.ok(body.includes(`- name: ${gate}`));
   }
 });
