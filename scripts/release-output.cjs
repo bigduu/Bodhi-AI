@@ -342,7 +342,7 @@ function staticOutputs(root, ctx, target, output) {
   // Read immutable product data with controller code, never require a module from S.
   const runtimeLock = JSON.parse(execFileSync("git", ["show", `${ctx.source}:scripts/browser-runtime.lock.json`],
     { cwd: root, env: childEnv(), encoding: "utf8", maxBuffer: 128 * 1024 }));
-  browser.verifyRuntime(path.join(root, "src-tauri/browser-runtime"), target, sidecar.hostDirectory, runtimeLock);
+  browser.verifyRuntime(path.join(root, "src-tauri/browser-runtime"), target, path.join(sidecar.hostDirectory, "browser-runtime"), runtimeLock);
   const base = path.join(root, "target", target, "release"), bundle = path.join(base, "bundle");
   browser.verifyArchitecture(path.join(base, target.includes("windows") ? "bodhi.exe" : "bodhi"), target);
   const command = (name, args) => execFileSync(name, args, { env: childEnv(), encoding: "utf8" }).trim();

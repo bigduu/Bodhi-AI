@@ -624,6 +624,22 @@ test("publication requires the exact retained evidence artifact before PATCH", t
   f.artifacts.pop(); assert.throws(() => finalizer.retainedEvidence(ctx, evidence, a.request, a.restore), /artifact missing/);
   assert.equal(f.calls.filter(call => call.method === "PATCH").length, 0);
 });
+test("publication waits only for an in-progress evidence projection", t => {
+  const f = fixture(), evidence = assemble(t, f), a = adapters(f), job = f.jobs.at(-1);
+  job.steps = [{ name: finalizer.ASSEMBLE, status: "completed", conclusion: "success" },
+    { name: finalizer.EVIDENCE, status: "in_progress", conclusion: null }];
+  job.started_at = new Date(Date.now() - 60000).toISOString();
+  f.artifacts.push({ ...f.artifacts[0], id: 150, name: ctx.evidenceName, created_at: new Date(Date.now() - 1000).toISOString() });
+  f.files[150] = { "evidence.json": out.bytes(evidence) };
+  const delays = [];
+  assert.equal(finalizer.retainedEvidence(ctx, evidence, a.request, a.restore, delay => {
+    delays.push(delay); job.steps[1].status = "completed"; job.steps[1].conclusion = "success";
+  }).id, 150);
+  assert.deepEqual(delays, [1000]);
+  job.steps[1].conclusion = "failure";
+  assert.throws(() => finalizer.retainedEvidence(ctx, evidence, a.request, a.restore, () => assert.fail("must not retry failure")));
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 0);
+});
 test("API failures never become absence or a new build/version", () => {
   const f = fixture(), a = adapters(f); f.failEndpoint = `git/ref/tags/${ctx.finalTag}`;
   assert.throws(() => finalizer.available(ctx, a.request), /unavailable/);
@@ -679,7 +695,7 @@ test("static verification reads immutable S browser-lock data with C code, never
   } };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, "release-output.cjs"), "utf8"), sandbox);
   assert.throws(() => sandbox.module.exports.staticOutputs(root, ctx, out.NATIVE_TARGETS[1], root), /after lock binding/);
-  assert.equal(calls.length, 1); assert.equal(calls[0].source, "selected-host");
+  assert.equal(calls.length, 1); assert.equal(calls[0].source, path.join("selected-host", "browser-runtime"));
   assert.equal(JSON.stringify(calls[0].selected), JSON.stringify(lock));
 });
 test("actual CLI keeps real Git controller/source identities and stamps only the disposable product checkout", t => {

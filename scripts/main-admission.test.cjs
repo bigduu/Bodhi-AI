@@ -145,6 +145,18 @@ test("normal completed release admits a complete S Main postimage, preserving ac
   assert.equal(proof.postimage, "complete-source"); assert.equal(proof.mainTree, ST); assert.equal(proof.publisher.id, 14);
   assert.ok(f.reads.includes(`compare/${C}...${B}`)); assert.ok(!f.reads.includes(`compare/${C}...${S}`));
 });
+test("Main accepts only a reviewed release workflow producer", () => {
+  const f = fixture();
+  const newBlob = execFileSync("git", ["hash-object", ".github/workflows/release.yml"], { encoding: "utf8" }).trim();
+  f.onRead = (endpoint, response) => {
+    if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) response.sha = newBlob;
+  };
+  assert.equal(f.verify().source, S);
+  f.onRead = (endpoint, response) => {
+    if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) response.sha = "0".repeat(40);
+  };
+  assert.throws(() => f.verify(), /Unreviewed original workflow producer/);
+});
 test("Main may retain the whole trusted controller closure while its complete product/locks remain S", () => {
   const f = fixture(); f.overlay(); const proof = f.verify(); assert.equal(proof.postimage, "retained-main-controls"); assert.equal(proof.mainTree, MT);
 });
