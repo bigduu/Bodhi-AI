@@ -504,12 +504,15 @@ test("interruptible commands terminate their complete owned process group before
   });
   command.catch(() => {});
   try {
-    await waitForCondition(() => fs.existsSync(pidFile), {
+    let pids;
+    await waitForCondition(() => {
+      pids = JSON.parse(fs.readFileSync(pidFile, "utf8"));
+      return Array.isArray(pids) && pids.length === 2;
+    }, {
       timeoutMs: 2_000,
       intervalMs: 10,
       label: "owned command pid receipt",
     });
-    const pids = JSON.parse(fs.readFileSync(pidFile, "utf8"));
     assert.equal(pids.length, 2);
     controller.abort(new Error("command interrupted for unit test"));
     await assert.rejects(command, /command interrupted for unit test/);
