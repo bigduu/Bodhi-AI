@@ -492,22 +492,27 @@ test("interruptible commands terminate their complete owned process group before
     '  if (child.exitCode !== null || child.signalCode !== null) process.exit(0);',
     '  else child.once("exit", () => process.exit(0));',
     '});',
-    `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.pid, child.pid]));`,
+    `fs.writeFileSync(${JSON.stringify(pidFile)}, "");`,
+    `setTimeout(() => fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify([process.pid, child.pid])), 50);`,
     "setInterval(() => {}, 1000);",
   ].join("\n");
   const controller = new AbortController();
+  const command = runInterruptibleCommand(process.execPath, ["-e", script], {
+    graceMs: 1_000,
+    killMs: 1_000,
+    signal: controller.signal,
+  });
+  command.catch(() => {});
   try {
-    const command = runInterruptibleCommand(process.execPath, ["-e", script], {
-      graceMs: 1_000,
-      killMs: 1_000,
-      signal: controller.signal,
-    });
-    await waitForCondition(() => fs.existsSync(pidFile), {
+    let pids;
+    await waitForCondition(() => {
+      pids = JSON.parse(fs.readFileSync(pidFile, "utf8"));
+      return Array.isArray(pids) && pids.length === 2;
+    }, {
       timeoutMs: 2_000,
       intervalMs: 10,
       label: "owned command pid receipt",
     });
-    const pids = JSON.parse(fs.readFileSync(pidFile, "utf8"));
     assert.equal(pids.length, 2);
     controller.abort(new Error("command interrupted for unit test"));
     await assert.rejects(command, /command interrupted for unit test/);
@@ -515,6 +520,8 @@ test("interruptible commands terminate their complete owned process group before
       assert.throws(() => process.kill(pid, 0), /ESRCH|no such process/i);
     }
   } finally {
+    controller.abort(new Error("owned command fixture cleanup"));
+    await command.catch(() => {});
     fs.rmSync(directory, { force: true, recursive: true });
   }
 });
