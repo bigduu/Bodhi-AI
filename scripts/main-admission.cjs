@@ -9,14 +9,36 @@ const { execFileSync } = require("node:child_process");
 const out = require("./release-output.cjs");
 const source = require("./release-source.cjs");
 const finalizer = require("./release-finalizer-v2.cjs");
+const recovery31 = require("./replace-v20261031.cjs");
+const finalizer31 = require("./finalize-salvaged-v20261031.cjs");
+const windows31 = require("./v31-windows-proof.cjs");
+const linux31 = require("./v31-linux-proof.cjs");
+const publish31 = require("./publish-v31-preserved.cjs");
 const { REPOSITORY, NATIVE_TARGETS, SHA, MANIFEST } = out;
 const LEGACY_BASE = "aef64d4adce7296086a71b1a6c82fa65c7ccf42d";
 const LEGACY_TREE = "41baf69faf3b4c3da5f649a80b58b7283ed90400";
 const RELEASE_BLOB = "ff91ec4ca4c3047d6c23c5dc06d575f15fe190e3";
+const CURRENT_RELEASE_BLOB = "7b666dc5f0f8f2f79e9b2064acdfe8cc4fa881ca";
 const RECOVERY_BLOB = "bebaa01d241bc33c3f968cac5292735845876c78";
+const RECOVERY31_BLOB = "3f201b9725f5e1da751841569f41f174db8f00e2";
+const FINALIZER31_BLOB = "0fc7de135db1718c7fa5147a3a4512e2db191583";
+const FINALIZER31_RUN = 40796552747;
+const FINALIZER31_CONTROLLER = "622ed9209113f479100f906e45463232515d7e1a";
+const PUBLISHER31_RUN = 40797223393;
+const PUBLISHER31_CONTROLLER = "250ab6d8c827385d885f624828179409561e9b27";
+const PUBLISHER31_BLOB = "66e95e96b7311a22af0959ac8202b1c88be89219";
 const CONTROLS = Object.freeze([".github/workflows/ci.yml", ".github/workflows/release.yml", ".github/workflows/recover-release.yml",
-  "scripts/release-source.cjs", "scripts/release-output.cjs", "scripts/release-finalizer-v2.cjs", "scripts/main-admission.cjs",
-  "scripts/browser-runtime.cjs", "scripts/verify-assembly.cjs", "AGENTS.md", "docs/releasing.md"]);
+  "scripts/release-source.cjs", "scripts/release-output.cjs", "scripts/release-finalizer-v2.cjs", "scripts/main-admission.cjs", "scripts/main-admission.test.cjs",
+  "scripts/browser-runtime.cjs", "scripts/verify-assembly.cjs", "AGENTS.md", "docs/releasing.md",
+  ".github/workflows/replace-v20261031.yml", ".github/workflows/finalize-replacement-v20261031.yml", "scripts/replace-v20261031.cjs",
+  "scripts/replace-v20261031.test.cjs", "scripts/finalize-replacement-v20261031.cjs", "scripts/finalize-replacement-v20261031.test.cjs",
+  "scripts/stage-v20261031-lotus.py", "scripts/stage-v20261031-lotus.test.py", "scripts/release-output-host.test.cjs",
+  "scripts/release-output.test.cjs", ".github/workflows/finalize-salvaged-v20261031.yml",
+  "scripts/finalize-salvaged-v20261031.cjs", "scripts/finalize-salvaged-v20261031.test.cjs",
+  "scripts/v31-windows-proof.cjs", "scripts/verify-v31-windows.cjs", "scripts/v31-linux-proof.cjs", "scripts/verify-v31-linux.cjs",
+  ".github/workflows/publish-v31-preserved.yml", "scripts/publish-v31-preserved.cjs",
+  "scripts/release-install-shell.cjs", "scripts/release-install-shell.test.cjs",
+  "scripts/stage-release-frontend.py", "scripts/stage-release-frontend.test.py"]);
 const LOCKS = ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"];
 function id(value) { assert.match(String(value), /^[1-9][0-9]*$/); assert.ok(Number.isSafeInteger(Number(value))); return Number(value); }
 function sha(value) { assert.match(value || "", SHA); return value; }
@@ -110,7 +132,8 @@ function sourceReceipt(reservation, request, readLog) {
 }
 function controller(commit, base, workflow, blob, request) {
   ancestor(commit, base, request);
-  assert.equal(request(`contents/.github/workflows/${workflow}?ref=${commit}`)?.sha, blob, "Unreviewed original workflow producer");
+  const allowed = Array.isArray(blob) ? blob : [blob];
+  assert.ok(allowed.includes(request(`contents/.github/workflows/${workflow}?ref=${commit}`)?.sha), "Unreviewed original workflow producer");
 }
 function releaseContext(value, original) {
   // Parse explicit release identity with the existing formatter. These are
@@ -123,11 +146,91 @@ function runReceipt(run) {
   return Object.fromEntries(["id", "run_attempt", "event", "path", "head_sha", "head_branch", "display_title", "status", "conclusion"]
     .map(key => [key, run[key]]).concat([["repository", run.repository.full_name]]));
 }
+function recovered31Targets(proof, manifest, windowsProof, linuxProof) {
+  assert.equal(manifest.recovery.attempt, proof.run.run_attempt);
+  const ctx = { runId: proof.run.id, attempt: proof.run.run_attempt, controller: proof.run.head_sha };
+  for (const target of NATIVE_TARGETS) {
+    const item = manifest.targets.find(value => value.receipt.target === target); assert.ok(item);
+    if (target === windows31.TARGET) {
+      windows31.verifyReceipt(item.receipt, manifest.reservation, windowsProof);
+      assert.deepEqual(item.logical, { id: windowsProof.logical.id, attempt: windowsProof.logical.run_attempt });
+      assert.deepEqual(item.artifact, { id: windowsProof.artifact.id, name: windowsProof.artifact.name, digest: windowsProof.artifact.digest });
+      continue;
+    }
+    if (target === linux31.TARGET) {
+      linux31.verifyReceipt(item.receipt, manifest.reservation, linuxProof);
+      assert.deepEqual(item.logical, { id: linuxProof.logical.id, attempt: linuxProof.logical.run_attempt });
+      assert.deepEqual(item.artifact, { id: linuxProof.artifact.id, name: linuxProof.artifact.name, digest: linuxProof.artifact.digest });
+      continue;
+    }
+    const rows = proof.jobs.filter(job => job.name === `Build recovered (${target})`);
+    assert.ok(rows.length); const latest = rows.filter(job => job.run_attempt === Math.max(...rows.map(job => job.run_attempt)));
+    assert.equal(latest.length, 1); out.passed(latest[0], ["Select existing recovered target"]);
+    const builds = [];
+    for (const job of rows.filter(row => row.steps.some(step => step.name === recovery31.BUILD && step.conclusion === "success"))) {
+      const physical = source.executionOrigin(job, rows);
+      if (!builds.some(value => value.id === physical.id)) builds.push(physical);
+    }
+    assert.equal(builds.length, 1); const physical = builds[0];
+    out.passed(physical, ["Select existing recovered target", "Verify frozen source and stamp version", "Stage the exact prebuilt Lotus package",
+      "Verify source boundaries", recovery31.BUILD, recovery31.CAPTURE, recovery31.RETAIN]);
+    finalizer31.verifyReceipt(item.receipt, manifest.reservation, target, physical, proof.run);
+    assert.deepEqual(item.logical, { id: latest[0].id, attempt: latest[0].run_attempt });
+    const artifact = out.artifact(proof.artifacts, recovery31.artifactName(ctx, target, physical.run_attempt), ctx, physical);
+    const candidates = proof.artifacts.filter(value => value.name.startsWith(`bodhi-v31-recovered-${recovery31.FIXED.runId}-${ctx.runId}-`) && value.name.endsWith(`-${target}`));
+    assert.equal(candidates.length, 1);
+    assert.deepEqual(item.artifact, { id: artifact.id, name: artifact.name, digest: artifact.digest });
+  }
+}
+function published31(value, base, request = readOnly, options = {}) {
+  assert.deepEqual(value, { mode: "promotion", source: recovery31.FIXED.source, version: recovery31.FIXED.version,
+    releaseId: recovery31.FIXED.releaseId, runId: recovery31.FIXED.runId, attempt: 1 }, "Recovery is limited to its original release");
+  const restore = options.restore || out.download, readLog = options.readLog || jobLog;
+  const originalRun = request(`actions/runs/${value.runId}`), originalCtx = releaseContext(value, originalRun);
+  out.runIdentity(originalCtx, originalRun); assert.equal(originalRun.conclusion, "failure");
+  controller(originalCtx.controller, base, "release.yml", RELEASE_BLOB, request);
+  controller(finalizer31.RECOVERY_CONTROLLER, base, "replace-v20261031.yml", RECOVERY31_BLOB, request);
+  controller(FINALIZER31_CONTROLLER, base, "finalize-salvaged-v20261031.yml", FINALIZER31_BLOB, request);
+  controller(PUBLISHER31_CONTROLLER, base, "publish-v31-preserved.yml", PUBLISHER31_BLOB, request);
+  const retained = publish31.inspect(request, readLog, restore);
+  assert.equal(retained.releaseId, value.releaseId);
+  const reservation = retained.reservation, manifest = retained.manifest, release = request(`releases/${value.releaseId}`);
+  assert.equal(release.draft, false); assert.equal(release.tag_name, originalCtx.finalTag);
+  assert.equal(release.target_commitish, value.source); sourceReceipt(reservation, request, readLog);
+  finalizer31.verifyManifest(manifest, release, reservation); assert.equal(release.assets.length, 7);
+  const identity = asset => ({ id: asset.id, name: asset.name, size: asset.size, digest: asset.digest, state: asset.state });
+  const identities = release.assets.map(identity).sort((a, b) => a.name.localeCompare(b.name));
+  assert.deepEqual(identities, retained.assets);
+  const build = finalizer31.recoveryRun(request), windowsProof = windows31.evidence(request, readLog), linuxProof = linux31.evidence(request, readLog);
+  recovered31Targets(build, manifest, windowsProof, linuxProof);
+  const assembler = request(`actions/runs/${FINALIZER31_RUN}`);
+  assert.equal(assembler.id, FINALIZER31_RUN); assert.equal(assembler.conclusion, "failure");
+  assert.deepEqual(retained.assembler, { runId: assembler.id, attempt: assembler.run_attempt, controller: assembler.head_sha });
+  const run = request(`actions/runs/${PUBLISHER31_RUN}`);
+  assert.equal(run.id, PUBLISHER31_RUN); assert.equal(run.repository.full_name, REPOSITORY);
+  assert.equal(run.event, "workflow_dispatch"); assert.equal(out.workflow(run.path), publish31.WORKFLOW);
+  assert.equal(run.head_branch, "main"); assert.equal(run.head_sha, PUBLISHER31_CONTROLLER);
+  assert.equal(run.display_title, "Publish Bodhi v2026.10.31 preserved assets");
+  assert.equal(run.status, "completed"); assert.equal(run.conclusion, "success");
+  const jobs = out.pages(`actions/runs/${run.id}/jobs?filter=all`, "jobs", request);
+  assert.ok(jobs.length && jobs.every(job => job.name === publish31.JOB && job.run_id === run.id && job.head_sha === run.head_sha));
+  const selected = jobs.filter(job => job.run_attempt === run.run_attempt); assert.equal(selected.length, 1);
+  out.passed(selected[0], ["Verify original evidence and publish its reserved draft"]);
+  const physical = source.executionOrigin(selected[0], jobs);
+  out.passed(physical, ["Verify original evidence and publish its reserved draft"]);
+  assert.equal(request(`git/ref/tags/${originalCtx.finalTag}`)?.object?.sha, value.source);
+  return { kind: "bodhi-main-promotion/v31-recovery", source: value.source, controller: originalCtx.controller, runId: value.runId,
+    attempt: value.attempt, version: value.version, releaseId: value.releaseId, reservation, originalRun: runReceipt(originalRun),
+    recovery31: runReceipt(build.run), windows31: runReceipt(windowsProof.run), linux31: runReceipt(linuxProof.run),
+    finalizer31: runReceipt(assembler), publisher31: runReceipt(run), manifestSha256: out.sha256(out.bytes(manifest)), assets: identities };
+}
 function published(value, base, request = readOnly, options = {}) {
   assert.equal(value.mode, "promotion");
+  if (value.version === recovery31.FIXED.version && value.runId === recovery31.FIXED.runId)
+    return published31(value, base, request, options);
   const original = request(`actions/runs/${id(value.runId)}`), ctx = releaseContext(value, original);
   out.runIdentity(ctx, original); assert.equal(original.status, "completed");
-  controller(ctx.controller, base, "release.yml", RELEASE_BLOB, request);
+  controller(ctx.controller, base, "release.yml", [RELEASE_BLOB, CURRENT_RELEASE_BLOB], request);
   const release = request(`releases/${id(value.releaseId)}`);
   assert.equal(release?.id, id(value.releaseId)); const reservation = out.releaseReservation(release, ctx);
   const read = options.readManifest || finalizer.readManifest;
@@ -241,8 +344,18 @@ function verifyMain({ pullRequest, snapshot }, request = readOnly, options = {})
     const release = request(`releases/${value.releaseId}`);
     const ctx = releaseContext(value, { head_sha: proof.controller });
     assert.deepEqual(out.releaseReservation(release, ctx), proof.reservation, "Release reservation changed during Main admission");
-    const manifest = (options.readManifest || finalizer.readManifest)(release.assets.find(asset => asset.name === MANIFEST)?.id);
-    finalizer.verifyPublished(ctx, release, manifest); assert.equal(out.sha256(out.bytes(manifest)), proof.manifestSha256);
+    const isRecovery31 = proof.kind === "bodhi-main-promotion/v31-recovery";
+    const name = isRecovery31 ? finalizer31.MANIFEST : MANIFEST;
+    const manifest = (options.readManifest || finalizer.readManifest)(release.assets.find(asset => asset.name === name)?.id);
+    if (isRecovery31) {
+      finalizer31.verifyManifest(manifest, release, proof.reservation);
+      assert.deepEqual(runReceipt(request(`actions/runs/${proof.recovery31.id}`)), proof.recovery31, "Build recovery changed during Main admission");
+      assert.deepEqual(runReceipt(request(`actions/runs/${proof.windows31.id}`)), proof.windows31, "Windows validation changed during Main admission");
+      assert.deepEqual(runReceipt(request(`actions/runs/${proof.linux31.id}`)), proof.linux31, "Linux validation changed during Main admission");
+      assert.deepEqual(runReceipt(request(`actions/runs/${proof.finalizer31.id}`)), proof.finalizer31, "Finalizer changed during Main admission");
+      assert.deepEqual(runReceipt(request(`actions/runs/${proof.publisher31.id}`)), proof.publisher31, "Publisher changed during Main admission");
+    } else finalizer.verifyPublished(ctx, release, manifest);
+    assert.equal(out.sha256(out.bytes(manifest)), proof.manifestSha256);
     assert.deepEqual(release.assets.map(({ id, name, size, digest, state }) => ({ id, name, size, digest, state })).sort((a, b) => a.name.localeCompare(b.name)), proof.assets);
     assert.deepEqual(runReceipt(request(`actions/runs/${value.runId}`)), proof.originalRun, "Release run changed during Main admission");
     if (proof.recovery) assert.deepEqual(runReceipt(request(`actions/runs/${proof.recovery.run.id}`)), proof.recovery.run, "Recovery run changed during Main admission");
@@ -286,5 +399,6 @@ function main() {
   assert.deepEqual(runtime(), identity, "Main execution changed while admitting source");
   console.log(JSON.stringify({ ...proof, runtime: identity }, null, 2));
 }
-module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage, sourceReceipt, published, bootstrap, verifyMain };
+module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage,
+  sourceReceipt, recovered31Targets, published31, published, bootstrap, verifyMain };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi main admission: ${error.message}`); process.exitCode = 1; } }
