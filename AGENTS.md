@@ -4,11 +4,8 @@ Use one owner, Issue, branch and isolated worktree per acceptance slice. Preserv
 other workers' checkouts, outputs and original failure evidence. Feature and
 integration PRs target `dev`; `main` records stable source and published versions.
 Follow [releasing.md](docs/releasing.md) for current commands and activation state.
-The complete common [delivery-flow/v1](docs/delivery-workflow.md) and
-[Actions ownership audit](docs/ci-workflow-audit.md) are stored here. Every agent
-uses the same phase ownership and source/evidence checkpoint procedure together
-with Bodhi's local commands. The shared migration table is historical; verify
-current activation in the local guide and live workflows before releasing.
+The common phase contract is
+[delivery-flow/v1](https://github.com/bigduu/Zenith/blob/main/docs/delivery-workflow.md).
 
 ## Phase ownership
 
@@ -35,12 +32,9 @@ The feature workflow implements the first phase. The prepared schema-v2
 and publication (#122). It requires the real trusted `main` controller `C`, an
 explicit separate product checkout `S`, a confirmed protected-dev PR receipt and
 its exact successful feature run. Never relabel GitHub's SHA/ref variables.
-The Main admission boundary (#128) verifies completed v2 publication and exact
-Git postimages. The source-only bootstrap (#132/PR134) installed its reviewed
-controls on main `19f11149`; strict Main Admission protection is active. The
-actual negative PR135 was blocked and closed without merge. A new-contract
-production release and positive completed-release promotion remain unexercised;
-the negative probe is not their acceptance evidence.
+The prepared Main admission boundary (#128) verifies completed v2 publication
+and exact Git postimages. Its bootstrap proof is a read-only component; initial
+trusted-D wiring, protection and production activation remain separate Ops.
 An unconfirmed merge, including the historical #118 metadata
 inconsistency, fails admission even when Git trees match.
 
@@ -85,11 +79,14 @@ a fake release cut merely to inspect an accepted Dev source.
   controller/run/jobs, retained reservation/target/publication evidence, actual
   immutable ZIP/file hashes and accepted source/locks. Recovery uses the existing
   publication-only failure route and authenticates original C1 and recovery C2.
+  One user-authorized exception replaces the lost 2026.10.31 macOS output;
+  its manifest preserves the original failed run, the lost build's real job,
+  and the separate replacement run and artifact identities.
   Missing originals, a latest logical failure, replacement bytes or unknown API
   state stop admission. Main never compiles, tests, packages or republishes.
 - Main's actual merge M must equal complete S, or complete S overlaid by the
   entire literal controller closure from its current base B. Complete S requires
-  an admitted Main-capable producer and all eleven ordinary control files; an
+  an admitted Main-capable producer and the entire controller closure; an
   Alpha release instead retains the entire B closure so future Target admission
   remains available. Preserve M/tree
   separately; C need not be S's ancestor. No per-file mixture or product/lock/
@@ -132,11 +129,8 @@ the original physical times; current protection cannot waive a post-merge run.
   An active current selector may revalidate originals after a selector-only API
   failure whose Build/capture/retention steps never ran. Finalization still
   requires the latest logical job to succeed; real Build failures remain fatal.
-- Native builders have read permissions only. They authenticate the original
-  preflight reservation artifact, job and frozen source instead of querying the
-  private draft; finalization still verifies the live draft and exact receipt.
-  Publisher credentials belong to version reservation and finalization/recovery.
-  Preserve original release and
+- Native builders have read permissions only; publisher credentials belong to
+  version reservation and finalization/recovery. Preserve original release and
   asset IDs after partial uploads or lost responses. Never delete/overwrite
   conflicting assets to make a rerun pass. Cache contents are not release proof.
 - Immediately before publication, recheck the frozen ref/tree, dev protection
