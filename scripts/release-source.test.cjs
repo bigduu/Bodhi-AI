@@ -179,6 +179,16 @@ test("a third logical projection still preserves the earliest physical execution
   const third = { ...structuredClone(job), id: 300, run_attempt: 3 };
   assert.equal(executionOrigin(third, [third, second, job]).id, 100);
 });
+const beforeJobStart = (job, ms) => new Date(Date.parse(job.started_at) - ms).toISOString();
+test("one-second runner setup skew retains the exact physical execution", () => {
+  const original = timed(fixture().jobs[0]);
+  original.steps[0].name = "Set up job";
+  original.steps[0].started_at = beforeJobStart(original, 1000);
+  const logical = { ...structuredClone(original), id: 200, run_attempt: 2 };
+  assert.equal(executionOrigin(logical, [original, logical]).id, 100);
+  logical.steps[0].started_at = logical.started_at;
+  assert.equal(executionOrigin(logical, [original, logical]).id, 200);
+});
 for (const [name, mutate] of [
   ["different job execution", job => timed(job, 60)],
   ["different step execution", job => { job.steps[0].completed_at = job.steps[0].started_at; }],
@@ -193,6 +203,21 @@ for (const [name, mutate] of [
   ["missing step times", job => { delete job.steps[0].completed_at; }],
   ["invalid step times", job => { job.steps[0].completed_at = "invalid"; }],
   ["step outside job", job => { job.steps[0].completed_at = "2026-10-27T18:14:55.000Z"; }],
+  ["non-setup step starting early", job => { job.steps[0].started_at = beforeJobStart(job, 1000); }],
+  ["non-first setup step starting early", job => {
+    job.steps[0].name = "Set up job";
+    job.steps[0].number = 99;
+    job.steps[0].started_at = beforeJobStart(job, 1000);
+  }],
+  ["setup starting more than one second early", job => {
+    job.steps[0].name = "Set up job";
+    job.steps[0].started_at = beforeJobStart(job, 2000);
+  }],
+  ["setup entirely before the job", job => {
+    job.steps[0].name = "Set up job";
+    job.steps[0].started_at = beforeJobStart(job, 1000);
+    job.steps[0].completed_at = beforeJobStart(job, 1);
+  }],
   ["incomplete step", job => { job.steps[0].status = "in_progress"; }],
 ]) test(`unprovable ${name} cannot authorize an original execution`, () => {
   const original = timed(fixture().jobs[0]);
