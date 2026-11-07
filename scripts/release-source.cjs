@@ -140,7 +140,11 @@ function executionOrigin(logical, matching) {
       const skipped = step.conclusion === "skipped" && step.started_at === null && step.completed_at === null;
       if (!skipped) {
         const first = Date.parse(step.started_at), last = Date.parse(step.completed_at);
-        if (!Number.isFinite(first) || !Number.isFinite(last) || first < start || last > end || first > last) return null;
+        // GitHub can record its first runner setup step one second before the job.
+        const validSetupOffset = step.number === 1 && step.name === "Set up job" && step.conclusion === "success" &&
+          first >= start - 1000 && last >= start;
+        if (!Number.isFinite(first) || !Number.isFinite(last) || (first < start && !validSetupOffset) ||
+            last > end || first > last) return null;
       }
       steps.push({ number: step.number, name: step.name, status: step.status, conclusion: step.conclusion,
         started_at: step.started_at, completed_at: step.completed_at });
