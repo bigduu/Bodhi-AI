@@ -3,6 +3,8 @@ use crate::command::image::read_local_image;
 use crate::command::notification::show_desktop_notification;
 use crate::command::window::{is_main_window_focused, set_window_theme};
 use std::time::Duration;
+#[cfg(target_os = "macos")]
+use tauri::menu::WINDOW_SUBMENU_ID;
 use tauri::menu::{Menu, MenuItem, Submenu, HELP_SUBMENU_ID};
 use tauri::Manager;
 use tauri::{App, Runtime};
@@ -19,6 +21,8 @@ pub mod cli_install;
 pub mod command;
 pub mod frontend;
 pub mod sidecar;
+#[cfg(target_os = "macos")]
+mod webview_recovery;
 
 /// Default port for the bamboo sidecar backend.
 /// Centralized here so the value is defined in exactly one place.
@@ -175,6 +179,9 @@ fn ready_frontend_url(
 }
 
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    webview_recovery::observe(app.handle());
+
     let frontend = match frontend::resolve(app.handle()) {
         Ok(frontend) => frontend,
         Err(error) => {
@@ -268,12 +275,27 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
 }
 
 /// Build the app menu: the platform default menu (keeps the standard Edit
-/// clipboard roles — macOS needs them for Cmd+C/V in the webview) with the
-/// CLI-install item appended under Help.
+/// clipboard roles, which macOS needs for Cmd+C/V in the webview) with the
+/// shell's own menu items.
 fn build_app_menu<R: Runtime>(
     handle: &tauri::AppHandle<R>,
 ) -> std::result::Result<Menu<R>, tauri::Error> {
     let menu = Menu::default(handle)?;
+    #[cfg(target_os = "macos")]
+    if let Some(window_menu) = menu
+        .get(WINDOW_SUBMENU_ID)
+        .as_ref()
+        .and_then(|item| item.as_submenu())
+    {
+        window_menu.append(&MenuItem::with_id(
+            handle,
+            webview_recovery::RELOAD_MENU_ID,
+            "Reload Page",
+            true,
+            Some("Cmd+R"),
+        )?)?;
+    }
+
     let install_item = MenuItem::with_id(
         handle,
         cli_install::MENU_ID,
@@ -344,6 +366,10 @@ pub fn run() {
             if event.id() == cli_install::MENU_ID {
                 cli_install::run_from_menu(app);
             }
+            #[cfg(target_os = "macos")]
+            if event.id() == webview_recovery::RELOAD_MENU_ID {
+                webview_recovery::reload(app);
+            }
         })
         .setup(|app| {
             // Register global shortcut: Cmd+Shift+Space (or Ctrl+Shift+Space on Windows/Linux)
@@ -379,6 +405,10 @@ pub fn run() {
             // bamboo sidecar goes with us. The stdin death-link is the crash-safe
             // backstop; this is the clean path.
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                #[cfg(target_os = "macos")]
+                if matches!(event, tauri::RunEvent::Exit) {
+                    webview_recovery::remove_observers();
+                }
                 sidecar::kill(app_handle);
             }
             tauri::RunEvent::WindowEvent {
