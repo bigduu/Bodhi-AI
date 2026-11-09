@@ -85,13 +85,16 @@ fn request_redraw<R: Runtime>(app: &AppHandle<R>, reason: &str) {
         return;
     }
 
-    let result = window
-        .with_webview(|platform| {
-            // Tauri lends a live WKWebView (an NSView subclass) on the main thread.
-            let view = unsafe { &*platform.inner().cast::<NSView>() };
-            view.setNeedsDisplay(true);
-        })
-        .and_then(|()| window.eval(REPAINT_SCRIPT));
+    let result = window.ns_view().and_then(|content_view| {
+        // Tauri lends the live window's content view on AppKit's main queue.
+        let view = unsafe { &*content_view.cast::<NSView>() };
+        view.setNeedsDisplay(true);
+        // Wry places the WKWebView directly inside this content view.
+        for subview in view.subviews().iter() {
+            subview.setNeedsDisplay(true);
+        }
+        window.eval(REPAINT_SCRIPT)
+    });
 
     match result {
         Ok(()) => record(&format!("Redraw requested after {reason}")),
