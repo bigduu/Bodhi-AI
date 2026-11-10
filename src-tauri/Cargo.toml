@@ -55,6 +55,7 @@ tauri-plugin-global-shortcut = { workspace = true }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-process = { workspace = true }
 tauri-plugin-notification = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 uuid = { workspace = true }
@@ -94,6 +95,3 @@ default = []
 # Enable the Tauri Web Inspector (devtools). Intended for development/debug
 # builds only; keep it out of `default` so release builds ship without it.
 dev = ["tauri/devtools"]
-
-[dev-dependencies]
-tempfile = { workspace = true }
