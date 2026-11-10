@@ -23,6 +23,7 @@ pub mod frontend;
 pub mod sidecar;
 #[cfg(target_os = "macos")]
 mod webview_recovery;
+mod window_size;
 
 /// Default port for the bamboo sidecar backend.
 /// Centralized here so the value is defined in exactly one place.
@@ -179,6 +180,8 @@ fn ready_frontend_url(
 }
 
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    window_size::create_main_window(app)?;
+
     #[cfg(target_os = "macos")]
     webview_recovery::observe(app.handle());
 
@@ -348,6 +351,7 @@ pub fn run() {
 
     let dialog_plugin = tauri_plugin_dialog::init();
     let fs_plugin = tauri_plugin_fs::init();
+    let mut last_window_size = None;
 
     tauri::Builder::default()
         .append_invoke_initialization_script(if frontend::uses_managed_frontend() {
@@ -400,13 +404,16 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| match &event {
+        .run(move |app_handle, event| match &event {
             // App is exiting (incl. after `app_handle.exit(0)` below): make sure the
             // bamboo sidecar goes with us. The stdin death-link is the crash-safe
             // backstop; this is the clean path.
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-                #[cfg(target_os = "macos")]
                 if matches!(event, tauri::RunEvent::Exit) {
+                    if let Err(error) = window_size::save(app_handle, last_window_size) {
+                        log::warn!("Could not save main window size: {error}");
+                    }
+                    #[cfg(target_os = "macos")]
                     webview_recovery::remove_observers();
                 }
                 sidecar::kill(app_handle);
@@ -416,6 +423,16 @@ pub fn run() {
                 event: window_event,
                 ..
             } => {
+                if label == "main"
+                    && matches!(
+                        window_event,
+                        tauri::WindowEvent::Resized(_)
+                            | tauri::WindowEvent::ScaleFactorChanged { .. }
+                            | tauri::WindowEvent::CloseRequested { .. }
+                    )
+                {
+                    last_window_size = window_size::capture(app_handle).or(last_window_size);
+                }
                 let is_close_requested =
                     matches!(window_event, tauri::WindowEvent::CloseRequested { .. });
                 if should_exit_on_main_window_close(label, is_close_requested) {
