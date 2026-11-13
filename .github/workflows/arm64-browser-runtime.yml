@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/arm64-browser-runtime.yml"
       - "scripts/bamboo-sidecar.cjs"
+      - "scripts/bamboo-sidecar-lock.json"
       - "scripts/browser-runtime.cjs"
       - "scripts/browser-runtime.lock.json"
       - "scripts/browser-runtime.test.cjs"
