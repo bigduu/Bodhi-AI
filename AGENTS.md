@@ -27,21 +27,21 @@ The common phase contract is
   and promotion PR/merge references. Never mutate a frozen release head or add
   a post-build JSON source commit to create that record.
 
-The feature workflow implements the first phase. The prepared schema-v2
-`release.yml` connects frozen-dev admission (#121) to original-output retention
-and publication (#122). It requires the real trusted `main` controller `C`, an
+The feature workflow implements the first phase. The `release.yml` controller
+connects frozen-dev admission (#121) to original-output retention and
+publication (#122). It requires the real trusted `main` controller `C`, an
 explicit separate product checkout `S`, a confirmed protected-dev PR receipt and
 its exact successful feature run. Never relabel GitHub's SHA/ref variables.
-The prepared Main admission boundary (#128) verifies completed v2 publication
-and exact Git postimages. Its bootstrap proof is a read-only component; initial
-trusted-D wiring, protection and production activation remain separate Ops.
+The Main admission boundary (#128) verifies completed original publication and
+exact Git postimages. Its historical bootstrap proof remains a read-only component.
 An unconfirmed merge, including the historical #118 metadata
 inconsistency, fails admission even when Git trees match.
 
-New releases use v2 only. Preserve `scripts/release-finalizer.cjs` byte-for-byte
-and its frozen v1 workflow fixtures; `recover-release.yml` selects v1 explicitly
-for historical runs, including the active #116 train. Do not reinterpret v1
-runtime gates or original artifact identities as v2 receipts.
+The active source workflow selects three-target v2. Issue #225 tracks five-target
+v3 admission. It requires an accepted five-target CI run and published Bamboo
+sidecars for those targets. Preserve `scripts/release-finalizer.cjs` byte-for-byte
+and its frozen v1 fixtures. Select the original evidence schema for recovery,
+including v1 for the historical #116 run.
 
 GitHub may copy a successful job into a later attempt without executing it
 again. Preserve its original physical job/attempt and logs, and record the latest
@@ -75,7 +75,7 @@ a fake release cut merely to inspect an accepted Dev source.
 - Bind the trigger event's locator to current API metadata and final fresh
   reads. Locator edits require their own `edited` event check; an old run may
   not authorize a new locator. Candidate P/S/M code is never executed by Target.
-- Normal promotion requires the completed seven-asset v2 release, original
+- Normal promotion requires the completed original release for its contract, original
   controller/run/jobs, retained reservation/target/publication evidence, actual
   immutable ZIP/file hashes and accepted source/locks. Recovery uses the existing
   publication-only failure route and authenticates original C1 and recovery C2.
@@ -93,10 +93,10 @@ a fake release cut merely to inspect an accepted Dev source.
   version exception is allowed. The bootstrap component instead accepts only
   the fixed legacy base plus the complete reviewed control closure from an
   actually accepted new-context Dev D, leaving all other Main entries unchanged.
-- The original context workflow and the Main-capable workflow are two finite
-  producer graphs. Feature acceptance still requires six actual jobs; only the
-  latter may additionally contain the known skipped Main job. Never replace a
-  real test with a green stub or accept an unregistered/skipped producer.
+- Each reviewed CI workflow blob owns its feature evidence graph. Three-target
+  admission requires six executed jobs and five-target admission requires eight.
+  Main-capable producers also record the skipped Main job on Dev. Never replace
+  a real test with a green stub or accept an unregistered producer.
 
 ## Inputs and evidence
 

@@ -8,11 +8,14 @@ const vm = require("node:vm");
 const { execFileSync, spawnSync } = require("node:child_process");
 const out = require("./release-output.cjs");
 const finalizer = require("./release-finalizer-v2.cjs");
-const { FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
+const { FEATURE_WORKFLOW_BLOB, ARM64_FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB,
+  ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
 const C = "c".repeat(40), S = "a".repeat(40), T = "b".repeat(40);
 const env = { GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: "2026.10.30", EXPECTED_SOURCE_SHA: S,
   GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "2", GITHUB_WORKFLOW_SHA: C };
 const ctx = out.context(env);
+const ARM_LINUX = "aarch64-unknown-linux-gnu", ARM_WINDOWS = "aarch64-pc-windows-msvc";
+const v3Context = out.releaseContext({ ...ctx, v3FeatureWorkflowBlob: ARM64_FEATURE_WORKFLOW_BLOB });
 const clone = value => structuredClone(value);
 const restored = [];
 test.afterEach(() => {
@@ -25,12 +28,13 @@ function directory(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-original-test-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root;
 }
-function fixture() {
+function fixture(ctx = out.context(env)) {
+  const contract = out.releaseContract(ctx);
   const proof = { schemaVersion: ADMISSION_SCHEMA, kind: ADMISSION_KIND, repository: out.REPOSITORY, source: S, tree: T, base: "d".repeat(40), head: "e".repeat(40), snapshot: "f".repeat(40),
-    observedDev: S, currentDev: S, pullRequest: 17, runId: 20, attempt: 1, workflowBlob: FEATURE_WORKFLOW_BLOB,
-    jobs: ["Unit Tests (Node)", ...out.NATIVE_TARGETS.map(target => `Unit and E2E (${target})`), "Unit Tests", "E2E Tests"]
+    observedDev: S, currentDev: S, pullRequest: 17, runId: 20, attempt: 1, workflowBlob: ctx.v3FeatureWorkflowBlob ?? FEATURE_WORKFLOW_BLOB,
+    jobs: ["Unit Tests (Node)", ...contract.targets.map(target => `Unit and E2E (${target})`), "Unit Tests", "E2E Tests"]
       .map((name, index) => ({ id: index + 500, name, attempt: 1, logical: { id: index + 500, attempt: 1 } })) };
-  const reservation = { schemaVersion: 2, kind: "bodhi-original-release", repository: out.REPOSITORY, source: S, tree: T,
+  const reservation = { schemaVersion: contract.schemaVersion, kind: "bodhi-original-release", repository: out.REPOSITORY, source: S, tree: T,
     controller: C, version: ctx.version, runId: ctx.runId, preflight: { jobId: 10, attempt: 1 }, admission: proof,
     lockHashes: { "scripts/bamboo-sidecar-lock.json": "1".repeat(64), "scripts/frontend-package-lock.json": "2".repeat(64) },
     frontend: JSON.parse(fs.readFileSync(path.join(__dirname, "frontend-package-lock.json"))) };
@@ -40,32 +44,33 @@ function fixture() {
       started_at: new Date(Date.parse("2026-10-27T00:00:10Z") + index * 10000).toISOString(),
       completed_at: new Date(Date.parse("2026-10-27T00:00:15Z") + index * 10000).toISOString() })) });
   const jobs = [job(10, "Reserve admitted release", 1, [out.PREFLIGHT, out.RESERVATION]),
-    ...out.NATIVE_TARGETS.map((target, index) => job(index + 11, `Build original (${target})`, index === 1 ? 2 : 1,
+    ...contract.targets.map((target, index) => job(index + 11, `Build original (${target})`, index === 1 ? 2 : 1,
       ["Select retained target output", "Verify source and stamp reserved version", out.BUILD, out.CAPTURE, out.RETAIN])),
-    job(14, "Publish original release", 2, [], true)];
-  const f = { reservation, job, jobs, run: { id: ctx.runId, run_attempt: ctx.attempt, repository: { full_name: out.REPOSITORY },
+    job(11 + contract.targets.length, "Publish original release", 2, [], true)];
+  const f = { ctx, reservation, job, jobs, run: { id: ctx.runId, run_attempt: ctx.attempt, repository: { full_name: out.REPOSITORY },
     path: `${out.REPOSITORY}/.github/workflows/release.yml@refs/heads/main`, event: "workflow_dispatch", head_sha: C, head_branch: "main",
-    display_title: `Bodhi v2 v${ctx.version} @ ${S}`, status: "in_progress", conclusion: null }, calls: [], artifacts: [], files: {}, manifestBytes: {}, uploads: [], tag: null };
+    display_title: `Bodhi v${contract.schemaVersion} v${ctx.version} @ ${S}`, status: "in_progress", conclusion: null }, calls: [], artifacts: [], files: {}, manifestBytes: {}, uploads: [], tag: null };
   f.release = { id: 99, url: `https://api.github.com/repos/${out.REPOSITORY}/releases/99`, html_url: `https://github.com/${out.REPOSITORY}/releases/tag/${ctx.draftTag}`,
     upload_url: `https://uploads.github.com/repos/${out.REPOSITORY}/releases/99/assets{?name,label}`, draft: true, prerelease: false,
     target_commitish: S, tag_name: ctx.draftTag, body: JSON.stringify(reservation), assets: [] };
   const artifact = (id, name) => ({ id, name, expired: false, digest: `sha256:${String(id).padStart(64, "0")}`, size_in_bytes: 3000,
     created_at: "2026-10-27T00:04:00Z", workflow_run: { id: ctx.runId, head_sha: C } });
   f.artifacts.push(artifact(100, ctx.reservationName)); f.files[100] = { "reservation.json": out.bytes({ releaseId: 99, reservation }) };
-  for (let index = 0; index < out.NATIVE_TARGETS.length; index++) {
-    const target = out.NATIVE_TARGETS[index], originalJob = jobs[index + 1], contents = {};
+  for (let index = 0; index < contract.targets.length; index++) {
+    const target = contract.targets[index], originalJob = jobs[index + 1], contents = {};
     const files = out.names(ctx.version, target).map((name, fileIndex) => {
       const data = Buffer.alloc(1024 ** 2, index * 4 + fileIndex + 1); contents[name] = data;
       return { name, size: data.length, sha256: out.sha256(data) };
     });
-    const receipt = { schemaVersion: 2, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: originalJob.id,
-      attempt: originalJob.run_attempt, checks: out.checks(target), files };
+    const receipt = { schemaVersion: contract.schemaVersion, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: originalJob.id,
+      attempt: originalJob.run_attempt, checks: out.checks(target, contract.schemaVersion), files };
     contents["target-receipt.json"] = out.bytes(receipt);
     f.artifacts.push(artifact(101 + index, out.artifactName(ctx, target, originalJob.run_attempt))); f.files[101 + index] = contents;
   }
   f.extraReleases = []; return f;
 }
 function adapters(f) {
+  const { ctx } = f;
   const request = (endpoint, method = "GET", body) => {
     f.calls.push({ endpoint, method, body }); if (f.failEndpoint === endpoint) throw new Error("GitHub unavailable (HTTP 503)");
     if (endpoint === `actions/runs/${ctx.runId}`) return clone(f.run);
@@ -73,7 +78,7 @@ function adapters(f) {
     if (endpoint.startsWith(`actions/runs/${ctx.runId}/artifacts?`)) return { total_count: f.artifacts.length, artifacts: clone(f.artifacts) };
     if (endpoint.startsWith("releases?")) return clone([...(f.release ? [f.release] : []), ...f.extraReleases]);
     if (endpoint === "releases" && method === "POST") {
-      assert.equal(f.release, null); f.release = { ...fixture().release, ...clone(body) };
+      assert.equal(f.release, null); f.release = { ...fixture(ctx).release, ...clone(body) };
       if (f.lostCreate) throw new Error("lost create response"); return clone(f.release);
     }
     if (endpoint === "releases/99") {
@@ -117,8 +122,149 @@ function adapters(f) {
 }
 function assemble(t, f) {
   const a = adapters(f), root = directory(t);
-  return finalizer.assemble(ctx, path.join(root, "evidence.json"), a.request, a.restore, a.send, a.read);
+  return finalizer.assemble(f.ctx, path.join(root, "evidence.json"), a.request, a.restore, a.send, a.read);
 }
+test("the unbound CLI context defaults to v2 while a reviewed v3 context names its ARM64 receipts and installers", () => {
+  const historical = out.context({ ...env, BODHI_RELEASE_SCHEMA: "3", v3FeatureWorkflowBlob: v3Context.v3FeatureWorkflowBlob });
+  assert.deepEqual(out.releaseContract(historical).targets, out.NATIVE_TARGETS);
+  assert.equal(out.releaseContract(historical).manifest, out.MANIFEST);
+  assert.equal(out.releaseContract(v3Context).manifest, "bodhi-release-v3.json");
+  assert.deepEqual(out.releaseContract(v3Context).targets, [...out.NATIVE_TARGETS, ARM_LINUX, ARM_WINDOWS]);
+  assert.equal(v3Context.draftTag, "bodhi-v3-draft-v2026.10.30-42");
+  assert.equal(v3Context.reservationName, "bodhi-v3-reservation-42");
+  assert.equal(v3Context.evidenceName, "bodhi-v3-evidence-42-2");
+  assert.equal(out.artifactName(v3Context, ARM_LINUX, 1), `bodhi-v3-target-42-1-${ARM_LINUX}`);
+  assert.throws(() => out.artifactName(historical, ARM_WINDOWS, 1), /outside the selected release contract/);
+  assert.deepEqual(out.names(ctx.version, ARM_LINUX), [
+    "Bodhi.AI_2026.10.30_aarch64.AppImage", "Bodhi.AI_2026.10.30_arm64.deb", "Bodhi.AI-2026.10.30-1.aarch64.rpm",
+  ]);
+  assert.deepEqual(out.names(ctx.version, ARM_WINDOWS), ["Bodhi.AI_2026.10.30_arm64-setup.exe"]);
+  assert.throws(() => out.releaseContext({ ...ctx, v3FeatureWorkflowBlob: FEATURE_WORKFLOW_BLOB }), /reviewed v3 feature workflow blob/);
+});
+test("a trusted dispatcher selects the matrix from the frozen CI workflow, including on recovery", () => {
+  const recoveryController = "d".repeat(40);
+  const original = { ...fixture().run, display_title: `Bodhi original v${ctx.version} @ ${S}` };
+  let producer = out.ARM64_RELEASE_WORKFLOW_BLOB, feature = FEATURE_WORKFLOW_BLOB;
+  let history = { status: "ahead", behind_by: 0, merge_base_commit: { sha: C } };
+  const request = endpoint => {
+    if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) return { sha: producer };
+    if (endpoint === `contents/.github/workflows/ci.yml?ref=${S}`) return { sha: feature };
+    if (endpoint === `actions/runs/${ctx.runId}`) return original;
+    assert.equal(endpoint, `compare/${C}...${recoveryController}`); return history;
+  };
+  const compatible = out.originalContext({ ...ctx, v3FeatureWorkflowBlob: ARM64_FEATURE_WORKFLOW_BLOB }, C, request);
+  assert.deepEqual(out.releaseMatrix(compatible).include.map(row => row.target), out.NATIVE_TARGETS);
+  assert.equal(out.runIdentity(compatible, original), original);
+  feature = ARM64_FEATURE_WORKFLOW_BLOB;
+  const native = finalizer.recoverContext(ctx, recoveryController, request);
+  assert.equal(out.releaseContract(native).schemaVersion, 3);
+  assert.deepEqual(out.releaseMatrix(native).include.slice(-2), [
+    { target: ARM_LINUX, platform: "ubuntu-22.04-arm", bundles: "appimage,deb,rpm" },
+    { target: ARM_WINDOWS, platform: "windows-11-arm", bundles: "nsis" },
+  ]);
+  history = { ...history, behind_by: 1 };
+  assert.throws(() => finalizer.recoverContext(ctx, recoveryController, request), /not in trusted Main history/);
+  feature = "a".repeat(40);
+  assert.throws(() => out.originalContext(ctx, C, request), /Unreviewed feature workflow/);
+  producer = out.V2_RELEASE_WORKFLOW_BLOB;
+  assert.equal(out.releaseContract(out.originalContext(native, C, request)).schemaVersion, 2);
+  producer = "c".repeat(40);
+  assert.throws(() => out.originalContext(ctx, C, request), /Unreviewed original workflow producer/);
+});
+test("Linux ARM64 validates package metadata using each format's architecture", () => {
+  const command = (expected, response) => (name, args) => {
+    assert.deepEqual([name, ...args], expected);
+    return response;
+  };
+  const deb = ["dpkg-deb", "-f", "installer.deb", "Version", "Architecture"];
+  const rpm = ["rpm", "-qp", "--queryformat", "%{VERSION}|%{RELEASE}|%{ARCH}", "installer.rpm"];
+  out.verifyLinuxPackage(command(deb, "Version: 2026.10.30\nArchitecture: arm64"), "deb", "installer.deb", ctx.version, ARM_LINUX);
+  out.verifyLinuxPackage(command(rpm, "2026.10.30|1|aarch64"), "rpm", "installer.rpm", ctx.version, ARM_LINUX);
+  assert.throws(() => out.verifyLinuxPackage(command(deb, "Version: 2026.10.30\nArchitecture: amd64"), "deb", "installer.deb", ctx.version, ARM_LINUX));
+  assert.throws(() => out.verifyLinuxPackage(command(rpm, "2026.10.30|1|arm64"), "rpm", "installer.rpm", ctx.version, ARM_LINUX));
+});
+test("v3 assembles five exact original targets and verifies all eleven retained release assets", t => {
+  const f = fixture(v3Context), a = adapters(f);
+  assert.equal(out.runIdentity(v3Context, f.run), f.run);
+  assert.throws(() => out.runIdentity(ctx, f.run));
+  const evidence = assemble(t, f);
+  assert.equal(evidence.schemaVersion, 3);
+  assert.equal(evidence.manifest.reservation.schemaVersion, 3);
+  assert.equal(evidence.manifest.reservation.admission.jobs.length, 8);
+  assert.deepEqual(evidence.manifest.targets.map(item => item.receipt.target), [...out.NATIVE_TARGETS, ARM_LINUX, ARM_WINDOWS]);
+  for (const item of evidence.manifest.targets.filter(item => !item.receipt.target.includes("darwin"))) {
+    assert.ok(item.receipt.checks.includes("installer-payload"));
+  }
+  assert.equal(evidence.assets.length, 11);
+  assert.equal(f.uploads.at(-1), "bodhi-release-v3.json");
+  assert.equal(f.uploads.length, 11);
+  const published = finalizer.publish(v3Context, evidence, a.request);
+  assert.equal(finalizer.verifyPublished(v3Context, published, evidence.manifest), evidence.manifest);
+  assert.throws(() => finalizer.verifyPublished(ctx, published, evidence.manifest));
+  const missing = { ...published, assets: published.assets.filter(asset => asset.name !== "Bodhi.AI_2026.10.30_arm64-setup.exe") };
+  assert.throws(() => finalizer.verifyPublished(v3Context, missing, evidence.manifest));
+  const duplicate = clone(evidence.manifest);
+  duplicate.targets[4].artifact.id = duplicate.targets[3].artifact.id;
+  assert.throws(() => finalizer.verifyManifest(duplicate, v3Context, published));
+  const missingPayload = clone(evidence.manifest);
+  missingPayload.targets[4].receipt.checks = out.checks(ARM_WINDOWS);
+  assert.throws(() => finalizer.verifyManifest(missingPayload, v3Context, published));
+});
+test("v3 refuses unrelated workflow evidence, mixed reservations and missing ARM64 originals", t => {
+  const f = fixture(v3Context), a = adapters(f);
+  assert.throws(() => out.verifyReservation(f.reservation, ctx));
+  assert.throws(() => out.verifyReservation(f.reservation, { ...v3Context, v3FeatureWorkflowBlob: "2".repeat(40) }), /reviewed v3 feature workflow blob/);
+  assert.throws(() => out.verifyReservation({ ...f.reservation, admission: { ...f.reservation.admission, workflowBlob: FEATURE_WORKFLOW_BLOB } },
+    v3Context), /differs from the reviewed feature workflow/);
+  assert.throws(() => out.verifyReservation({ ...f.reservation, admission: { ...f.reservation.admission, jobs: f.reservation.admission.jobs.slice(0, 6) } }, v3Context));
+  f.extraReleases = [{ id: 78, tag_name: ctx.draftTag }];
+  assert.throws(() => finalizer.available(v3Context, a.request, f.release), /reserved by another release/);
+  f.extraReleases = [];
+  f.artifacts = f.artifacts.filter(artifact => !artifact.name.endsWith(ARM_WINDOWS));
+  assert.throws(() => assemble(t, f), /Original artifact missing/);
+  assert.deepEqual(f.uploads, []);
+});
+test("v3 recovery selects its own retained evidence and preserves the original ARM64 jobs", t => {
+  const f = fixture(v3Context), a = adapters(f);
+  const evidence = assemble(t, f);
+  const publisher = f.jobs.at(-1);
+  Object.assign(publisher, f.job(publisher.id, publisher.name, v3Context.attempt, [finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH]));
+  publisher.conclusion = "failure";
+  publisher.steps.at(-1).conclusion = "failure";
+  f.run.status = "completed";
+  f.run.conclusion = "failure";
+  const retained = { id: 300, name: v3Context.evidenceName, expired: false, digest: "sha256:" + "3".repeat(64), size_in_bytes: 1234,
+    created_at: "2026-10-27T00:04:00Z", workflow_run: { id: v3Context.runId, head_sha: C } };
+  f.artifacts.push(retained);
+  f.files[retained.id] = { "evidence.json": out.bytes(evidence) };
+  assert.equal(finalizer.recoveryArtifact(v3Context, a.request).artifact.name, retained.name);
+  assert.equal(finalizer.publicationEvidence(v3Context, publisher, f.release, a.request, a.restore).artifact.id, retained.id);
+  for (const target of [ARM_LINUX, ARM_WINDOWS]) {
+    const original = out.selectTarget(v3Context, f.reservation, target, a.request, a.restore, true);
+    assert.equal(original.receipt.attempt, 1);
+    assert.deepEqual(original.receipt, evidence.manifest.targets.find(item => item.receipt.target === target).receipt);
+  }
+  assert.throws(() => finalizer.recoveryArtifact(ctx, a.request));
+});
+test("rerun preflight can restore the original reservation before its matrix expands", () => {
+  const f = fixture(), a = adapters(f);
+  f.jobs.push(f.job(90, "Reserve admitted release", ctx.attempt, [], true));
+  f.jobs.push(f.job(91, "Build original (${{ matrix.target }})", ctx.attempt, [], true));
+  assert.deepEqual(out.loadReservation(ctx, a.request, a.restore, { preflightOnly: true }).reservation, f.reservation);
+  assert.throws(() => out.loadReservation(ctx, a.request, a.restore), /Foreign release job/);
+  f.jobs[0].head_sha = S;
+  assert.throws(() => out.loadReservation(ctx, a.request, a.restore, { preflightOnly: true }), /Expected values to be strictly equal/);
+});
+test("an old skipped empty scheduler row cannot count as a target output", () => {
+  const f = fixture(), a = adapters(f);
+  const scheduler = { ...f.job(91, "Build original (${{ matrix.target }})", 1, []), conclusion: "skipped" };
+  f.jobs.push(scheduler);
+  assert.deepEqual(out.jobs(ctx, a.request), f.jobs.slice(0, -1));
+  scheduler.steps = [{ name: out.BUILD }];
+  assert.throws(() => out.jobs(ctx, a.request), /Foreign release job/);
+  scheduler.steps = []; scheduler.run_attempt = ctx.attempt;
+  assert.throws(() => out.jobs(ctx, a.request), /Foreign release job/);
+});
 test("version reservation precedes every original build and binds separate controller/product", () => {
   const f = fixture(), a = adapters(f), { reservation } = f;
   f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
@@ -738,6 +884,7 @@ const endpoint=process.argv.find(v=>v.startsWith('repos/')).slice('repos/${out.R
 if(endpoint.endsWith('/zip')) { process.stdout.write(fs.readFileSync(f.zip[endpoint.split('/')[2]])); process.exit(0); }
 let result;
 if(endpoint==='actions/runs/42') result=f.run;
+else if(endpoint==='contents/.github/workflows/release.yml?ref=${actualC}') result={sha:'${out.V2_RELEASE_WORKFLOW_BLOB}'};
 else if(endpoint.includes('/jobs?')) result={total_count:f.jobs.length,jobs:f.jobs};
 else if(endpoint.includes('/artifacts?')) result={total_count:f.artifacts.length,artifacts:f.artifacts};
 else if(endpoint.startsWith('releases?')) result=[f.release];
@@ -765,13 +912,13 @@ test("release/recovery graph has one build owner, no release runtime tests, expl
   const finalization = workflow.slice(workflow.indexOf("  finalize:"));
   assert.equal((workflow.match(/npm run tauri:build/g) || []).length, 1);
   assert.doesNotMatch(workflow, /cargo test|test:build|sidecar-bundle-smoke|browser-bundle-smoke|npm run web:build|scripts\/bamboo-sidecar\.cjs install|tauri-apps\/tauri-action/);
-  assert.doesNotMatch(native, /contents: write|GITHUB_TOKEN:/); assert.match(native, /bundles: appimage,deb,rpm/);
+  assert.doesNotMatch(native, /contents: write|GITHUB_TOKEN:/); assert.match(native, /matrix: \$\{\{ fromJSON\(needs\.preflight\.outputs\.targets\) \}\}/);
   assert.doesNotMatch(finalization, /working-directory: product|cargo |npm |tauri:build/);
   for (const name of [out.PREFLIGHT, out.RESERVATION, out.BUILD, out.CAPTURE, out.RETAIN, finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH]) assert.ok(workflow.includes(`- name: ${name}`));
   assert.ok(workflow.includes("ref: ${{ github.workflow_sha }}")); assert.ok(workflow.includes("ref: ${{ inputs.expected_source_sha }}"));
   assert.doesNotMatch(workflow + recovery, /GITHUB_SHA:\s|export GITHUB_SHA|GITHUB_WORKFLOW_SHA:\s/);
   for (const body of [workflow, recovery]) assert.match(body, /group: bodhi-release-\$\{\{ inputs.bodhi_version \}\}\n  cancel-in-progress: false/);
-  assert.match(recovery, /if: inputs\.evidence_schema == '1'/); assert.match(recovery, /if: inputs\.evidence_schema == '2'/);
+  assert.match(recovery, /if: inputs\.evidence_schema == '1'/); assert.match(recovery, /if: inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3'/);
   assert.match(recovery, /scripts\/release-finalizer\.cjs recover/); assert.match(recovery, /scripts\/release-finalizer-v2\.cjs recover/);
   assert.equal(out.NATIVE_TARGETS.length, 3); assert.equal(out.NATIVE_TARGETS.flatMap(target => out.names(ctx.version, target)).length, 6);
 });
