@@ -63,7 +63,7 @@ function fixture(ctx = out.context(env)) {
       return { name, size: data.length, sha256: out.sha256(data) };
     });
     const receipt = { schemaVersion: contract.schemaVersion, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: originalJob.id,
-      attempt: originalJob.run_attempt, checks: out.checks(target), files };
+      attempt: originalJob.run_attempt, checks: out.checks(target, contract.schemaVersion), files };
     contents["target-receipt.json"] = out.bytes(receipt);
     f.artifacts.push(artifact(101 + index, out.artifactName(ctx, target, originalJob.run_attempt))); f.files[101 + index] = contents;
   }
@@ -192,6 +192,9 @@ test("v3 assembles five exact original targets and verifies all eleven retained 
   assert.equal(evidence.manifest.reservation.schemaVersion, 3);
   assert.equal(evidence.manifest.reservation.admission.jobs.length, 8);
   assert.deepEqual(evidence.manifest.targets.map(item => item.receipt.target), [...out.NATIVE_TARGETS, ARM_LINUX, ARM_WINDOWS]);
+  for (const item of evidence.manifest.targets.filter(item => !item.receipt.target.includes("darwin"))) {
+    assert.ok(item.receipt.checks.includes("installer-payload"));
+  }
   assert.equal(evidence.assets.length, 11);
   assert.equal(f.uploads.at(-1), "bodhi-release-v3.json");
   assert.equal(f.uploads.length, 11);
@@ -203,6 +206,9 @@ test("v3 assembles five exact original targets and verifies all eleven retained 
   const duplicate = clone(evidence.manifest);
   duplicate.targets[4].artifact.id = duplicate.targets[3].artifact.id;
   assert.throws(() => finalizer.verifyManifest(duplicate, v3Context, published));
+  const missingPayload = clone(evidence.manifest);
+  missingPayload.targets[4].receipt.checks = out.checks(ARM_WINDOWS);
+  assert.throws(() => finalizer.verifyManifest(missingPayload, v3Context, published));
 });
 test("v3 refuses unrelated workflow evidence, mixed reservations and missing ARM64 originals", t => {
   const f = fixture(v3Context), a = adapters(f);
@@ -211,8 +217,6 @@ test("v3 refuses unrelated workflow evidence, mixed reservations and missing ARM
   assert.throws(() => out.verifyReservation({ ...f.reservation, admission: { ...f.reservation.admission, workflowBlob: FEATURE_WORKFLOW_BLOB } },
     v3Context), /differs from the reviewed feature workflow/);
   assert.throws(() => out.verifyReservation({ ...f.reservation, admission: { ...f.reservation.admission, jobs: f.reservation.admission.jobs.slice(0, 6) } }, v3Context));
-  assert.throws(() => out.captureTarget("/unavailable", v3Context, f.reservation, ARM_WINDOWS, "/unavailable"),
-    /V3 target capture requires verified installer payload checks/);
   f.extraReleases = [{ id: 78, tag_name: ctx.draftTag }];
   assert.throws(() => finalizer.available(v3Context, a.request, f.release), /reserved by another release/);
   f.extraReleases = [];

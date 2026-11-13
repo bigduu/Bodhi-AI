@@ -208,7 +208,8 @@ function verifyDebugAssembly(root, target, receipt) {
   return { binary, staticDirectory: path.join(directory, "frontend", "dist"), runtime };
 }
 
-module.exports = { verifySidecar, expectedArchitecture, elfCpuType, peCpuType, verifyBundledFrontend, verifyBundledRuntime, verifyMacosBundle, verifyDebugAssembly };
+module.exports = { verifySidecar, expectedArchitecture, elfCpuType, peCpuType, verifyFrontendDirectory,
+  verifyBundledFrontend, verifyBundledRuntime, verifyMacosBundle, verifyDebugAssembly };
 
 if (require.main === module) {
   try {

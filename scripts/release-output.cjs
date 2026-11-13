@@ -375,7 +375,11 @@ function selectTarget(ctx, reservation, target, request = api, restore = downloa
   }
   return { receipt, artifact: { id: original.id, name: original.name, digest: original.digest }, directory };
 }
-function checks(target) { return ["locked-upstreams", "shell-architecture", "package-version", target.includes("darwin") ? "macos-signature" : "staged-runtime"]; }
+function checks(target, schemaVersion = 2) {
+  const values = ["locked-upstreams", "shell-architecture", "package-version", target.includes("darwin") ? "macos-signature" : "staged-runtime"];
+  if (schemaVersion === 3 && !target.includes("darwin")) values.push("installer-payload");
+  return values;
+}
 function verifyReceipt(receipt, ctx, reservation, target, job) {
   const contract = releaseContract(ctx);
   id(receipt.jobId); assert.ok(id(receipt.attempt) <= ctx.attempt);
@@ -383,7 +387,7 @@ function verifyReceipt(receipt, ctx, reservation, target, job) {
   assert.equal(reservation.schemaVersion, contract.schemaVersion);
   assert.equal(receipt.schemaVersion, contract.schemaVersion); assert.equal(receipt.target, target);
   assert.equal(receipt.reservationSha256, sha256(bytes(reservation))); assert.equal(receipt.jobId, job.id);
-  assert.equal(receipt.attempt, job.run_attempt); assert.deepEqual(receipt.checks, checks(target));
+  assert.equal(receipt.attempt, job.run_attempt); assert.deepEqual(receipt.checks, checks(target, contract.schemaVersion));
   assert.deepEqual(receipt.files.map(file => file.name).sort(), names(ctx.version, target).sort());
   for (const file of receipt.files) {
     assert.match(file.sha256 || "", /^[0-9a-f]{64}$/); assert.ok(Number.isSafeInteger(file.size) && file.size >= 1024 ** 2 && file.size <= 4 * 1024 ** 3);
@@ -425,9 +429,11 @@ function staticOutputs(root, ctx, target, output) {
   // Read immutable product data with controller code, never require a module from S.
   const runtimeLock = JSON.parse(execFileSync("git", ["show", `${ctx.source}:scripts/browser-runtime.lock.json`],
     { cwd: root, env: childEnv(), encoding: "utf8", maxBuffer: 128 * 1024 }));
-  browser.verifyRuntime(path.join(root, "src-tauri/browser-runtime"), target, path.join(sidecar.hostDirectory, "browser-runtime"), runtimeLock);
+  const browserRoot = path.join(root, "src-tauri/browser-runtime");
+  browser.verifyRuntime(browserRoot, target, path.join(sidecar.hostDirectory, "browser-runtime"), runtimeLock);
   const base = path.join(root, "target", target, "release"), bundle = path.join(base, "bundle");
-  browser.verifyArchitecture(path.join(base, target.includes("windows") ? "bodhi.exe" : "bodhi"), target);
+  const shell = path.join(base, target.includes("windows") ? "bodhi.exe" : "bodhi");
+  browser.verifyArchitecture(shell, target);
   const command = (name, args) => execFileSync(name, args, { env: childEnv(), encoding: "utf8" }).trim();
   if (target.includes("darwin")) {
     assembly.verifyMacosBundle(root, target, receipt, undefined, runtimeLock);
@@ -437,19 +443,26 @@ function staticOutputs(root, ctx, target, output) {
   }
   const directories = target.includes("darwin") ? ["dmg", "macos"] : target.includes("linux") ? ["appimage", "deb", "rpm"] : ["nsis"];
   const expected = names(ctx.version, target);
+  const files = [];
   for (let index = 0; index < directories.length; index++) {
-    const directory = path.join(bundle, directories[index]);
+    const format = directories[index];
+    const directory = path.join(bundle, format);
     const matches = fs.readdirSync(directory).filter(name => name.replaceAll(" ", ".") === expected[index]);
     assert.equal(matches.length, 1, `Missing original installer: ${expected[index]}`);
     const file = path.join(directory, matches[0]); hashFile(file);
-    if (directories[index] === "deb" || directories[index] === "rpm") verifyLinuxPackage(command, directories[index], file, ctx.version, target);
-    fs.copyFileSync(file, path.join(output, expected[index]), fs.constants.COPYFILE_EXCL);
+    if (format === "deb" || format === "rpm") verifyLinuxPackage(command, format, file, ctx.version, target);
+    if (contract.schemaVersion === 3 && !target.includes("darwin")) {
+      const appDir = format === "appimage" ? path.join(directory, "Bodhi AI.AppDir") : undefined;
+      require("./installer-payload.cjs").verifyInstallerPayload({ format, file, target, shell, sidecar: sidecar.binary,
+        browserRoot, browserLock: runtimeLock, frontendReceipt: receipt, appDir }, childEnv());
+    }
+    files.push([file, expected[index]]);
   }
   if (target.includes("windows")) {
-    const binary = path.join(base, "bodhi.exe");
-    const version = command("pwsh", ["-NoProfile", "-Command", `(Get-Item -LiteralPath '${binary.replaceAll("'", "''")}').VersionInfo.ProductVersion`]);
+    const version = command("pwsh", ["-NoProfile", "-Command", `(Get-Item -LiteralPath '${shell.replaceAll("'", "''")}').VersionInfo.ProductVersion`]);
     assert.ok(version === ctx.version || version === `${ctx.version}.0`, "Shell PE version differs");
   }
+  for (const [file, name] of files) fs.copyFileSync(file, path.join(output, name), fs.constants.COPYFILE_EXCL);
 }
 function outputs(values) {
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(""));
@@ -457,7 +470,6 @@ function outputs(values) {
 function captureTarget(root, ctx, reservation, target, output, request = api) {
   const contract = releaseContract(ctx);
   assert.ok(contract.targets.includes(target), "Target is outside the selected release contract");
-  assert.equal(contract.schemaVersion, 2, "V3 target capture requires verified installer payload checks");
   verifyReservation(reservation, ctx);
   assert.equal(git(root, "rev-parse", "HEAD"), ctx.source);
   const changed = git(root, "status", "--porcelain", "--untracked-files=all").split(/\r?\n/).filter(Boolean).map(line => line.slice(3)).sort();
@@ -470,7 +482,8 @@ function captureTarget(root, ctx, reservation, target, output, request = api) {
   assert.ok(path.isAbsolute(output) && !fs.existsSync(output)); fs.mkdirSync(output, { recursive: true });
   staticOutputs(root, ctx, target, output);
   const job = currentJob(ctx, `Build original (${target})`, request); gate(job, BUILD);
-  const receipt = { schemaVersion: contract.schemaVersion, target, reservationSha256: sha256(bytes(reservation)), jobId: job.id, attempt: ctx.attempt, checks: checks(target),
+  const receipt = { schemaVersion: contract.schemaVersion, target, reservationSha256: sha256(bytes(reservation)), jobId: job.id,
+    attempt: ctx.attempt, checks: checks(target, contract.schemaVersion),
     files: names(ctx.version, target).map(name => ({ name, size: fs.lstatSync(path.join(output, name)).size, sha256: hashFile(path.join(output, name)) })) };
   verifyReceipt(receipt, ctx, reservation, target, job); write(path.join(output, "target-receipt.json"), receipt);
   return receipt;
