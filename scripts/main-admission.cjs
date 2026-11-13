@@ -14,12 +14,11 @@ const finalizer31 = require("./finalize-salvaged-v20261031.cjs");
 const windows31 = require("./v31-windows-proof.cjs");
 const linux31 = require("./v31-linux-proof.cjs");
 const publish31 = require("./publish-v31-preserved.cjs");
-const { REPOSITORY, NATIVE_TARGETS, SHA, MANIFEST } = out;
+const { REPOSITORY, NATIVE_TARGETS, SHA, ORIGINAL_RELEASE_WORKFLOW_BLOB: RELEASE_BLOB } = out;
 const LEGACY_BASE = "aef64d4adce7296086a71b1a6c82fa65c7ccf42d";
 const LEGACY_TREE = "41baf69faf3b4c3da5f649a80b58b7283ed90400";
-const RELEASE_BLOB = "ff91ec4ca4c3047d6c23c5dc06d575f15fe190e3";
-const CURRENT_RELEASE_BLOB = "7b666dc5f0f8f2f79e9b2064acdfe8cc4fa881ca";
 const RECOVERY_BLOB = "bebaa01d241bc33c3f968cac5292735845876c78";
+const ARM64_RECOVERY_BLOB = "dd95b26ff82a25c77628579861ee715eca2e76ee";
 const RECOVERY31_BLOB = "3f201b9725f5e1da751841569f41f174db8f00e2";
 const FINALIZER31_BLOB = "0fc7de135db1718c7fa5147a3a4512e2db191583";
 const FINALIZER31_RUN = 40796552747;
@@ -133,7 +132,9 @@ function sourceReceipt(reservation, request, readLog) {
 function controller(commit, base, workflow, blob, request) {
   ancestor(commit, base, request);
   const allowed = Array.isArray(blob) ? blob : [blob];
-  assert.ok(allowed.includes(request(`contents/.github/workflows/${workflow}?ref=${commit}`)?.sha), "Unreviewed original workflow producer");
+  const actual = request(`contents/.github/workflows/${workflow}?ref=${commit}`)?.sha;
+  assert.ok(allowed.includes(actual), "Unreviewed original workflow producer");
+  return actual;
 }
 function releaseContext(value, original) {
   // Parse explicit release identity with the existing formatter. These are
@@ -228,13 +229,14 @@ function published(value, base, request = readOnly, options = {}) {
   assert.equal(value.mode, "promotion");
   if (value.version === recovery31.FIXED.version && value.runId === recovery31.FIXED.runId)
     return published31(value, base, request, options);
-  const original = request(`actions/runs/${id(value.runId)}`), ctx = releaseContext(value, original);
+  const original = request(`actions/runs/${id(value.runId)}`), parsed = releaseContext(value, original);
+  ancestor(parsed.controller, base, request);
+  const ctx = out.originalContext(parsed, parsed.controller, request), contract = out.releaseContract(ctx);
   out.runIdentity(ctx, original); assert.equal(original.status, "completed");
-  controller(ctx.controller, base, "release.yml", [RELEASE_BLOB, CURRENT_RELEASE_BLOB], request);
   const release = request(`releases/${id(value.releaseId)}`);
   assert.equal(release?.id, id(value.releaseId)); const reservation = out.releaseReservation(release, ctx);
   const read = options.readManifest || finalizer.readManifest;
-  const assets = release.assets.filter(asset => asset.name === MANIFEST); assert.equal(assets.length, 1);
+  const assets = release.assets.filter(asset => asset.name === contract.manifest); assert.equal(assets.length, 1);
   finalizer.validateAsset(assets[0], ctx); const manifest = read(assets[0].id);
   finalizer.verifyPublished(ctx, release, manifest);
   const destinations = [];
@@ -247,7 +249,7 @@ function published(value, base, request = readOnly, options = {}) {
     assert.equal(retained.release.id, release.id); assert.deepEqual(retained.reservation, reservation);
     assert.deepEqual(manifest.reservationArtifact, { id: retained.artifact.id, name: retained.artifact.name, digest: retained.artifact.digest });
     sourceReceipt(reservation, request, options.readLog || jobLog);
-    const targets = NATIVE_TARGETS.map(target => out.selectTarget(ctx, reservation, target, request, restore, true));
+    const targets = contract.targets.map(target => out.selectTarget(ctx, reservation, target, request, restore, true));
     assert.ok(targets.every(Boolean));
     assert.deepEqual(manifest.targets, targets.map(({ receipt, artifact }) => ({ receipt, artifact })));
     const rows = out.jobs(ctx, request), matches = rows.filter(job => job.name === "Publish original release");
@@ -268,14 +270,16 @@ function published(value, base, request = readOnly, options = {}) {
       assert.equal(recovery.head_branch, "main"); assert.equal(recovery.status, "completed"); assert.equal(recovery.conclusion, "success");
       assert.equal(out.workflow(recovery.path), ".github/workflows/recover-release.yml");
       assert.equal(recovery.display_title, `Recover Bodhi v${ctx.version} from ${ctx.runId} attempt ${ctx.attempt}`);
-      controller(sha(recovery.head_sha), base, "recover-release.yml", RECOVERY_BLOB, request);
+      const recoveryBlob = controller(sha(recovery.head_sha), base, "recover-release.yml",
+        contract.schemaVersion === 2 ? [RECOVERY_BLOB, ARM64_RECOVERY_BLOB] : ARM64_RECOVERY_BLOB, request);
+      const jobName = recoveryBlob === RECOVERY_BLOB ? "recover-v2" : "recover-original";
       const jobs = out.pages(`actions/runs/${recovery.id}/jobs?filter=all`, "jobs", request);
       assert.equal(new Set(jobs.map(job => job.id)).size, jobs.length);
-      assert.ok(jobs.every(job => ["recover", "recover-v2"].includes(job.name)));
+      assert.ok(jobs.every(job => ["recover", jobName].includes(job.name)));
       for (const job of jobs) { assert.equal(job.run_id, recovery.id); assert.equal(job.head_sha, recovery.head_sha); assert.ok(id(job.run_attempt) <= recovery.run_attempt); }
-      const selected = jobs.filter(job => job.name === "recover-v2" && job.run_attempt === recovery.run_attempt);
+      const selected = jobs.filter(job => job.name === jobName && job.run_attempt === recovery.run_attempt);
       assert.equal(selected.length, 1); out.passed(selected[0], ["Verify original immutable outputs and recover publication"]);
-      const physical = source.executionOrigin(selected[0], jobs.filter(job => job.name === "recover-v2"));
+      const physical = source.executionOrigin(selected[0], jobs.filter(job => job.name === jobName));
       recoveryReceipt = { run: runReceipt(recovery), controller: recovery.head_sha, jobId: physical.id, attempt: physical.run_attempt,
         logical: { id: selected[0].id, attempt: selected[0].run_attempt } };
       const legacy = jobs.filter(job => job.name === "recover"); assert.ok(legacy.length);
@@ -290,7 +294,7 @@ function published(value, base, request = readOnly, options = {}) {
     const created = Date.parse(assets[0].created_at), started = Date.parse(assembler[0].started_at), completed = Date.parse(assembler[0].completed_at);
     assert.ok(Number.isFinite(created) && Number.isFinite(started) && Number.isFinite(completed) && created >= started && created <= completed,
       "Manifest asset is outside its original assembler");
-    const evidenceCtx = { ...ctx, attempt: publisher.run_attempt, evidenceName: `bodhi-v2-evidence-${ctx.runId}-${publisher.run_attempt}` };
+    const evidenceCtx = out.releaseContext({ ...ctx, attempt: publisher.run_attempt });
     const evidence = finalizer.publicationEvidence(evidenceCtx, publisher, release, request, restore);
     assert.deepEqual(evidence.evidence.manifest, manifest);
     assert.equal(request(`git/ref/tags/${ctx.finalTag}`)?.object?.sha, ctx.source);
@@ -342,10 +346,11 @@ function verifyMain({ pullRequest, snapshot }, request = readOnly, options = {})
   if (value.mode === "promotion") {
     assert.equal(mainHead(request("branches/main")), pr.base.sha);
     const release = request(`releases/${value.releaseId}`);
-    const ctx = releaseContext(value, { head_sha: proof.controller });
-    assert.deepEqual(out.releaseReservation(release, ctx), proof.reservation, "Release reservation changed during Main admission");
+    const parsed = releaseContext(value, { head_sha: proof.controller });
     const isRecovery31 = proof.kind === "bodhi-main-promotion/v31-recovery";
-    const name = isRecovery31 ? finalizer31.MANIFEST : MANIFEST;
+    const ctx = isRecovery31 ? parsed : out.originalContext(parsed, proof.controller, request);
+    assert.deepEqual(out.releaseReservation(release, ctx), proof.reservation, "Release reservation changed during Main admission");
+    const name = isRecovery31 ? finalizer31.MANIFEST : out.releaseContract(ctx).manifest;
     const manifest = (options.readManifest || finalizer.readManifest)(release.assets.find(asset => asset.name === name)?.id);
     if (isRecovery31) {
       finalizer31.verifyManifest(manifest, release, proof.reservation);
@@ -373,7 +378,7 @@ function main() {
   assert.equal(env.GITHUB_WORKFLOW_REF, `${REPOSITORY}/.github/workflows/ci.yml@refs/heads/main`);
   assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: path.resolve(__dirname, ".."), env: out.childEnv(), encoding: "utf8" }).trim(), verifier);
   assert.equal(execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: path.resolve(__dirname, ".."), env: out.childEnv(), encoding: "utf8" }).trim(), "");
-  assert.equal(readOnly(`contents/.github/workflows/ci.yml?ref=${verifier}`)?.sha, source.FEATURE_WORKFLOW_BLOB);
+  assert.equal(source.FEATURE_PRODUCERS.get(readOnly(`contents/.github/workflows/ci.yml?ref=${verifier}`)?.sha), true, "Unreviewed Main workflow producer");
   const triggered = locator(event.pull_request.body), pr = readOnly(`pulls/${id(event.number)}`);
   assert.equal(pr?.base.sha, verifier); assert.equal(pr.head.sha, event.pull_request.head.sha, "Main head changed after the Target event");
   assert.equal(pr.head.ref, event.pull_request.head.ref);
@@ -399,6 +404,6 @@ function main() {
   assert.deepEqual(runtime(), identity, "Main execution changed while admitting source");
   console.log(JSON.stringify({ ...proof, runtime: identity }, null, 2));
 }
-module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage,
+module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, ARM64_RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage,
   sourceReceipt, recovered31Targets, published31, published, bootstrap, verifyMain };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi main admission: ${error.message}`); process.exitCode = 1; } }

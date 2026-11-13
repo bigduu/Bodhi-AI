@@ -113,7 +113,8 @@ function fixture() {
     else if (endpoint.startsWith("compare/")) { const [before] = endpoint.slice(8).split("..."); result = { merge_base_commit: { sha: before }, status: "ahead", behind_by: 0 }; }
     else if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) result = { sha: main.RELEASE_BLOB };
     else if (endpoint === `contents/.github/workflows/recover-release.yml?ref=${C2}`) result = { sha: main.RECOVERY_BLOB };
-    else if (endpoint === `contents/.github/workflows/ci.yml?ref=${FM}`) result = { sha: f.featureBlob || source.FEATURE_WORKFLOW_BLOB };
+    else if ([S, FM].some(commit => endpoint === `contents/.github/workflows/ci.yml?ref=${commit}`))
+      result = { sha: f.featureBlob || source.FEATURE_WORKFLOW_BLOB };
     else if (endpoint.startsWith("contents/") && endpoint.endsWith(`?ref=${S}`)) {
       const file = endpoint.slice(9).split("?")[0]; result = { encoding: "base64", content: lockBytes[file].toString("base64") };
     } else assert.fail(`Unexpected read-only request: ${endpoint}`);
@@ -148,6 +149,9 @@ test("normal completed release admits a complete S Main postimage, preserving ac
 test("Main accepts only a reviewed release workflow producer", () => {
   const f = fixture();
   const newBlob = execFileSync("git", ["hash-object", ".github/workflows/release.yml"], { encoding: "utf8" }).trim();
+  assert.equal(newBlob, out.ARM64_RELEASE_WORKFLOW_BLOB);
+  assert.equal(execFileSync("git", ["hash-object", ".github/workflows/recover-release.yml"], { encoding: "utf8" }).trim(), main.ARM64_RECOVERY_BLOB);
+  f.run.display_title = `Bodhi original v${f.value.version} @ ${S}`;
   f.onRead = (endpoint, response) => {
     if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) response.sha = newBlob;
   };

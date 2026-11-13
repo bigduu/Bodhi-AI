@@ -1,17 +1,18 @@
 # Publish Bodhi independently
 
-The prepared v2 publisher is this repository's [release.yml](../.github/workflows/release.yml).
+This repository publishes from [release.yml](../.github/workflows/release.yml).
 It runs a trusted `main` controller `C` against a separate disposable checkout of
 an accepted, frozen dev merge `S`. Bamboo and Lotus Next remain independent
 producers; Bodhi consumes their exact committed artifact locks. Zenith is not a
 release prerequisite.
 
-This branch prepares #122 under tracker #119; it does not activate the trusted
-main bootstrap, protection changes or a main promotion workflow. Do not dispatch
-a new production release until that separate cutover is reviewed. Existing v1
-runs, including #116, keep their original workflow snapshots, source locks,
-runtime gates and recovery contract. The new publisher never silently falls
-back to v1 when source admission fails.
+The trusted Main dispatcher currently publishes the three-target v2 contract.
+Issue #225 tracks the five-target v3 transition. First admit the compatible
+controller through a normally published v2 source and its complete Main
+promotion. After Bamboo publishes the exact five-target release and Bodhi
+accepts its lock and five native CI lanes on Dev, the dispatcher can reserve
+the first v3 version from that accepted source. Historical v1 runs, including
+#116, keep their original workflow snapshots, source locks and recovery contract.
 
 ## Feature Unit and E2E
 
@@ -183,8 +184,9 @@ The workflow keeps actual `GITHUB_SHA`/`GITHUB_WORKFLOW_SHA` as `C`; `S` is an
 explicit checkout and receipt field. It reserves the version before any formal
 build in the existing GitHub draft plus shared per-version concurrency group.
 It records source admission, selected lock hashes, controller, run, original
-preflight job and attempt in `bodhi-v2-reservation-<RUN_ID>`. A collision with
-another v1/v2 draft, final release or tag stops before building. A lost create
+preflight job and attempt in `bodhi-v<SCHEMA>-reservation-<RUN_ID>`. A
+collision with an older or current draft,
+final release or tag stops before building. A lost create
 response is resolved by readback, without a second reservation request. If a
 reservation exists but its original admission artifact was never retained,
 stop rather than inventing admission or replacing the reservation.
@@ -250,9 +252,11 @@ runtime; there is no preceding second staging or upstream source build.
 | `macos-latest` | `aarch64-apple-darwin` | DMG and app tar.gz |
 | `ubuntu-22.04` | `x86_64-unknown-linux-gnu` | AppImage, deb and RPM |
 | `windows-latest` | `x86_64-pc-windows-msvc` | NSIS exe |
+| `ubuntu-22.04-arm` | `aarch64-unknown-linux-gnu` (v3) | AppImage, deb and RPM |
+| `windows-11-arm` | `aarch64-pc-windows-msvc` (v3) | NSIS exe |
 
-The new v2 release phase does no Unit/E2E actor or browser runtime smoke. Those
-belong to admitted feature CI. It retains static upstream/resource checks,
+Admitted feature CI owns Unit/E2E actor and browser runtime smoke. The release
+phase retains static upstream/resource checks,
 shell architecture, package version/architecture and the existing macOS
 signature verification. macOS still uses the existing ad-hoc signing override;
 this change does not add notarization or claim a distribution certificate.
@@ -261,7 +265,7 @@ and passes that data through staged and bundled checks. It does not execute an
 `S` module or change the controller's default browser lock.
 
 Before finalization, each successful target uploads a flat immutable artifact
-`bodhi-v2-target-<RUN_ID>-<TARGET_ATTEMPT>-<TARGET>` with its actual installer bytes
+`bodhi-v<SCHEMA>-target-<RUN_ID>-<TARGET_ATTEMPT>-<TARGET>` with its installer bytes
 and `target-receipt.json`. The receipt binds the reserved source/controller/
 version by hash, original job ID/attempt, static checks, all filenames, sizes and
 SHA-256 values. RPM is retained alongside the other Linux outputs. Artifact
@@ -270,14 +274,15 @@ digest. Restore verifies the downloaded ZIP digest, exact flat entry set and
 individual file hashes, preserving original bytes.
 
 Builders have no publisher token. Finalization runs only controller code on
-Ubuntu, restores the three target artifacts by immutable IDs and uploads their
-six original installers to the reserved draft. It keeps already-uploaded asset
+Ubuntu, restores the target artifacts by immutable IDs and uploads their
+original installers to the reserved draft. It keeps already-uploaded asset
 IDs when bytes match and refuses conflicts; it never deletes or overwrites an
-asset. It then attaches `bodhi-release-v2.json` with source admission, controller,
+asset. It then attaches the contract's manifest with source admission, controller,
 version, source lock hashes, original run/job/attempts, artifact identities and
-six installer asset identities. The manifest has no circular self-ID. A separate
-immutable `bodhi-v2-evidence-<RUN_ID>-<FINALIZER_ATTEMPT>` binds its hash and asset
-ID plus the complete seven-asset set before publication.
+installer asset identities. v2 has six installers and `bodhi-release-v2.json`.
+v3 has ten installers and `bodhi-release-v3.json`. A separate immutable evidence
+artifact binds the manifest hash and asset ID plus the complete asset set before
+publication.
 
 Publication revalidates that retained evidence, promotes the same release ID to
 `app-v<VERSION>` targeting `S`, and verifies the unchanged IDs/hashes and final
@@ -306,12 +311,12 @@ second physical build or missing original output cannot use this exception.
 
 A finalizer failure before publication evidence is retained can rerun that
 failed finalizer in the same run. Partial uploads keep their original asset IDs.
-After the evidence upload, use v2 recovery only if **Publish the original draft**
-was the sole failing finalizer step:
+After the evidence upload, use the original schema (2 or 3) if **Publish the
+original draft** was the sole failing finalizer step:
 
 ```sh
 gh workflow run recover-release.yml -R bigduu/Bodhi-AI --ref main \
-  -f evidence_schema=2 -f release_run_id=<ORIGINAL_RUN> \
+  -f evidence_schema=<ORIGINAL_SCHEMA> -f release_run_id=<ORIGINAL_RUN> \
   -f release_attempt=<FAILED_FINALIZER_ATTEMPT> \
   -f expected_source_sha=<ORIGINAL_FROZEN_SHA> -f bodhi_version=<ORIGINAL_VERSION>
 ```
@@ -335,10 +340,10 @@ those separately on the exact reviewed activated controller and admitted source.
 
 ## Prepared read-only Main boundary
 
-Feature PRs target Dev and retain six real Unit/E2E jobs. The Main-capable CI
-producer adds exactly the known **skipped** `Main Admission` job on Dev; the
-original context producer remains a separate six-job contract. Both retain the
-same literal original-context writer and schema. Unknown graphs, missing tests,
+Feature PRs target Dev. Their exact CI workflow blob selects six executed jobs
+for three targets or eight for five. Main-capable CI includes the known **skipped**
+`Main Admission` job on Dev. The original context writer and schema are the same
+across the reviewed graphs. Unknown graphs, missing tests,
 successful Main stubs or executed Main steps in feature evidence reject admission.
 
 Main metadata admission uses `pull_request_target` for Main, whose workflow/job
@@ -355,16 +360,17 @@ C and frozen product S retain their own roles. REST run/job `head_sha` and
 `head_branch` identify candidate P, not the workflow-definition B; both sides
 are independently matched without relabelling the runtime environment.
 
-The normal verifier requires a completed original v2 release and all seven
-assets. It authenticates C in Main history, the fixed release workflow blob,
+The normal verifier requires a completed original release and all assets for its
+contract. It authenticates C in Main history, the fixed release workflow blob,
 actual run/attempt, original preflight reservation, each native physical build
 and latest logical result, immutable artifact IDs/ZIP digests/flat inventories/
 file hashes, original assembler, retained publication evidence, manifest and
 asset IDs/digests, tag→S, both source lock bytes and actual accepted Dev context.
 It does not require C to be S's ancestor. It refuses missing/expired originals
 and never repairs assets or rebuilds them. The existing publication-only failure
-followed by successful `recover-v2` is also checked read-only, including C1/C2
-and original versus projected jobs. There is no recovery-schema fallback.
+followed by successful `recover-v2` on the historical controller or
+`recover-original` on the newer controller is also checked read-only, including
+C1/C2 and original versus projected jobs.
 
 PR text supplies one locator, not proof. A normal promotion uses this form with
 actual immutable identities:
@@ -375,7 +381,7 @@ actual immutable identities:
 -->
 ```
 
-For existing v2 recovery add `"recovery":{"runId":789,"attempt":1}`; `runId`
+For original-output recovery add `"recovery":{"runId":789,"attempt":1}`; `runId`
 and `attempt` at the top still identify the original release. All values are
 reconstructed and matched against real API evidence. `edited` events rerun the
 metadata gate; the trigger locator must match current API metadata and the final

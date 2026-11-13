@@ -8,13 +8,14 @@ const vm = require("node:vm");
 const { execFileSync, spawnSync } = require("node:child_process");
 const out = require("./release-output.cjs");
 const finalizer = require("./release-finalizer-v2.cjs");
-const { FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
+const { FEATURE_WORKFLOW_BLOB, ARM64_FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB,
+  ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
 const C = "c".repeat(40), S = "a".repeat(40), T = "b".repeat(40);
 const env = { GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: "2026.10.30", EXPECTED_SOURCE_SHA: S,
   GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "2", GITHUB_WORKFLOW_SHA: C };
 const ctx = out.context(env);
 const ARM_LINUX = "aarch64-unknown-linux-gnu", ARM_WINDOWS = "aarch64-pc-windows-msvc";
-const v3Context = out.releaseContext({ ...ctx, v3FeatureWorkflowBlob: "1".repeat(40) });
+const v3Context = out.releaseContext({ ...ctx, v3FeatureWorkflowBlob: ARM64_FEATURE_WORKFLOW_BLOB });
 const clone = value => structuredClone(value);
 const restored = [];
 test.afterEach(() => {
@@ -123,7 +124,7 @@ function assemble(t, f) {
   const a = adapters(f), root = directory(t);
   return finalizer.assemble(f.ctx, path.join(root, "evidence.json"), a.request, a.restore, a.send, a.read);
 }
-test("the active CLI context keeps v2 while a selected v3 context names its ARM64 receipts and installers", () => {
+test("the unbound CLI context defaults to v2 while a reviewed v3 context names its ARM64 receipts and installers", () => {
   const historical = out.context({ ...env, BODHI_RELEASE_SCHEMA: "3", v3FeatureWorkflowBlob: v3Context.v3FeatureWorkflowBlob });
   assert.deepEqual(out.releaseContract(historical).targets, out.NATIVE_TARGETS);
   assert.equal(out.releaseContract(historical).manifest, out.MANIFEST);
@@ -138,7 +139,37 @@ test("the active CLI context keeps v2 while a selected v3 context names its ARM6
     "Bodhi.AI_2026.10.30_aarch64.AppImage", "Bodhi.AI_2026.10.30_arm64.deb", "Bodhi.AI-2026.10.30-1.aarch64.rpm",
   ]);
   assert.deepEqual(out.names(ctx.version, ARM_WINDOWS), ["Bodhi.AI_2026.10.30_arm64-setup.exe"]);
-  assert.throws(() => out.releaseContext({ ...ctx, v3FeatureWorkflowBlob: FEATURE_WORKFLOW_BLOB }), /Historical feature workflows/);
+  assert.throws(() => out.releaseContext({ ...ctx, v3FeatureWorkflowBlob: FEATURE_WORKFLOW_BLOB }), /reviewed v3 feature workflow blob/);
+});
+test("a trusted dispatcher selects the matrix from the frozen CI workflow, including on recovery", () => {
+  const recoveryController = "d".repeat(40);
+  const original = { ...fixture().run, display_title: `Bodhi original v${ctx.version} @ ${S}` };
+  let producer = out.ARM64_RELEASE_WORKFLOW_BLOB, feature = FEATURE_WORKFLOW_BLOB;
+  let history = { status: "ahead", behind_by: 0, merge_base_commit: { sha: C } };
+  const request = endpoint => {
+    if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) return { sha: producer };
+    if (endpoint === `contents/.github/workflows/ci.yml?ref=${S}`) return { sha: feature };
+    if (endpoint === `actions/runs/${ctx.runId}`) return original;
+    assert.equal(endpoint, `compare/${C}...${recoveryController}`); return history;
+  };
+  const compatible = out.originalContext({ ...ctx, v3FeatureWorkflowBlob: ARM64_FEATURE_WORKFLOW_BLOB }, C, request);
+  assert.deepEqual(out.releaseMatrix(compatible).include.map(row => row.target), out.NATIVE_TARGETS);
+  assert.equal(out.runIdentity(compatible, original), original);
+  feature = ARM64_FEATURE_WORKFLOW_BLOB;
+  const native = finalizer.recoverContext(ctx, recoveryController, request);
+  assert.equal(out.releaseContract(native).schemaVersion, 3);
+  assert.deepEqual(out.releaseMatrix(native).include.slice(-2), [
+    { target: ARM_LINUX, platform: "ubuntu-22.04-arm", bundles: "appimage,deb,rpm" },
+    { target: ARM_WINDOWS, platform: "windows-11-arm", bundles: "nsis" },
+  ]);
+  history = { ...history, behind_by: 1 };
+  assert.throws(() => finalizer.recoverContext(ctx, recoveryController, request), /not in trusted Main history/);
+  feature = "a".repeat(40);
+  assert.throws(() => out.originalContext(ctx, C, request), /Unreviewed feature workflow/);
+  producer = out.V2_RELEASE_WORKFLOW_BLOB;
+  assert.equal(out.releaseContract(out.originalContext(native, C, request)).schemaVersion, 2);
+  producer = "c".repeat(40);
+  assert.throws(() => out.originalContext(ctx, C, request), /Unreviewed original workflow producer/);
 });
 test("Linux ARM64 validates package metadata using each format's architecture", () => {
   const command = (expected, response) => (name, args) => {
@@ -176,7 +207,7 @@ test("v3 assembles five exact original targets and verifies all eleven retained 
 test("v3 refuses unrelated workflow evidence, mixed reservations and missing ARM64 originals", t => {
   const f = fixture(v3Context), a = adapters(f);
   assert.throws(() => out.verifyReservation(f.reservation, ctx));
-  assert.throws(() => out.verifyReservation(f.reservation, { ...v3Context, v3FeatureWorkflowBlob: "2".repeat(40) }), /differs from the reviewed feature workflow/);
+  assert.throws(() => out.verifyReservation(f.reservation, { ...v3Context, v3FeatureWorkflowBlob: "2".repeat(40) }), /reviewed v3 feature workflow blob/);
   assert.throws(() => out.verifyReservation({ ...f.reservation, admission: { ...f.reservation.admission, workflowBlob: FEATURE_WORKFLOW_BLOB } },
     v3Context), /differs from the reviewed feature workflow/);
   assert.throws(() => out.verifyReservation({ ...f.reservation, admission: { ...f.reservation.admission, jobs: f.reservation.admission.jobs.slice(0, 6) } }, v3Context));
@@ -830,6 +861,7 @@ const endpoint=process.argv.find(v=>v.startsWith('repos/')).slice('repos/${out.R
 if(endpoint.endsWith('/zip')) { process.stdout.write(fs.readFileSync(f.zip[endpoint.split('/')[2]])); process.exit(0); }
 let result;
 if(endpoint==='actions/runs/42') result=f.run;
+else if(endpoint==='contents/.github/workflows/release.yml?ref=${actualC}') result={sha:'${out.V2_RELEASE_WORKFLOW_BLOB}'};
 else if(endpoint.includes('/jobs?')) result={total_count:f.jobs.length,jobs:f.jobs};
 else if(endpoint.includes('/artifacts?')) result={total_count:f.artifacts.length,artifacts:f.artifacts};
 else if(endpoint.startsWith('releases?')) result=[f.release];
@@ -857,13 +889,13 @@ test("release/recovery graph has one build owner, no release runtime tests, expl
   const finalization = workflow.slice(workflow.indexOf("  finalize:"));
   assert.equal((workflow.match(/npm run tauri:build/g) || []).length, 1);
   assert.doesNotMatch(workflow, /cargo test|test:build|sidecar-bundle-smoke|browser-bundle-smoke|npm run web:build|scripts\/bamboo-sidecar\.cjs install|tauri-apps\/tauri-action/);
-  assert.doesNotMatch(native, /contents: write|GITHUB_TOKEN:/); assert.match(native, /bundles: appimage,deb,rpm/);
+  assert.doesNotMatch(native, /contents: write|GITHUB_TOKEN:/); assert.match(native, /matrix: \$\{\{ fromJSON\(needs\.preflight\.outputs\.targets\) \}\}/);
   assert.doesNotMatch(finalization, /working-directory: product|cargo |npm |tauri:build/);
   for (const name of [out.PREFLIGHT, out.RESERVATION, out.BUILD, out.CAPTURE, out.RETAIN, finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH]) assert.ok(workflow.includes(`- name: ${name}`));
   assert.ok(workflow.includes("ref: ${{ github.workflow_sha }}")); assert.ok(workflow.includes("ref: ${{ inputs.expected_source_sha }}"));
   assert.doesNotMatch(workflow + recovery, /GITHUB_SHA:\s|export GITHUB_SHA|GITHUB_WORKFLOW_SHA:\s/);
   for (const body of [workflow, recovery]) assert.match(body, /group: bodhi-release-\$\{\{ inputs.bodhi_version \}\}\n  cancel-in-progress: false/);
-  assert.match(recovery, /if: inputs\.evidence_schema == '1'/); assert.match(recovery, /if: inputs\.evidence_schema == '2'/);
+  assert.match(recovery, /if: inputs\.evidence_schema == '1'/); assert.match(recovery, /if: inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3'/);
   assert.match(recovery, /scripts\/release-finalizer\.cjs recover/); assert.match(recovery, /scripts\/release-finalizer-v2\.cjs recover/);
   assert.equal(out.NATIVE_TARGETS.length, 3); assert.equal(out.NATIVE_TARGETS.flatMap(target => out.names(ctx.version, target)).length, 6);
 });

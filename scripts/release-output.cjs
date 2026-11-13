@@ -23,6 +23,16 @@ const ARM_WINDOWS = "aarch64-pc-windows-msvc";
 const V2_CONTRACT = Object.freeze({ schemaVersion: 2, manifest: MANIFEST, targets: Object.freeze([...NATIVE_TARGETS]) });
 const V3_CONTRACT = Object.freeze({ schemaVersion: 3, manifest: "bodhi-release-v3.json",
   targets: Object.freeze([...NATIVE_TARGETS, ARM_LINUX, ARM_WINDOWS]) });
+const ORIGINAL_RELEASE_WORKFLOW_BLOB = "ff91ec4ca4c3047d6c23c5dc06d575f15fe190e3";
+const V2_RELEASE_WORKFLOW_BLOB = "7b666dc5f0f8f2f79e9b2064acdfe8cc4fa881ca";
+const ARM64_RELEASE_WORKFLOW_BLOB = "8d6f60b24d3394820047782a9a88c62c7f728f29";
+const RELEASE_MATRIX = {
+  "aarch64-apple-darwin": { platform: "macos-latest", bundles: "app,dmg" },
+  "x86_64-unknown-linux-gnu": { platform: "ubuntu-22.04", bundles: "appimage,deb,rpm" },
+  "x86_64-pc-windows-msvc": { platform: "windows-latest", bundles: "nsis" },
+  [ARM_LINUX]: { platform: "ubuntu-22.04-arm", bundles: "appimage,deb,rpm" },
+  [ARM_WINDOWS]: { platform: "windows-11-arm", bundles: "nsis" },
+};
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -57,15 +67,13 @@ function pages(endpoint, key, request = api) {
     }
   }
 }
-// The active v2 CLI uses the default. A v3 verifier receives the exact
-// feature workflow blob already reviewed by its trusted caller. A receipt
-// schema, workflow input, or upstream lock cannot grant that authority.
 function releaseContract(ctx) {
   if (ctx.v3FeatureWorkflowBlob === undefined) return V2_CONTRACT;
-  assert.match(ctx.v3FeatureWorkflowBlob, SHA, "Require the reviewed v3 feature workflow blob");
-  assert.ok(![admission.LEGACY_FEATURE_WORKFLOW_BLOB, admission.CONTEXT_WORKFLOW_BLOB, admission.FEATURE_WORKFLOW_BLOB].includes(ctx.v3FeatureWorkflowBlob),
-    "Historical feature workflows cannot authorize v3");
+  assert.equal(ctx.v3FeatureWorkflowBlob, admission.ARM64_FEATURE_WORKFLOW_BLOB, "Require the reviewed v3 feature workflow blob");
   return V3_CONTRACT;
+}
+function releaseMatrix(ctx) {
+  return { include: releaseContract(ctx).targets.map(target => ({ target, ...RELEASE_MATRIX[target] })) };
 }
 function context(env = process.env) {
   return releaseContext({ ...legacy.context(env), controller: env.GITHUB_WORKFLOW_SHA });
@@ -89,13 +97,28 @@ function workflow(value) {
   const [file, ref, extra] = String(value).split("@"); assert.ok(!extra && (ref === undefined || /^\S+$/.test(ref)));
   return file.startsWith(`${REPOSITORY}/`) ? file.slice(REPOSITORY.length + 1) : file;
 }
+// Derive the contract from the immutable source and the original dispatcher.
+// A caller's version/schema flags and retained receipt bytes cannot select it.
+function originalContext(ctx, commit, request = api) {
+  assert.match(commit || "", SHA, "Invalid original controller");
+  const producer = request(`contents/.github/workflows/release.yml?ref=${commit}`)?.sha;
+  if ([ORIGINAL_RELEASE_WORKFLOW_BLOB, V2_RELEASE_WORKFLOW_BLOB].includes(producer)) {
+    return releaseContext({ ...ctx, controller: commit, producer, v3FeatureWorkflowBlob: undefined });
+  }
+  assert.equal(producer, ARM64_RELEASE_WORKFLOW_BLOB, "Unreviewed original workflow producer");
+  const featureBlob = request(`contents/.github/workflows/ci.yml?ref=${ctx.source}`)?.sha;
+  const targets = admission.featureTargets(featureBlob);
+  const v3FeatureWorkflowBlob = targets.length === V3_CONTRACT.targets.length ? featureBlob : undefined;
+  return releaseContext({ ...ctx, controller: commit, producer, v3FeatureWorkflowBlob });
+}
 function runIdentity(ctx, value) {
   assert.equal(value?.id, ctx.runId); assert.equal(value.repository.full_name, REPOSITORY);
   assert.equal(value.run_attempt, ctx.attempt, "Release attempt changed");
   assert.equal(value.event, "workflow_dispatch"); assert.equal(workflow(value.path), ".github/workflows/release.yml");
   assert.equal(value.head_branch, "main"); assert.match(value.head_sha || "", SHA);
   if (ctx.controller) assert.equal(value.head_sha, ctx.controller, "Original controller differs");
-  assert.equal(value.display_title, `Bodhi v${releaseContract(ctx).schemaVersion} v${ctx.version} @ ${ctx.source}`);
+  const label = ctx.producer === ARM64_RELEASE_WORKFLOW_BLOB ? "original" : `v${releaseContract(ctx).schemaVersion}`;
+  assert.equal(value.display_title, `Bodhi ${label} v${ctx.version} @ ${ctx.source}`);
   return value;
 }
 function run(ctx, request = api, recovery = false) {
@@ -447,12 +470,13 @@ function captureTarget(root, ctx, reservation, target, output, request = api) {
   return receipt;
 }
 function main() {
-  const [command, target] = process.argv.slice(2), ctx = context();
-  controller(); run(ctx);
+  const [command, target] = process.argv.slice(2), ctx = originalContext(context(), controller());
+  run(ctx);
   const { reservation } = loadBuildReservation(ctx);
   if (command === "plan") {
     const existing = selectTarget(ctx, reservation, target);
-    outputs({ reuse: Boolean(existing), artifact_name: artifactName(ctx, target, ctx.attempt) }); return;
+    outputs({ reuse: Boolean(existing), artifact_name: artifactName(ctx, target, ctx.attempt),
+      emergency_name: `bodhi-v${releaseContract(ctx).schemaVersion}-emergency-${ctx.runId}-${ctx.attempt}-${target}` }); return;
   }
   const root = process.env.SOURCE_ROOT;
   if (command === "prepare") {
@@ -463,7 +487,8 @@ function main() {
   captureTarget(root, ctx, reservation, target, process.env.TARGET_OUTPUT);
 }
 module.exports = { ROOT, REPOSITORY, NATIVE_TARGETS, BUILD, CAPTURE, RETAIN, PREFLIGHT, RESERVATION, MANIFEST, SHA, DIGEST, bytes, sha256,
-  childEnv, api, pages, context, controller, workflow, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, names, artifactName, artifact, download, hashFile,
-  releaseContract, releaseContext, verifyReservation, releaseReservation, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks,
+  ORIGINAL_RELEASE_WORKFLOW_BLOB, V2_RELEASE_WORKFLOW_BLOB, ARM64_RELEASE_WORKFLOW_BLOB,
+  childEnv, api, pages, context, controller, workflow, originalContext, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, names, artifactName, artifact, download, hashFile,
+  releaseContract, releaseContext, releaseMatrix, verifyReservation, releaseReservation, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks,
   stamped, stamp, verifyLinuxPackage, staticOutputs, captureTarget, outputs };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Original Bodhi output: ${error.message}`); process.exitCode = 1; } }

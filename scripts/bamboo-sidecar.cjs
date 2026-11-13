@@ -304,7 +304,7 @@ function installRelease(root = ROOT, target, options = {}) {
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 }
 
-module.exports = { HOST_FILES, MANIFEST, REPOSITORY, TARGETS, binaryName, downloadAsset, installRelease, installedRelease,
+module.exports = { HOST_FILES, MANIFEST, MANIFEST_V3, REPOSITORY, TARGETS, binaryName, downloadAsset, installRelease, installedRelease,
   readLock, releaseUrl, sha256, unpackHost, validateLock, validateManifest };
 
 if (require.main === module) {

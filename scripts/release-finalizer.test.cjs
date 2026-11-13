@@ -339,14 +339,16 @@ test("frozen v1 workflows bind original evidence and historical native acceptanc
   for (const body of [workflow, recovery]) assert.match(body, /group: bodhi-release-\$\{\{ inputs.bodhi_version \}\}\n  cancel-in-progress: false/);
 });
 
-// Bamboo publishes four reusable targets; this Bodhi release supports three.
+// The frozen v1 workflow and current feature workflow own separate matrices.
 test("feature native tests and release packaging preserve the supported target contract", () => {
   assert.deepEqual(NATIVE_TARGETS, ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]);
   assert.equal(require("./bamboo-sidecar.cjs").TARGETS.length, 4);
   for (const name of ["ci.yml", "release.yml"]) {
     const body = fs.readFileSync(path.join(__dirname, name === "release.yml" ? "tests/fixtures/release-v1/release.yml" : "../.github/workflows/ci.yml"), "utf8");
     const targets = [...body.matchAll(/^            target: "?([a-z0-9_-]+)"?$/gm)].map(match => match[1]);
-    assert.deepEqual(targets.sort(), [...NATIVE_TARGETS].sort());
+    const expected = name === "release.yml" ? NATIVE_TARGETS : require("./release-source.cjs").featureTargets(
+      execFileSync("git", ["hash-object", path.join(__dirname, "../.github/workflows/ci.yml")], { encoding: "utf8" }).trim());
+    assert.deepEqual(targets.sort(), [...expected].sort());
     assert.doesNotMatch(body, /macos-15-intel|x86_64-apple-darwin/);
     const gates = name === "ci.yml"
       ? ["Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"]

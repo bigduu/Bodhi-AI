@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { gzipSync } = require("node:zlib");
 const { test } = require("node:test");
-const { spawnSync } = require("node:child_process");
+const { execFileSync, spawnSync } = require("node:child_process");
 const sidecar = require("./bamboo-sidecar.cjs");
 
 // Synthetic executable headers exercise the real installer and architecture
@@ -378,15 +378,18 @@ for (const name of ["ci.yml", "release.yml"]) test(`${name} consumes assets befo
   const body = name === "ci.yml" ? workflow.slice(workflow.indexOf("  native-tests:")) : workflow;
   assert.doesNotMatch(body, /bamboo-src|repository:\s*bigduu\/Bamboo-agent|BAMBOO_SIDECAR_SOURCE:\s*local|sidecar_cache/);
   assert.doesNotMatch(body, /cargo update/);
-  const targets = [...body.matchAll(/^\s+target:\s*["']?([a-z0-9_-]+)["']?\s*$/gm)].map((match) => match[1]).sort();
-  assert.deepEqual(targets, [...require("./release-finalizer.cjs").NATIVE_TARGETS].sort());
   if (name === "ci.yml") {
+    const { featureTargets } = require("./release-source.cjs");
+    const blob = execFileSync("git", ["hash-object", path.join(__dirname, "../.github/workflows/ci.yml")], { encoding: "utf8" }).trim();
+    const targets = [...body.matchAll(/^\s+target:\s*["']?([a-z0-9_-]+)["']?\s*$/gm)].map((match) => match[1]).sort();
+    assert.deepEqual(targets, [...featureTargets(blob)].sort());
     const stage = body.indexOf("run: npm run build:sidecar:dev");
     const tests = body.indexOf("run: cargo test --locked");
     assert.ok(stage > 0 && tests > stage);
     assert.match(body, /--assembly=debug/);
     assert.doesNotMatch(body, /cargo build|tauri-action|release\/bundle/);
   } else {
+    assert.match(body, /matrix: \$\{\{ fromJSON\(needs\.preflight\.outputs\.targets\) \}\}/);
     const preflight = body.indexOf("scripts/release-finalizer-v2.cjs reserve");
     const build = body.indexOf("npm run tauri:build");
     const verify = body.indexOf("scripts/release-output.cjs capture");

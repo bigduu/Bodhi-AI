@@ -86,6 +86,16 @@ function originalRun(ctx, request = api, recovery = false) {
   const value = out.run({ ...ctx, controller: recovery ? undefined : ctx.controller }, request, recovery);
   return { ...ctx, controller: value.head_sha };
 }
+function recoverContext(ctx, recoveryController, request = api) {
+  const original = request(`actions/runs/${ctx.runId}`);
+  const selected = out.originalContext(ctx, original?.head_sha, request);
+  out.runIdentity(selected, original);
+  if (selected.controller === recoveryController) return selected;
+  const history = request(`compare/${selected.controller}...${recoveryController}`);
+  assert.ok(history?.status === "ahead" && history.behind_by === 0 &&
+    history.merge_base_commit?.sha === selected.controller, "Original controller is not in trusted Main history");
+  return selected;
+}
 function validateAsset(asset, ctx) {
   assert.ok(Number.isSafeInteger(asset.id) && asset.id > 0); assert.equal(asset.state, "uploaded");
   assert.match(asset.digest || "", out.DIGEST); assert.ok(Number.isSafeInteger(asset.size) && asset.size > 0);
@@ -323,11 +333,18 @@ function verifyPublished(ctx, release, manifest) {
   return manifest;
 }
 function main() {
-  const [command, file] = process.argv.slice(2); let ctx = out.context();
-  const recovering = command === "recover"; out.controller(recovering);
+  const [command, file] = process.argv.slice(2);
+  const recovering = command === "recover", controller = out.controller(recovering);
+  const requested = out.context();
+  const ctx = recovering ? recoverContext(requested, controller) : out.originalContext(requested, controller);
+  const contract = releaseContract(ctx);
   if (command === "reserve") {
     originalRun(ctx);
     const product = source.requireProduct(ctx.source, process.env.SOURCE_ROOT);
+    if (contract.schemaVersion === 3) {
+      const { MANIFEST_V3 } = require("./bamboo-sidecar.cjs");
+      assert.equal(product.bamboo.manifestAssetName, MANIFEST_V3, "Five-target releases require the exact published five-target Bamboo lock");
+    }
     const existing = pages("releases").filter(release => release.tag_name === ctx.draftTag || release.tag_name === ctx.finalTag);
     let value;
     if (existing.length) {
@@ -341,16 +358,21 @@ function main() {
         jobId => execFileSync("gh", ["api", `repos/${REPOSITORY}/actions/jobs/${jobId}/logs`, "--allow-escape-sequences"], { env: out.childEnv(), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }));
       value = reserve(ctx, product, proof);
     }
-    write(file, value); out.outputs({ reuse: Boolean(existing.length), version: ctx.version, frontend_package: product.frontend.packageName, frontend_version: product.frontend.packageVersion }); return;
+    write(file, value);
+    out.outputs({ reuse: Boolean(existing.length), version: ctx.version, frontend_package: product.frontend.packageName,
+      frontend_version: product.frontend.packageVersion, targets: JSON.stringify(out.releaseMatrix(ctx)), schema_version: contract.schemaVersion,
+      reservation_name: ctx.reservationName }); return;
   }
   if (recovering) {
-    const original = recoveryArtifact(ctx); ctx = original.ctx;
+    assert.equal(process.env.EXPECTED_EVIDENCE_SCHEMA, String(contract.schemaVersion), "Recovery input differs from the original evidence schema");
+    const original = recoveryArtifact(ctx);
     const directory = `${file}.original`; out.download(original.artifact, ["evidence.json"], directory);
     const evidence = readJson(path.join(directory, "evidence.json"));
     // Authenticate source admission and every original target again, without rebuilding.
     const originalReservation = out.loadReservation(ctx);
     assert.deepEqual(evidence.manifest.reservation, originalReservation.reservation);
-    const targets = releaseContract(ctx).targets.map(target => out.selectTarget(ctx, originalReservation.reservation, target, api, out.download, true));
+    const targets = contract.targets.map(target => out.selectTarget(ctx, originalReservation.reservation, target, api, out.download, true));
+    assert.ok(targets.every(Boolean), "Original recovery target is missing");
     assert.deepEqual(evidence.manifest.targets, targets.map(({ receipt, artifact }) => ({ receipt, artifact })));
     publish(ctx, evidence); return;
   }
@@ -358,6 +380,6 @@ function main() {
   if (command === "assemble") { assemble(ctx, file); return; }
   assert.equal(command, "publish"); const evidence = readJson(file); retainedEvidence(ctx, evidence); publish(ctx, evidence);
 }
-module.exports = { ASSEMBLE, EVIDENCE, PUBLISH, available, reserve, originalRun, validateAsset, nativeAssets, verifyManifest,
+module.exports = { ASSEMBLE, EVIDENCE, PUBLISH, available, reserve, originalRun, recoverContext, validateAsset, nativeAssets, verifyManifest,
   retainAsset, assemble, verifyEvidence, refreshSource, publish, recoveryArtifact, retainedEvidence, readManifest, publicationEvidence, verifyPublished };
-if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi v2 release: ${error.message}`); process.exitCode = 1; } }
+if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi original release: ${error.message}`); process.exitCode = 1; } }
