@@ -348,7 +348,8 @@ function main() {
     const existing = pages("releases").filter(release => release.tag_name === ctx.draftTag || release.tag_name === ctx.finalTag);
     let value;
     if (existing.length) {
-      const original = out.loadReservation(ctx); available(ctx, api, original.release);
+      const original = out.loadReservation(ctx, api, out.download, { preflightOnly: true });
+      available(ctx, api, original.release);
       assert.deepEqual(product.lockHashes, original.reservation.lockHashes);
       for (const [key, variable] of [["pullRequest", "FEATURE_PULL_REQUEST"], ["runId", "FEATURE_RUN_ID"], ["attempt", "FEATURE_RUN_ATTEMPT"]])
         assert.equal(String(original.reservation.admission[key]), process.env[variable]);

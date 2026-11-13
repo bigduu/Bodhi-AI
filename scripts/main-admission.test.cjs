@@ -23,52 +23,58 @@ function timed(id, name, run, head, steps, attempt = 1) {
     started_at: stamp(0), completed_at: stamp(300), steps: steps.map((name, i) => ({ number: i + 1, name, status: "completed", conclusion: "success",
       started_at: stamp(10 + i * 10), completed_at: stamp(15 + i * 10) })) };
 }
-function fixture() {
-  const featureSteps = [[gate, "Run script unit tests"], ...out.NATIVE_TARGETS.map(() => [gate, "Stage accepted inputs for debug assembly",
+function fixture(arm64 = false) {
+  const featureBlob = arm64 ? source.ARM64_FEATURE_WORKFLOW_BLOB : source.FEATURE_WORKFLOW_BLOB;
+  const nativeTargets = source.featureTargets(featureBlob), schemaVersion = arm64 ? 3 : 2;
+  const publisherId = 11 + nativeTargets.length, manifestId = 200 + nativeTargets.flatMap(target => out.names("2026.10.30", target)).length;
+  const featureSteps = [[gate, "Run script unit tests"], ...nativeTargets.map(() => [gate,
+    ...(arm64 ? ["Verify native runner architecture"] : []), "Stage accepted inputs for debug assembly",
     "Run native shell unit tests", "Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"]),
     ["Require every unit test result"], ["Require every native E2E result"]];
-  const names = ["Unit Tests (Node)", ...out.NATIVE_TARGETS.map(t => `Unit and E2E (${t})`), "Unit Tests", "E2E Tests"];
+  const names = ["Unit Tests (Node)", ...nativeTargets.map(t => `Unit and E2E (${t})`), "Unit Tests", "E2E Tests"];
   const featureJobs = names.map((name, i) => timed(500 + i, name, 90, F, featureSteps[i]));
-  featureJobs.push({ id: 506, name: source.MAIN_GATE, run_id: 90, head_sha: F, run_attempt: 1, status: "completed", conclusion: "skipped", steps: [] });
+  featureJobs.push({ id: 500 + names.length, name: source.MAIN_GATE, run_id: 90, head_sha: F, run_attempt: 1, status: "completed", conclusion: "skipped", steps: [] });
   const admission = { schemaVersion: source.ADMISSION_SCHEMA, kind: source.ADMISSION_KIND, repository: out.REPOSITORY, source: S, tree: ST,
-    pullRequest: 17, mergedAt: "2026-10-27T00:10:00Z", base: FB, head: F, snapshot: FM, runId: 90, attempt: 1, observedDev: D, currentDev: D, workflowBlob: source.FEATURE_WORKFLOW_BLOB,
+    pullRequest: 17, mergedAt: "2026-10-27T00:10:00Z", base: FB, head: F, snapshot: FM, runId: 90, attempt: 1, observedDev: D, currentDev: D, workflowBlob: featureBlob,
     jobs: names.map((name, i) => ({ id: 500 + i, name, attempt: 1, logical: { id: 500 + i, attempt: 1 } })) };
   const value = { mode: "promotion", source: S, version: "2026.10.30", releaseId: 99, runId: 42, attempt: 1 };
-  const ctx = out.context({ GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: value.version, EXPECTED_SOURCE_SHA: S, GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "1", GITHUB_WORKFLOW_SHA: C });
+  const parsed = out.context({ GITHUB_REPOSITORY: out.REPOSITORY, RELEASE_VERSION: value.version, EXPECTED_SOURCE_SHA: S, GITHUB_RUN_ID: "42", GITHUB_RUN_ATTEMPT: "1", GITHUB_WORKFLOW_SHA: C });
+  const ctx = arm64 ? out.releaseContext({ ...parsed, v3FeatureWorkflowBlob: featureBlob }) : parsed;
+  const contract = out.releaseContract(ctx);
   const lockBytes = Object.fromEntries(["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"].map(file => [file, fs.readFileSync(path.join(__dirname, "..", file))]));
-  const reservation = { schemaVersion: 2, kind: "bodhi-original-release", repository: out.REPOSITORY, source: S, tree: ST, controller: C, version: value.version,
+  const reservation = { schemaVersion, kind: "bodhi-original-release", repository: out.REPOSITORY, source: S, tree: ST, controller: C, version: value.version,
     runId: 42, preflight: { jobId: 10, attempt: 1 }, admission, lockHashes: Object.fromEntries(Object.entries(lockBytes).map(([file, bytes]) => [file, out.sha256(bytes)])),
     frontend: JSON.parse(lockBytes["scripts/frontend-package-lock.json"]) };
   const jobs = [timed(10, "Reserve admitted release", 42, C, [out.PREFLIGHT, out.RESERVATION]),
-    ...out.NATIVE_TARGETS.map((target, i) => timed(11 + i, `Build original (${target})`, 42, C, ["Select retained target output", "Verify source and stamp reserved version", out.BUILD, out.CAPTURE, out.RETAIN])),
-    timed(14, "Publish original release", 42, C, [finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH])];
+    ...nativeTargets.map((target, i) => timed(11 + i, `Build original (${target})`, 42, C, ["Select retained target output", "Verify source and stamp reserved version", out.BUILD, out.CAPTURE, out.RETAIN])),
+    timed(publisherId, "Publish original release", 42, C, [finalizer.ASSEMBLE, finalizer.EVIDENCE, finalizer.PUBLISH])];
   const artifact = (id, name) => ({ id, name, expired: false, digest: `sha256:${out.sha256(String(id))}`, size_in_bytes: 6000,
     created_at: "2026-10-27T00:04:00Z", workflow_run: { id: 42, head_sha: C } });
   const artifacts = [artifact(100, ctx.reservationName)], files = { 100: { "reservation.json": out.bytes({ releaseId: 99, reservation }) } };
-  const targets = out.NATIVE_TARGETS.map((target, i) => {
+  const targets = nativeTargets.map((target, i) => {
     const contents = {}, outputFiles = out.names(value.version, target).map((name, index) => {
       const bytes = Buffer.alloc(1024 ** 2, i * 4 + index + 1); contents[name] = bytes;
       return { name, size: bytes.length, sha256: out.sha256(bytes) };
     });
-    const receipt = { schemaVersion: 2, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: 11 + i, attempt: 1, checks: out.checks(target), files: outputFiles };
+    const receipt = { schemaVersion, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: 11 + i, attempt: 1, checks: out.checks(target), files: outputFiles };
     contents["target-receipt.json"] = out.bytes(receipt); const item = artifact(101 + i, out.artifactName(ctx, target, 1)); artifacts.push(item); files[item.id] = contents;
     return { receipt, artifact: { id: item.id, name: item.name, digest: item.digest } };
   });
   const assets = targets.flatMap(t => t.receipt.files).map((file, index) => ({ id: 200 + index, name: file.name, size: file.size, digest: `sha256:${file.sha256}`, state: "uploaded" }));
   assets.sort((a, b) => a.name.localeCompare(b.name));
-  const manifest = { schemaVersion: 2, kind: "bodhi-original-installers", releaseId: 99, reservation,
-    reservationArtifact: { id: 100, name: ctx.reservationName, digest: artifacts[0].digest }, finalizer: { jobId: 14, attempt: 1 }, targets, assets };
-  const manifestAsset = { id: 206, name: out.MANIFEST, size: out.bytes(manifest).length, digest: `sha256:${out.sha256(out.bytes(manifest))}`, state: "uploaded" };
+  const manifest = { schemaVersion, kind: "bodhi-original-installers", releaseId: 99, reservation,
+    reservationArtifact: { id: 100, name: ctx.reservationName, digest: artifacts[0].digest }, finalizer: { jobId: publisherId, attempt: 1 }, targets, assets };
+  const manifestAsset = { id: manifestId, name: contract.manifest, size: out.bytes(manifest).length, digest: `sha256:${out.sha256(out.bytes(manifest))}`, state: "uploaded" };
   const release = { id: 99, url: `https://api.github.com/repos/${out.REPOSITORY}/releases/99`, draft: false, prerelease: false, target_commitish: S,
     tag_name: ctx.finalTag, body: JSON.stringify(reservation), assets: [...assets, manifestAsset].map(asset => ({ ...asset,
       created_at: "2026-10-27T00:00:12Z", url: `https://api.github.com/repos/${out.REPOSITORY}/releases/assets/${asset.id}`,
       browser_download_url: `https://github.com/${out.REPOSITORY}/releases/download/${ctx.finalTag}/${asset.name}` })) };
-  const evidence = { schemaVersion: 2, finalizerAttempt: 1, manifest, manifestSha256: out.sha256(out.bytes(manifest)), manifestAsset,
+  const evidence = { schemaVersion, finalizerAttempt: 1, manifest, manifestSha256: out.sha256(out.bytes(manifest)), manifestAsset,
     assets: [...assets, manifestAsset].sort((a, b) => a.name.localeCompare(b.name)) };
   artifacts.push(artifact(150, ctx.evidenceName)); files[150] = { "evidence.json": out.bytes(evidence) };
   const f = { value, ctx, reservation, featureJobs, jobs, artifacts, files, manifest, release, evidence, reads: [], responses: {}, counts: new Map(), lockBytes,
     run: { id: 42, repository: { full_name: out.REPOSITORY }, run_attempt: 1, event: "workflow_dispatch", path: ".github/workflows/release.yml@refs/heads/main",
-      head_sha: C, head_branch: "main", display_title: `Bodhi v2 v${value.version} @ ${S}`, status: "completed", conclusion: "success" },
+      head_sha: C, head_branch: "main", display_title: `Bodhi ${arm64 ? "original" : "v2"} v${value.version} @ ${S}`, status: "completed", conclusion: "success" },
     featureRun: { id: 90, repository: { full_name: out.REPOSITORY }, event: "pull_request", path: ".github/workflows/ci.yml", head_sha: F,
       run_attempt: 1, status: "completed", conclusion: "success", pull_requests: [] },
     featurePR: { number: 17, state: "closed", merged: true, merged_at: "2026-10-27T00:10:00Z", merge_commit_sha: S,
@@ -82,7 +88,7 @@ function fixture() {
     commits: { [S]: { sha: S, tree: { sha: ST }, parents: [{ sha: FB }, { sha: F }] }, [FM]: { sha: FM, tree: { sha: ST }, parents: [{ sha: FB }, { sha: F }] },
       [B]: { sha: B, tree: { sha: "7".repeat(40) } }, [M]: { sha: M, tree: { sha: ST }, parents: [{ sha: B }, { sha: P }] } }, trees: {} };
   const entry = (file, hash) => ({ path: file, type: "blob", mode: "100644", sha: hash });
-  const image = owner => [...main.CONTROLS.map(file => entry(file, file.endsWith("/ci.yml") ? source.FEATURE_WORKFLOW_BLOB : file.endsWith("/release.yml") ? main.RELEASE_BLOB :
+  const image = owner => [...main.CONTROLS.map(file => entry(file, file.endsWith("/ci.yml") ? featureBlob : file.endsWith("/release.yml") ? main.RELEASE_BLOB :
     file.endsWith("/recover-release.yml") ? main.RECOVERY_BLOB : blob(owner + file))),
     entry("src-tauri/src/main.rs", blob(owner + "product")), entry("src-tauri/Cargo.toml", blob('version = "0.0.0"\n')),
     ...Object.entries(lockBytes).map(([file, bytes]) => entry(file, blob(bytes))),
@@ -111,10 +117,10 @@ function fixture() {
     else if (endpoint.startsWith("git/commits/")) result = f.commits[endpoint.slice(12)];
     else if (endpoint.startsWith("git/trees/")) { const hash = endpoint.slice(10).split("?")[0]; result = { sha: hash, truncated: false, tree: f.trees[hash] }; }
     else if (endpoint.startsWith("compare/")) { const [before] = endpoint.slice(8).split("..."); result = { merge_base_commit: { sha: before }, status: "ahead", behind_by: 0 }; }
-    else if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) result = { sha: main.RELEASE_BLOB };
+    else if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) result = { sha: arm64 ? out.ARM64_RELEASE_WORKFLOW_BLOB : main.RELEASE_BLOB };
     else if (endpoint === `contents/.github/workflows/recover-release.yml?ref=${C2}`) result = { sha: main.RECOVERY_BLOB };
     else if ([S, FM].some(commit => endpoint === `contents/.github/workflows/ci.yml?ref=${commit}`))
-      result = { sha: f.featureBlob || source.FEATURE_WORKFLOW_BLOB };
+      result = { sha: f.featureBlob || featureBlob };
     else if (endpoint.startsWith("contents/") && endpoint.endsWith(`?ref=${S}`)) {
       const file = endpoint.slice(9).split("?")[0]; result = { encoding: "base64", content: lockBytes[file].toString("base64") };
     } else assert.fail(`Unexpected read-only request: ${endpoint}`);
@@ -122,10 +128,10 @@ function fixture() {
     if (f.onRead) f.onRead(endpoint, response, count); f.responses[endpoint] = copy(response); return response;
   };
   f.options = { readLog: jobId => {
-    assert.ok([500, 501, 502, 503].includes(jobId), "Only physical original source logs may be read");
+    assert.ok(jobId >= 500 && jobId <= 500 + nativeTargets.length, "Only physical original source logs may be read");
     const context = { schema: source.FEATURE_CONTEXT_SCHEMA, repository: out.REPOSITORY, runId: 90, physicalAttempt: 1, pullRequest: 17, base: FB, head: F, snapshot: FM, tree: ST };
     return `2026-10-27T00:00:00.000Z Feature source: ${FM} tree: ${ST}\n2026-10-27T00:00:00.001Z Feature context: ${Buffer.from(JSON.stringify(context)).toString("base64")}\n`;
-  }, readManifest: assetId => { assert.equal(assetId, 206); return copy(f.manifest); }, restore: (item, entries, directory) => {
+  }, readManifest: assetId => { assert.equal(assetId, manifestId); return copy(f.manifest); }, restore: (item, entries, directory) => {
     assert.deepEqual([...entries].sort(), Object.keys(f.files[item.id]).sort()); fs.mkdirSync(directory, { recursive: true });
     for (const [file, bytes] of Object.entries(f.files[item.id])) fs.writeFileSync(path.join(directory, file), bytes, { flag: "wx" });
   } };
@@ -145,6 +151,15 @@ test("normal completed release admits a complete S Main postimage, preserving ac
   const f = fixture(), proof = f.verify(); assert.equal(proof.source, S); assert.equal(proof.controller, C); assert.equal(proof.snapshot, M);
   assert.equal(proof.postimage, "complete-source"); assert.equal(proof.mainTree, ST); assert.equal(proof.publisher.id, 14);
   assert.ok(f.reads.includes(`compare/${C}...${B}`)); assert.ok(!f.reads.includes(`compare/${C}...${S}`));
+});
+test("Main admits the reviewed five-target original and rejects a missing ARM64 asset", () => {
+  const f = fixture(true);
+  const proof = f.verify();
+  assert.equal(proof.postimage, "complete-source");
+  assert.equal(proof.assets.length, 11);
+  assert.equal(proof.reservation.admission.workflowBlob, source.ARM64_FEATURE_WORKFLOW_BLOB);
+  f.release.assets = f.release.assets.filter(asset => !asset.name.endsWith("arm64-setup.exe"));
+  assert.throws(() => f.verify(), /Incomplete v3 installer set/);
 });
 test("Main accepts only a reviewed release workflow producer", () => {
   const f = fixture();

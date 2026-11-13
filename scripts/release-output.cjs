@@ -25,7 +25,7 @@ const V3_CONTRACT = Object.freeze({ schemaVersion: 3, manifest: "bodhi-release-v
   targets: Object.freeze([...NATIVE_TARGETS, ARM_LINUX, ARM_WINDOWS]) });
 const ORIGINAL_RELEASE_WORKFLOW_BLOB = "ff91ec4ca4c3047d6c23c5dc06d575f15fe190e3";
 const V2_RELEASE_WORKFLOW_BLOB = "7b666dc5f0f8f2f79e9b2064acdfe8cc4fa881ca";
-const ARM64_RELEASE_WORKFLOW_BLOB = "8d6f60b24d3394820047782a9a88c62c7f728f29";
+const ARM64_RELEASE_WORKFLOW_BLOB = "a73ce504ce9ed1ad6ee62f09921a27f63c0e5412";
 const RELEASE_MATRIX = {
   "aarch64-apple-darwin": { platform: "macos-latest", bundles: "app,dmg" },
   "x86_64-unknown-linux-gnu": { platform: "ubuntu-22.04", bundles: "appimage,deb,rpm" },
@@ -127,8 +127,11 @@ function run(ctx, request = api, recovery = false) {
   assert.equal(value.conclusion, recovery ? "failure" : null);
   return value;
 }
-function jobs(ctx, request = api) {
-  const rows = pages(`actions/runs/${ctx.runId}/jobs?filter=all`, "jobs", request);
+function jobs(ctx, request = api, { preflightOnly = false } = {}) {
+  let rows = pages(`actions/runs/${ctx.runId}/jobs?filter=all`, "jobs", request);
+  // A rerun can expose a matrix placeholder until this preflight emits its
+  // outputs. Target selection still authenticates the complete expanded graph.
+  if (preflightOnly) rows = rows.filter(job => job.name === "Reserve admitted release");
   const names = ["Reserve admitted release", "Publish original release", ...releaseContract(ctx).targets.map(target => `Build original (${target})`)];
   assert.equal(new Set(rows.map(job => job.id)).size, rows.length);
   for (const job of rows) {
@@ -268,13 +271,16 @@ function releaseReservation(release, ctx) {
   assert.ok(typeof release.body === "string" && Buffer.byteLength(release.body) <= 128 * 1024);
   return verifyReservation(JSON.parse(release.body), ctx);
 }
-function loadReservation(ctx, request = api, restore = download) {
+function loadReservation(ctx, request = api, restore = download, options) {
   const matching = pages("releases", undefined, request).filter(release => release.tag_name === ctx.draftTag || release.tag_name === ctx.finalTag);
   assert.equal(matching.length, 1, "Reserved release missing or conflicting");
   const release = request(`releases/${id(matching[0].id)}`), reservation = releaseReservation(release, ctx);
-  const job = jobs(ctx, request).find(item => item.id === reservation.preflight.jobId);
+  const rows = jobs(ctx, request, options), preflights = rows.filter(item => item.name === "Reserve admitted release");
+  const job = preflights.find(item => item.id === reservation.preflight.jobId);
   assert.ok(job); assert.equal(job.name, "Reserve admitted release"); assert.equal(job.run_attempt, reservation.preflight.attempt);
   passed(job, [PREFLIGHT, RESERVATION]);
+  const physical = admission.executionOrigin(job, preflights);
+  assert.equal(physical.id, job.id, "Reservation must name the physical preflight job");
   const original = artifact(pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request), ctx.reservationName, ctx, job);
   const directory = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-v2-admission-")), "original");
   restore(original, ["reservation.json"], directory);

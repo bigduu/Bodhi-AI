@@ -242,6 +242,15 @@ test("v3 recovery selects its own retained evidence and preserves the original A
   }
   assert.throws(() => finalizer.recoveryArtifact(ctx, a.request));
 });
+test("rerun preflight can restore the original reservation before its matrix expands", () => {
+  const f = fixture(), a = adapters(f);
+  f.jobs.push(f.job(90, "Reserve admitted release", ctx.attempt, [], true));
+  f.jobs.push(f.job(91, "Build original (${{ matrix.target }})", ctx.attempt, [], true));
+  assert.deepEqual(out.loadReservation(ctx, a.request, a.restore, { preflightOnly: true }).reservation, f.reservation);
+  assert.throws(() => out.loadReservation(ctx, a.request, a.restore), /Foreign release job/);
+  f.jobs[0].head_sha = S;
+  assert.throws(() => out.loadReservation(ctx, a.request, a.restore, { preflightOnly: true }), /Expected values to be strictly equal/);
+});
 test("version reservation precedes every original build and binds separate controller/product", () => {
   const f = fixture(), a = adapters(f), { reservation } = f;
   f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
