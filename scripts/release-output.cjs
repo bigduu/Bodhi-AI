@@ -18,6 +18,11 @@ const RETAIN = "Retain original target output";
 const PREFLIGHT = "Admit frozen dev source and reserve version";
 const RESERVATION = "Retain original source admission and reservation";
 const MANIFEST = "bodhi-release-v2.json";
+const ARM_LINUX = "aarch64-unknown-linux-gnu";
+const ARM_WINDOWS = "aarch64-pc-windows-msvc";
+const V2_CONTRACT = Object.freeze({ schemaVersion: 2, manifest: MANIFEST, targets: Object.freeze([...NATIVE_TARGETS]) });
+const V3_CONTRACT = Object.freeze({ schemaVersion: 3, manifest: "bodhi-release-v3.json",
+  targets: Object.freeze([...NATIVE_TARGETS, ARM_LINUX, ARM_WINDOWS]) });
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -52,11 +57,23 @@ function pages(endpoint, key, request = api) {
     }
   }
 }
+// The active v2 CLI uses the default. A v3 verifier receives the exact
+// feature workflow blob already reviewed by its trusted caller. A receipt
+// schema, workflow input, or upstream lock cannot grant that authority.
+function releaseContract(ctx) {
+  if (ctx.v3FeatureWorkflowBlob === undefined) return V2_CONTRACT;
+  assert.match(ctx.v3FeatureWorkflowBlob, SHA, "Require the reviewed v3 feature workflow blob");
+  assert.ok(![admission.LEGACY_FEATURE_WORKFLOW_BLOB, admission.CONTEXT_WORKFLOW_BLOB, admission.FEATURE_WORKFLOW_BLOB].includes(ctx.v3FeatureWorkflowBlob),
+    "Historical feature workflows cannot authorize v3");
+  return V3_CONTRACT;
+}
 function context(env = process.env) {
-  const ctx = legacy.context(env);
-  return { ...ctx, controller: env.GITHUB_WORKFLOW_SHA,
-    draftTag: `bodhi-v2-draft-v${ctx.version}-${ctx.runId}`,
-    reservationName: `bodhi-v2-reservation-${ctx.runId}`, evidenceName: `bodhi-v2-evidence-${ctx.runId}-${ctx.attempt}` };
+  return releaseContext({ ...legacy.context(env), controller: env.GITHUB_WORKFLOW_SHA });
+}
+function releaseContext(ctx) {
+  const prefix = `bodhi-v${releaseContract(ctx).schemaVersion}`;
+  return { ...ctx, draftTag: `${prefix}-draft-v${ctx.version}-${ctx.runId}`,
+    reservationName: `${prefix}-reservation-${ctx.runId}`, evidenceName: `${prefix}-evidence-${ctx.runId}-${ctx.attempt}` };
 }
 function controller(recovery = false, env = process.env, root = ROOT, executeGit = git) {
   if (!recovery) return admission.requireController(env, root, executeGit);
@@ -78,7 +95,7 @@ function runIdentity(ctx, value) {
   assert.equal(value.event, "workflow_dispatch"); assert.equal(workflow(value.path), ".github/workflows/release.yml");
   assert.equal(value.head_branch, "main"); assert.match(value.head_sha || "", SHA);
   if (ctx.controller) assert.equal(value.head_sha, ctx.controller, "Original controller differs");
-  assert.equal(value.display_title, `Bodhi v2 v${ctx.version} @ ${ctx.source}`);
+  assert.equal(value.display_title, `Bodhi v${releaseContract(ctx).schemaVersion} v${ctx.version} @ ${ctx.source}`);
   return value;
 }
 function run(ctx, request = api, recovery = false) {
@@ -89,7 +106,7 @@ function run(ctx, request = api, recovery = false) {
 }
 function jobs(ctx, request = api) {
   const rows = pages(`actions/runs/${ctx.runId}/jobs?filter=all`, "jobs", request);
-  const names = ["Reserve admitted release", "Publish original release", ...NATIVE_TARGETS.map(target => `Build original (${target})`)];
+  const names = ["Reserve admitted release", "Publish original release", ...releaseContract(ctx).targets.map(target => `Build original (${target})`)];
   assert.equal(new Set(rows.map(job => job.id)).size, rows.length);
   for (const job of rows) {
     assert.ok(names.includes(job.name), "Foreign release job"); assert.equal(job.run_id, ctx.runId);
@@ -121,13 +138,25 @@ function readJson(file, maximum = 128 * 1024) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 function write(file, value) { fs.writeFileSync(file, bytes(value), { flag: "wx" }); }
-function names(version, target) {
-  assert.ok(NATIVE_TARGETS.includes(target));
-  if (target.includes("darwin")) return [`Bodhi.AI_${version}_aarch64.dmg`, "Bodhi.AI_aarch64.app.tar.gz"];
-  if (target.includes("linux")) return [`Bodhi.AI_${version}_amd64.AppImage`, `Bodhi.AI_${version}_amd64.deb`, `Bodhi.AI-${version}-1.x86_64.rpm`];
-  return [`Bodhi.AI_${version}_x64-setup.exe`];
+function linuxPackageArchitectures(target) {
+  if (target === "x86_64-unknown-linux-gnu") return { appimage: "amd64", deb: "amd64", rpm: "x86_64" };
+  assert.equal(target, ARM_LINUX, "Unsupported Linux packaging target");
+  return { appimage: "aarch64", deb: "arm64", rpm: "aarch64" };
 }
-function artifactName(ctx, target, attempt) { return `bodhi-v2-target-${ctx.runId}-${id(attempt)}-${target}`; }
+function names(version, target) {
+  assert.ok(V3_CONTRACT.targets.includes(target), "Unsupported installer target");
+  if (target === "aarch64-apple-darwin") return [`Bodhi.AI_${version}_aarch64.dmg`, "Bodhi.AI_aarch64.app.tar.gz"];
+  if (target.endsWith("-linux-gnu")) {
+    const arch = linuxPackageArchitectures(target);
+    return [`Bodhi.AI_${version}_${arch.appimage}.AppImage`, `Bodhi.AI_${version}_${arch.deb}.deb`, `Bodhi.AI-${version}-1.${arch.rpm}.rpm`];
+  }
+  return [`Bodhi.AI_${version}_${target === ARM_WINDOWS ? "arm64" : "x64"}-setup.exe`];
+}
+function artifactName(ctx, target, attempt) {
+  const contract = releaseContract(ctx);
+  assert.ok(contract.targets.includes(target), "Target is outside the selected release contract");
+  return `bodhi-v${contract.schemaVersion}-target-${ctx.runId}-${id(attempt)}-${target}`;
+}
 function artifactMetadata(artifacts, name, ctx, maximum = 8 * 1024 ** 3) {
   const matches = artifacts.filter(value => value.name === name); assert.equal(matches.length, 1, `Original artifact missing or ambiguous: ${name}`);
   const value = matches[0]; id(value.id); assert.equal(value.expired, false, "Original artifact expired");
@@ -184,17 +213,21 @@ function hashFile(file) {
 }
 function verifyReservation(value, ctx) {
   assert.match(ctx.controller || "", SHA);
-  assert.equal(value.schemaVersion, 2); assert.equal(value.kind, "bodhi-original-release");
+  const contract = releaseContract(ctx);
+  assert.equal(value.schemaVersion, contract.schemaVersion); assert.equal(value.kind, "bodhi-original-release");
   for (const key of ["repository", "version", "source", "controller", "runId"]) assert.equal(value[key], ctx[key], `Reservation ${key} differs`);
   assert.match(value.tree || "", SHA); assert.equal(value.admission.schemaVersion, admission.ADMISSION_SCHEMA);
   assert.equal(value.admission.kind, admission.ADMISSION_KIND);
   assert.equal(value.admission.repository, REPOSITORY); assert.equal(value.admission.source, ctx.source); assert.equal(value.admission.tree, value.tree);
   for (const key of ["base", "head", "snapshot", "observedDev", "currentDev"]) assert.match(value.admission[key] || "", SHA);
   for (const key of ["pullRequest", "runId", "attempt"]) id(value.admission[key]);
-  assert.ok(admission.FEATURE_PRODUCERS.has(value.admission.workflowBlob), "Unreviewed feature producer");
-  assert.deepEqual(value.admission.jobs.map(job => job.name).sort(), ["Unit Tests (Node)", "Unit Tests", "E2E Tests", ...NATIVE_TARGETS.map(target => `Unit and E2E (${target})`)].sort());
-  assert.equal(new Set(value.admission.jobs.map(job => id(job.id))).size, 6);
-  assert.equal(new Set(value.admission.jobs.map(job => id(job.logical?.id))).size, 6);
+  if (contract === V2_CONTRACT) assert.ok([admission.CONTEXT_WORKFLOW_BLOB, admission.FEATURE_WORKFLOW_BLOB].includes(value.admission.workflowBlob),
+    "Unreviewed feature producer");
+  else assert.equal(value.admission.workflowBlob, ctx.v3FeatureWorkflowBlob, "V3 reservation differs from the reviewed feature workflow");
+  const featureJobs = ["Unit Tests (Node)", "Unit Tests", "E2E Tests", ...contract.targets.map(target => `Unit and E2E (${target})`)];
+  assert.deepEqual(value.admission.jobs.map(job => job.name).sort(), featureJobs.sort());
+  assert.equal(new Set(value.admission.jobs.map(job => id(job.id))).size, featureJobs.length);
+  assert.equal(new Set(value.admission.jobs.map(job => id(job.logical?.id))).size, featureJobs.length);
   for (const job of value.admission.jobs) {
     assert.ok(id(job.attempt) <= id(job.logical.attempt) && job.logical.attempt <= value.admission.attempt, "Feature physical/logical attempts are out of order");
     assert.equal(job.id === job.logical.id, job.attempt === job.logical.attempt, "Feature physical/logical identity differs within one attempt");
@@ -272,7 +305,9 @@ function activeSelector(ctx, rows) {
       !(step.status === "completed" && step.conclusion === "skipped" || ["queued", "pending"].includes(step.status) && step.conclusion === null));
 }
 function selectTarget(ctx, reservation, target, request = api, restore = download, requireLatestSuccess = false) {
-  assert.ok(NATIVE_TARGETS.includes(target)); const rows = jobs(ctx, request).filter(job => job.name === `Build original (${target})`);
+  const contract = releaseContract(ctx);
+  assert.ok(contract.targets.includes(target), "Target is outside the selected release contract");
+  const rows = jobs(ctx, request).filter(job => job.name === `Build original (${target})`);
   assert.equal(new Set(rows.map(job => job.run_attempt)).size, rows.length, "Ambiguous target job in one attempt");
   if (requireLatestSuccess) {
     const last = Math.max(...rows.map(job => job.run_attempt)), selected = rows.filter(job => job.run_attempt === last);
@@ -296,7 +331,7 @@ function selectTarget(ctx, reservation, target, request = api, restore = downloa
     } else passed(completed[0], ["Select retained target output"]);
   }
   const all = pages(`actions/runs/${ctx.runId}/artifacts`, "artifacts", request);
-  const candidates = all.filter(value => value.name.startsWith(`bodhi-v2-target-${ctx.runId}-`) && value.name.endsWith(`-${target}`));
+  const candidates = all.filter(value => value.name.startsWith(`bodhi-v${contract.schemaVersion}-target-${ctx.runId}-`) && value.name.endsWith(`-${target}`));
   if (!built.length) { assert.equal(candidates.length, 0, "Artifact without an original successful build"); return null; }
   const job = built[0]; passed(job, ["Verify source and stamp reserved version", BUILD, CAPTURE, RETAIN]);
   const original = artifact(all, artifactName(ctx, target, job.run_attempt), ctx, job);
@@ -313,8 +348,11 @@ function selectTarget(ctx, reservation, target, request = api, restore = downloa
 }
 function checks(target) { return ["locked-upstreams", "shell-architecture", "package-version", target.includes("darwin") ? "macos-signature" : "staged-runtime"]; }
 function verifyReceipt(receipt, ctx, reservation, target, job) {
-  id(receipt.jobId); assert.ok(id(receipt.attempt) <= ctx.attempt); assert.ok(NATIVE_TARGETS.includes(target));
-  assert.equal(receipt.schemaVersion, 2); assert.equal(receipt.target, target);
+  const contract = releaseContract(ctx);
+  id(receipt.jobId); assert.ok(id(receipt.attempt) <= ctx.attempt);
+  assert.ok(contract.targets.includes(target), "Target is outside the selected release contract");
+  assert.equal(reservation.schemaVersion, contract.schemaVersion);
+  assert.equal(receipt.schemaVersion, contract.schemaVersion); assert.equal(receipt.target, target);
   assert.equal(receipt.reservationSha256, sha256(bytes(reservation))); assert.equal(receipt.jobId, job.id);
   assert.equal(receipt.attempt, job.run_attempt); assert.deepEqual(receipt.checks, checks(target));
   assert.deepEqual(receipt.files.map(file => file.name).sort(), names(ctx.version, target).sort());
@@ -334,7 +372,23 @@ function stamp(root, version) {
   const files = ["src-tauri/Cargo.toml", "src-tauri/tauri.conf.json", "Cargo.lock"].map(file => fs.readFileSync(path.join(root, file), "utf8"));
   for (const [file, data] of Object.entries(stamped(...files, version))) fs.writeFileSync(path.join(root, file), data);
 }
+function verifyLinuxPackage(command, format, file, version, target) {
+  const arch = linuxPackageArchitectures(target);
+  let args, expected;
+  if (format === "deb") {
+    args = ["dpkg-deb", "-f", file, "Version", "Architecture"];
+    expected = `Version: ${version}\nArchitecture: ${arch.deb}`;
+  } else {
+    assert.equal(format, "rpm");
+    args = ["rpm", "-qp", "--queryformat", "%{VERSION}|%{RELEASE}|%{ARCH}", file];
+    expected = `${version}|1|${arch.rpm}`;
+  }
+  const [program, ...parameters] = args;
+  assert.equal(command(program, parameters), expected, `Original ${format} version or architecture differs`);
+}
 function staticOutputs(root, ctx, target, output) {
+  const contract = releaseContract(ctx);
+  assert.ok(contract.targets.includes(target), "Target is outside the selected release contract");
   const lotus = require("./lotus-dist.cjs"), assembly = require("./verify-assembly.cjs"), browser = require("./browser-runtime.cjs");
   const source = lotus.resolveSource({ LOTUS_SOURCE: "package", LOTUS_PACKAGE_NAME: "@bigduu/lotus-next" }, root);
   const receipt = lotus.verifyStaged(source, root);
@@ -358,9 +412,9 @@ function staticOutputs(root, ctx, target, output) {
     const directory = path.join(bundle, directories[index]);
     const matches = fs.readdirSync(directory).filter(name => name.replaceAll(" ", ".") === expected[index]);
     assert.equal(matches.length, 1, `Missing original installer: ${expected[index]}`);
-    const file = path.join(directory, matches[0]); hashFile(file); fs.copyFileSync(file, path.join(output, expected[index]), fs.constants.COPYFILE_EXCL);
-    if (directories[index] === "deb") assert.equal(command("dpkg-deb", ["-f", file, "Version", "Architecture"]), `Version: ${ctx.version}\nArchitecture: amd64`);
-    if (directories[index] === "rpm") assert.equal(command("rpm", ["-qp", "--queryformat", "%{VERSION}|%{RELEASE}|%{ARCH}", file]), `${ctx.version}|1|x86_64`);
+    const file = path.join(directory, matches[0]); hashFile(file);
+    if (directories[index] === "deb" || directories[index] === "rpm") verifyLinuxPackage(command, directories[index], file, ctx.version, target);
+    fs.copyFileSync(file, path.join(output, expected[index]), fs.constants.COPYFILE_EXCL);
   }
   if (target.includes("windows")) {
     const binary = path.join(base, "bodhi.exe");
@@ -370,6 +424,27 @@ function staticOutputs(root, ctx, target, output) {
 }
 function outputs(values) {
   if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(""));
+}
+function captureTarget(root, ctx, reservation, target, output, request = api) {
+  const contract = releaseContract(ctx);
+  assert.ok(contract.targets.includes(target), "Target is outside the selected release contract");
+  assert.equal(contract.schemaVersion, 2, "V3 target capture requires verified installer payload checks");
+  verifyReservation(reservation, ctx);
+  assert.equal(git(root, "rev-parse", "HEAD"), ctx.source);
+  const changed = git(root, "status", "--porcelain", "--untracked-files=all").split(/\r?\n/).filter(Boolean).map(line => line.slice(3)).sort();
+  assert.deepEqual(changed, ["Cargo.lock", "src-tauri/Cargo.toml", "src-tauri/tauri.conf.json"]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.conf.json"))).version, ctx.version);
+  const originals = ["src-tauri/Cargo.toml", "src-tauri/tauri.conf.json", "Cargo.lock"].map(file => execFileSync("git", ["show", `${ctx.source}:${file}`],
+    { cwd: root, env: childEnv(), encoding: "utf8" }));
+  for (const [file, expected] of Object.entries(stamped(...originals, ctx.version))) assert.ok(fs.readFileSync(path.join(root, file)).equals(Buffer.from(expected)), `Unexpected publishing edit: ${file}`);
+  for (const [file, hash] of Object.entries(reservation.lockHashes)) assert.equal(sha256(fs.readFileSync(path.join(root, file))), hash);
+  assert.ok(path.isAbsolute(output) && !fs.existsSync(output)); fs.mkdirSync(output, { recursive: true });
+  staticOutputs(root, ctx, target, output);
+  const job = currentJob(ctx, `Build original (${target})`, request); gate(job, BUILD);
+  const receipt = { schemaVersion: contract.schemaVersion, target, reservationSha256: sha256(bytes(reservation)), jobId: job.id, attempt: ctx.attempt, checks: checks(target),
+    files: names(ctx.version, target).map(name => ({ name, size: fs.lstatSync(path.join(output, name)).size, sha256: hashFile(path.join(output, name)) })) };
+  verifyReceipt(receipt, ctx, reservation, target, job); write(path.join(output, "target-receipt.json"), receipt);
+  return receipt;
 }
 function main() {
   const [command, target] = process.argv.slice(2), ctx = context();
@@ -384,23 +459,11 @@ function main() {
     const product = admission.requireProduct(ctx.source, root); assert.deepEqual(product.lockHashes, reservation.lockHashes);
     stamp(root, ctx.version); return;
   }
-  assert.equal(command, "capture"); assert.ok(NATIVE_TARGETS.includes(target));
-  assert.equal(git(root, "rev-parse", "HEAD"), ctx.source);
-  const changed = git(root, "status", "--porcelain", "--untracked-files=all").split(/\r?\n/).filter(Boolean).map(line => line.slice(3)).sort();
-  assert.deepEqual(changed, ["Cargo.lock", "src-tauri/Cargo.toml", "src-tauri/tauri.conf.json"]);
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, "src-tauri/tauri.conf.json"))).version, ctx.version);
-  const originals = ["src-tauri/Cargo.toml", "src-tauri/tauri.conf.json", "Cargo.lock"].map(file => execFileSync("git", ["show", `${ctx.source}:${file}`],
-    { cwd: root, env: childEnv(), encoding: "utf8" }));
-  for (const [file, expected] of Object.entries(stamped(...originals, ctx.version))) assert.ok(fs.readFileSync(path.join(root, file)).equals(Buffer.from(expected)), `Unexpected publishing edit: ${file}`);
-  for (const [file, hash] of Object.entries(reservation.lockHashes)) assert.equal(sha256(fs.readFileSync(path.join(root, file))), hash);
-  const output = process.env.TARGET_OUTPUT; assert.ok(path.isAbsolute(output) && !fs.existsSync(output)); fs.mkdirSync(output, { recursive: true });
-  staticOutputs(root, ctx, target, output);
-  const job = currentJob(ctx, `Build original (${target})`); gate(job, BUILD);
-  const receipt = { schemaVersion: 2, target, reservationSha256: sha256(bytes(reservation)), jobId: job.id, attempt: ctx.attempt, checks: checks(target),
-    files: names(ctx.version, target).map(name => ({ name, size: fs.lstatSync(path.join(output, name)).size, sha256: hashFile(path.join(output, name)) })) };
-  verifyReceipt(receipt, ctx, reservation, target, job); write(path.join(output, "target-receipt.json"), receipt);
+  assert.equal(command, "capture");
+  captureTarget(root, ctx, reservation, target, process.env.TARGET_OUTPUT);
 }
 module.exports = { ROOT, REPOSITORY, NATIVE_TARGETS, BUILD, CAPTURE, RETAIN, PREFLIGHT, RESERVATION, MANIFEST, SHA, DIGEST, bytes, sha256,
   childEnv, api, pages, context, controller, workflow, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, names, artifactName, artifact, download, hashFile,
-  verifyReservation, releaseReservation, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks, stamped, stamp, staticOutputs, outputs };
+  releaseContract, releaseContext, verifyReservation, releaseReservation, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks,
+  stamped, stamp, verifyLinuxPackage, staticOutputs, captureTarget, outputs };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Original Bodhi output: ${error.message}`); process.exitCode = 1; } }

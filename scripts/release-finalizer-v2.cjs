@@ -9,7 +9,7 @@ const { execFileSync } = require("node:child_process");
 const legacy = require("./release-finalizer.cjs");
 const source = require("./release-source.cjs");
 const out = require("./release-output.cjs");
-const { REPOSITORY, NATIVE_TARGETS, MANIFEST, api, pages, bytes, sha256, readJson, write } = out;
+const { REPOSITORY, releaseContract, api, pages, bytes, sha256, readJson, write } = out;
 const ASSEMBLE = "Verify original target receipts and upload assets";
 const EVIDENCE = "Retain original publication evidence";
 const PUBLISH = "Publish the original draft";
@@ -18,7 +18,10 @@ const waitForReadback = delay => Atomics.wait(new Int32Array(new SharedArrayBuff
 const assetIdentity = asset => ({ id: asset.id, name: asset.name, size: asset.size, digest: asset.digest, state: asset.state });
 const identities = release => release.assets.map(assetIdentity).sort((a, b) => a.name.localeCompare(b.name));
 const versionReservations = (ctx, releases) => releases.filter(release => release.tag_name === ctx.finalTag ||
-  release.tag_name.startsWith(`bodhi-draft-v${ctx.version}-`) || release.tag_name.startsWith(`bodhi-v2-draft-v${ctx.version}-`));
+  ["bodhi", "bodhi-v2", "bodhi-v3"].some(prefix => release.tag_name.startsWith(`${prefix}-draft-v${ctx.version}-`)));
+function expectedNativeNames(ctx, contract = releaseContract(ctx)) {
+  return contract.targets.flatMap(target => out.names(ctx.version, target));
+}
 function available(ctx, request = api, allowed, requireOwn = false) {
   legacy.requireUnused(ctx, request, allowed?.id);
   const reservations = versionReservations(ctx, pages("releases", undefined, request));
@@ -45,7 +48,7 @@ function reserve(ctx, product, proof, request = api, wait = waitForReadback) {
   assert.ok(!releases.some(release => release.tag_name === ctx.draftTag), "Use the authenticated original reservation on a rerun");
   available(ctx, request);
   const job = out.currentJob(ctx, "Reserve admitted release", request);
-  const reservation = out.verifyReservation({ schemaVersion: 2, kind: "bodhi-original-release", repository: REPOSITORY,
+  const reservation = out.verifyReservation({ schemaVersion: releaseContract(ctx).schemaVersion, kind: "bodhi-original-release", repository: REPOSITORY,
     version: ctx.version, source: ctx.source, tree: proof.tree, controller: ctx.controller, runId: ctx.runId,
     preflight: { jobId: job.id, attempt: ctx.attempt }, admission: proof, lockHashes: product.lockHashes, frontend: product.frontend }, ctx);
   const body = { tag_name: ctx.draftTag, target_commitish: ctx.source, name: `App v${ctx.version}`, body: JSON.stringify(reservation),
@@ -93,19 +96,41 @@ function validateAsset(asset, ctx) {
   assert.equal(tail.length, 2); assert.ok([ctx.draftTag, ctx.finalTag].includes(decodeURIComponent(tail[0])) || /^untagged-[A-Za-z0-9]+$/.test(tail[0]));
   assert.equal(decodeURIComponent(tail[1]), asset.name);
 }
+function originalDownloadTag(asset, ctx, draft) {
+  const url = new URL(asset.browser_download_url);
+  assert.equal(url.search + url.hash, "");
+  const tag = url.pathname.split("/").at(-2);
+  assert.ok(draft ? tag === ctx.draftTag || /^untagged-[0-9a-f]+$/.test(tag) : tag === ctx.finalTag,
+    "Asset download URL differs from the original release");
+  return tag;
+}
 function nativeAssets(release, ctx) {
-  const assets = release.assets.filter(asset => asset.name !== MANIFEST);
-  legacy.verifyRelease({ ...release, assets }, ctx, release.id, !release.draft);
+  const contract = releaseContract(ctx);
+  const assets = release.assets.filter(asset => asset.name !== contract.manifest);
+  if (contract.schemaVersion === 2) legacy.verifyRelease({ ...release, assets }, ctx, release.id, !release.draft);
+  else {
+    out.releaseReservation(release, ctx);
+    assert.deepEqual(assets.map(asset => asset.name).sort(), expectedNativeNames(ctx, contract).sort(), "Incomplete v3 installer set");
+    assert.equal(new Set(assets.map(asset => asset.id)).size, assets.length, "Duplicate installer asset IDs");
+    const downloadTags = new Set();
+    for (const asset of assets) {
+      validateAsset(asset, ctx);
+      assert.ok(asset.size >= 1024 ** 2, "Installer is too small");
+      downloadTags.add(originalDownloadTag(asset, ctx, release.draft));
+    }
+    assert.equal(downloadTags.size, 1, "Installer download tags differ");
+  }
   return assets.map(assetIdentity).sort((a, b) => a.name.localeCompare(b.name));
 }
 function verifyManifest(manifest, ctx, release) {
-  assert.equal(manifest.schemaVersion, 2); assert.equal(manifest.kind, "bodhi-original-installers");
+  const contract = releaseContract(ctx);
+  assert.equal(manifest.schemaVersion, contract.schemaVersion); assert.equal(manifest.kind, "bodhi-original-installers");
   assert.equal(manifest.releaseId, release.id); out.verifyReservation(manifest.reservation, ctx);
   assert.deepEqual(out.releaseReservation(release, ctx), manifest.reservation, "Release reservation changed");
   assert.equal(manifest.reservationArtifact.name, ctx.reservationName); assert.ok(Number.isSafeInteger(manifest.reservationArtifact.id) && manifest.reservationArtifact.id > 0);
   assert.match(manifest.reservationArtifact.digest || "", out.DIGEST);
   assert.equal(manifest.finalizer.attempt, ctx.attempt); assert.ok(Number.isSafeInteger(manifest.finalizer.jobId) && manifest.finalizer.jobId > 0);
-  assert.deepEqual(manifest.targets.map(target => target.receipt.target).sort(), [...NATIVE_TARGETS].sort());
+  assert.deepEqual(manifest.targets.map(target => target.receipt.target).sort(), [...contract.targets].sort());
   const fileNames = new Set();
   for (const target of manifest.targets) {
     const { receipt, artifact } = target;
@@ -118,12 +143,26 @@ function verifyManifest(manifest, ctx, release) {
       assert.equal(matches[0].size, file.size); assert.equal(matches[0].digest, `sha256:${file.sha256}`);
     }
   }
-  assert.equal(new Set(manifest.targets.map(target => target.artifact.id)).size, 3);
-  assert.equal(new Set(manifest.targets.map(target => target.receipt.jobId)).size, 3);
-  assert.equal(new Set([manifest.reservationArtifact.id, ...manifest.targets.map(target => target.artifact.id)]).size, 4);
-  assert.equal(new Set([manifest.reservation.preflight.jobId, manifest.finalizer.jobId, ...manifest.targets.map(target => target.receipt.jobId)]).size, 5);
+  assert.equal(new Set([manifest.reservationArtifact.id, ...manifest.targets.map(target => target.artifact.id)]).size, contract.targets.length + 1);
+  assert.equal(new Set([manifest.reservation.preflight.jobId, manifest.finalizer.jobId, ...manifest.targets.map(target => target.receipt.jobId)]).size,
+    contract.targets.length + 2);
   assert.deepEqual(manifest.assets, nativeAssets(release, ctx), "Manifest differs from original release assets");
   return manifest;
+}
+function manifestAsset(release, ctx, manifest) {
+  const contract = releaseContract(ctx);
+  const count = expectedNativeNames(ctx, contract).length + 1;
+  assert.equal(release.assets.length, count);
+  assert.equal(new Set(release.assets.map(asset => asset.id)).size, count);
+  const assets = release.assets.filter(asset => asset.name === contract.manifest);
+  assert.equal(assets.length, 1);
+  const asset = assets[0]; validateAsset(asset, ctx);
+  if (contract.schemaVersion === 3) {
+    const tags = new Set(release.assets.map(item => originalDownloadTag(item, ctx, release.draft)));
+    assert.equal(tags.size, 1, "Release assets use different download tags");
+  }
+  assert.equal(asset.digest, `sha256:${sha256(bytes(manifest))}`); assert.equal(asset.size, bytes(manifest).length);
+  return asset;
 }
 function upload(release, file, name) {
   assert.equal(release.upload_url, `https://uploads.github.com/repos/${REPOSITORY}/releases/${release.id}/assets{?name,label}`);
@@ -147,13 +186,14 @@ function retainAsset(releaseId, file, name, ctx, request = api, send = upload) {
   return assetIdentity(asset);
 }
 function assemble(ctx, output, request = api, restore = out.download, send = upload, read = readManifest) {
+  const contract = releaseContract(ctx);
   const original = out.loadReservation(ctx, request, restore), { reservation } = original;
   available(ctx, request, original.release);
-  const targets = NATIVE_TARGETS.map(target => {
+  const targets = contract.targets.map(target => {
     const selected = out.selectTarget(ctx, reservation, target, request, restore, true);
     assert.ok(selected, `Missing original target: ${target}`); return selected;
   });
-  const allowed = [...NATIVE_TARGETS.flatMap(target => out.names(ctx.version, target)), MANIFEST];
+  const allowed = [...expectedNativeNames(ctx, contract), contract.manifest];
   assert.ok(original.release.assets.every(asset => allowed.includes(asset.name)), "Foreign asset on the reserved release");
   const assets = [];
   for (const target of targets) for (const file of target.receipt.files) {
@@ -161,7 +201,7 @@ function assemble(ctx, output, request = api, restore = out.download, send = upl
   }
   assets.sort((a, b) => a.name.localeCompare(b.name));
   let manifest;
-  const existing = request(`releases/${original.release.id}`).assets.filter(asset => asset.name === MANIFEST);
+  const existing = request(`releases/${original.release.id}`).assets.filter(asset => asset.name === contract.manifest);
   if (existing.length) {
     // A retry reuses the first finalizer receipt, including its original attempt.
     const stored = read(existing[0].id);
@@ -174,28 +214,26 @@ function assemble(ctx, output, request = api, restore = out.download, send = upl
     manifest = stored;
   } else {
     const job = out.currentJob(ctx, "Publish original release", request);
-    manifest = { schemaVersion: 2, kind: "bodhi-original-installers", releaseId: original.release.id, reservation,
+    manifest = { schemaVersion: contract.schemaVersion, kind: "bodhi-original-installers", releaseId: original.release.id, reservation,
       reservationArtifact: { id: original.artifact.id, name: original.artifact.name, digest: original.artifact.digest },
       finalizer: { jobId: job.id, attempt: ctx.attempt }, targets: targets.map(({ receipt, artifact }) => ({ receipt, artifact })), assets };
   }
-  const manifestFile = path.join(path.dirname(output), MANIFEST); write(manifestFile, manifest);
-  const manifestAsset = retainAsset(original.release.id, manifestFile, MANIFEST, ctx, request, send);
+  const manifestFile = path.join(path.dirname(output), contract.manifest); write(manifestFile, manifest);
+  const retainedManifest = retainAsset(original.release.id, manifestFile, contract.manifest, ctx, request, send);
   const release = request(`releases/${original.release.id}`);
   verifyManifest(manifest, { ...ctx, attempt: manifest.finalizer.attempt }, release);
-  assert.equal(release.assets.length, 7); assert.equal(new Set(release.assets.map(asset => asset.id)).size, 7);
-  const evidence = { schemaVersion: 2, finalizerAttempt: ctx.attempt, manifest, manifestSha256: sha256(bytes(manifest)), manifestAsset, assets: identities(release) };
+  assert.deepEqual(assetIdentity(manifestAsset(release, ctx, manifest)), retainedManifest);
+  const evidence = { schemaVersion: contract.schemaVersion, finalizerAttempt: ctx.attempt, manifest, manifestSha256: sha256(bytes(manifest)),
+    manifestAsset: retainedManifest, assets: identities(release) };
   write(output, evidence); return evidence;
 }
 function verifyEvidence(ctx, evidence, release) {
-  assert.equal(evidence.schemaVersion, 2); assert.equal(evidence.finalizerAttempt, ctx.attempt);
+  assert.equal(evidence.schemaVersion, releaseContract(ctx).schemaVersion); assert.equal(evidence.finalizerAttempt, ctx.attempt);
   assert.equal(evidence.manifestSha256, sha256(bytes(evidence.manifest)));
   assert.ok(evidence.manifest.finalizer.attempt <= ctx.attempt);
   verifyManifest(evidence.manifest, { ...ctx, attempt: evidence.manifest.finalizer.attempt }, release);
   assert.deepEqual(evidence.assets, identities(release), "Original asset IDs or bytes changed");
-  assert.equal(release.assets.length, 7); assert.equal(new Set(release.assets.map(asset => asset.id)).size, 7);
-  const manifest = release.assets.filter(asset => asset.name === MANIFEST); assert.equal(manifest.length, 1);
-  validateAsset(manifest[0], ctx); assert.deepEqual(assetIdentity(manifest[0]), evidence.manifestAsset);
-  assert.equal(manifest[0].digest, `sha256:${evidence.manifestSha256}`); assert.equal(manifest[0].size, bytes(evidence.manifest).length);
+  assert.deepEqual(assetIdentity(manifestAsset(release, ctx, evidence.manifest)), evidence.manifestAsset);
 }
 function refreshSource(ctx, reservation, request = api) {
   assert.equal(request(`git/ref/heads/release/${ctx.source}`)?.object?.sha, ctx.source, "Frozen source changed before publication");
@@ -281,9 +319,8 @@ function publicationEvidence(ctx, job, release, request = api, restore = out.dow
 function verifyPublished(ctx, release, manifest) {
   assert.equal(release.draft, false); assert.equal(release.tag_name, ctx.finalTag); out.releaseReservation(release, ctx);
   verifyManifest(manifest, { ...ctx, attempt: manifest.finalizer.attempt }, release);
-  const assets = release.assets.filter(asset => asset.name === MANIFEST); assert.equal(assets.length, 1); validateAsset(assets[0], ctx);
-  assert.equal(assets[0].digest, `sha256:${sha256(bytes(manifest))}`); assert.equal(assets[0].size, bytes(manifest).length);
-  assert.equal(release.assets.length, 7); assert.equal(new Set(release.assets.map(asset => asset.id)).size, 7); return manifest;
+  manifestAsset(release, ctx, manifest);
+  return manifest;
 }
 function main() {
   const [command, file] = process.argv.slice(2); let ctx = out.context();
@@ -313,7 +350,7 @@ function main() {
     // Authenticate source admission and every original target again, without rebuilding.
     const originalReservation = out.loadReservation(ctx);
     assert.deepEqual(evidence.manifest.reservation, originalReservation.reservation);
-    const targets = NATIVE_TARGETS.map(target => out.selectTarget(ctx, originalReservation.reservation, target, api, out.download, true));
+    const targets = releaseContract(ctx).targets.map(target => out.selectTarget(ctx, originalReservation.reservation, target, api, out.download, true));
     assert.deepEqual(evidence.manifest.targets, targets.map(({ receipt, artifact }) => ({ receipt, artifact })));
     publish(ctx, evidence); return;
   }
