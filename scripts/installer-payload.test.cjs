@@ -50,20 +50,24 @@ function fixture(t, format) {
   const shellPayload = save(fixtureTree, path.join(bin, "bodhi" + extension), fs.readFileSync(shell), 0o755);
   const sidecarPayload = save(fixtureTree, path.join(bin, "bamboo" + extension), fs.readFileSync(sidecar), 0o755);
   const runtime = path.join(resources, "browser-runtime");
-  const platform = format === "nsis" ? "win-arm64" : "linux-arm64";
+  const platform = format === "nsis" ? "win64" : "linux-arm64";
+  const runtimeTarget = format === "nsis" ? { nodePlatform: "win-arm64", browserTarget: "x86_64-pc-windows-msvc" }
+    : { nodePlatform: "linux-arm64", browserSource: "playwright" };
+  const nodeSha256 = "a".repeat(64), browserSha256 = "b".repeat(64);
   const lock = { schemaVersion: 1, nodeVersion: "24.0.0", playwrightCoreVersion: "1.0.0", chromiumVersion: "140.0.0.1",
-    chromiumRevision: "1", targets: { [target]: { platform, nodeSha256: "a".repeat(64), browserSha256: "b".repeat(64) } } };
+    chromiumRevision: "1", targets: { [target]: { platform, nodeSha256, browserSha256, ...runtimeTarget } } };
   save(runtime, "node/node" + extension, executable, 0o755);
   save(runtime, "node/LICENSE", "license");
   save(runtime, "host.cjs", "host");
-  save(runtime, path.join("chromium", "chrome-headless-shell-" + platform, "chrome-headless-shell" + extension), executable, 0o755);
+  save(runtime, path.join("chromium", "chrome-headless-shell-" + platform, "chrome-headless-shell" + extension),
+    format === "nsis" ? pe(0x8664) : executable, 0o755);
   save(runtime, "node_modules/playwright-core/package.json", JSON.stringify({ version: lock.playwrightCoreVersion }));
   save(runtime, "node_modules/playwright-core/browsers.json", JSON.stringify({ browsers: [
     { name: "chromium-headless-shell", revision: lock.chromiumRevision, browserVersion: lock.chromiumVersion },
   ] }));
   const { nodeVersion, playwrightCoreVersion, chromiumVersion, chromiumRevision } = lock;
   save(runtime, "receipt.json", JSON.stringify({ schemaVersion: 1, target, nodeVersion, playwrightCoreVersion, chromiumVersion,
-    chromiumRevision, filesSha256: treeHash(runtime) }));
+    chromiumRevision, nodeArchiveSha256: nodeSha256, browserArchiveSha256: browserSha256, filesSha256: treeHash(runtime) }));
   const browserRoot = path.join(root, "staged-runtime");
   fs.cpSync(runtime, browserRoot, { recursive: true });
   const frontend = path.join(resources, "frontend");
