@@ -23,6 +23,11 @@ checks. Each native job stages the locked Bamboo/Lotus inputs once and invokes
 Cargo once in its debug/test profile. No second shell build or Tauri packaging
 job is required for those tests.
 
+Bodhi pins Rust 1.99.1 in `rust-toolchain.toml` for both feature tests and
+installer builds. Cargo 1.100 changed the build output layout used by the
+locked Tauri build dependency and Bodhi's resource staging. Keep the pin
+until both support the new layout.
+
 Run the script Unit suite locally with:
 
 ```sh
