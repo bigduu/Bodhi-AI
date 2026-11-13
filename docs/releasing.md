@@ -254,6 +254,13 @@ runtime; there is no preceding second staging or upstream source build.
 | `ubuntu-22.04-arm` | `aarch64-unknown-linux-gnu` (v3) | AppImage, deb and RPM |
 | `windows-11-arm` | `aarch64-pc-windows-msvc` (v3) | NSIS exe |
 
+On Linux, the publisher's `npm run tauri:build` command with an explicit AppImage
+bundle and a matching `BAMBOO_SIDECAR_TARGET` in release mode configures the
+locked Tauri CLI's linuxdeploy process to preserve the staged Bamboo executable
+and browser runtime. linuxdeploy skips stripping and delegates RPATH reads and
+other RPATH writes to the runner's `/usr/bin/patchelf`. The existing Tauri build
+hook stages the exact published inputs before the native build.
+
 Admitted feature CI owns Unit/E2E actor and browser runtime smoke. The release
 phase retains static upstream/resource checks,
 shell architecture, package version/architecture and the existing macOS
