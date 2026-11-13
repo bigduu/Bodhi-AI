@@ -3,11 +3,12 @@ use std::path::PathBuf;
 mod build_support;
 
 fn main() {
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     ensure_sidecar_placeholder();
     pin_frontend_receipt();
-    build_support::reset_browser_destination(&PathBuf::from(std::env::var("OUT_DIR").unwrap()))
+    build_support::reset_browser_destination(&out_dir)
         .expect("replace only the generated browser resource directory before Tauri copies it");
-    build_support::reset_frontend_destination(&PathBuf::from(std::env::var("OUT_DIR").unwrap()))
+    build_support::reset_frontend_destination(&out_dir)
         .expect("replace only the generated frontend resource directory before Tauri copies it");
     tauri_build::build();
     // tauri-build derives its resource destination from OUT_DIR, which belongs
@@ -33,7 +34,7 @@ fn main() {
     let metadata: serde_json::Value =
         serde_json::from_slice(&metadata.stdout).expect("parse Cargo metadata");
     build_support::sync_runtime_resources(
-        &PathBuf::from(std::env::var_os("OUT_DIR").unwrap()),
+        &out_dir,
         &PathBuf::from(
             metadata["target_directory"]
                 .as_str()

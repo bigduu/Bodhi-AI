@@ -24,10 +24,10 @@ checks. Each native job stages the locked Bamboo/Lotus inputs once and invokes
 Cargo once in its debug/test profile. No second shell build or Tauri packaging
 job is required for those tests.
 
-Bodhi pins Rust 1.99.1 in `rust-toolchain.toml` for both feature tests and
-installer builds. Cargo 1.100 changed the build output layout used by the
-locked Tauri build dependency and Bodhi's resource staging. Keep the pin
-until both support the new layout.
+Bodhi pins Rust 1.99.1 in `rust-toolchain.toml` for feature tests and installer
+builds. The resource staging helper handles Cargo 1.99 and 1.100 layouts
+with the locked `tauri-build` 2.5.6. A toolchain update goes through the
+normal native feature and installer acceptance.
 
 Run the script Unit suite locally with:
 
@@ -59,6 +59,13 @@ The debug checks require the actual sidecar, frontend and browser files copied b
 that Cargo invocation. Missing or changed debug output fails; a staged input or
 an old release bundle is not a fallback. These tests exercise the real actor,
 HTTP/static-dir and browser chain, not the complete desktop GUI.
+
+Bodhi accepts the flat build-script `OUT_DIR` used through Cargo 1.99 and the
+nested package/hash directory introduced in Cargo 1.100. With the pinned
+`tauri-build` 2.5.6, Cargo 1.100 stages Tauri's resources one level below the
+profile directory. The build script synchronizes the generated frontend,
+browser runtime and Bamboo sidecar into the final Cargo target/profile in both
+unified and split build directories.
 
 ### ARM64 browser runtime acceptance
 
