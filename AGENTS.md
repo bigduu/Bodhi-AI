@@ -37,9 +37,10 @@ exact Git postimages. Its historical bootstrap proof remains a read-only compone
 An unconfirmed merge, including the historical #118 metadata
 inconsistency, fails admission even when Git trees match.
 
-The active source workflow selects three-target v2. Issue #225 tracks five-target
-v3 admission. It requires an accepted five-target CI run and published Bamboo
-sidecars for those targets. Preserve `scripts/release-finalizer.cjs` byte-for-byte
+The five-target source workflow selects v3 after protected Dev admission. It
+requires an accepted five-target CI run and published Bamboo sidecars for those
+targets. Historical three-target sources continue to use v2. Preserve
+`scripts/release-finalizer.cjs` byte-for-byte
 and its frozen v1 fixtures. Select the original evidence schema for recovery,
 including v1 for the historical #116 run.
 
@@ -101,7 +102,7 @@ a fake release cut merely to inspect an accepted Dev source.
 ## Inputs and evidence
 
 Feature evidence must finish before dev admission. The source verifier requires
-the confirmed PR merge time and all six selected physical executions completed
+the confirmed PR merge time and all selected physical executions completed
 at or before it, then rereads that same merge time. Later logical copies retain
 the original physical times; current protection cannot waive a post-merge run.
 

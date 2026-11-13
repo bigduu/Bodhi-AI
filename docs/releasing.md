@@ -18,7 +18,7 @@ the first v3 version from that accepted source. Historical v1 runs, including
 
 Feature and integration PRs target `dev`. The [CI workflow](../.github/workflows/ci.yml)
 runs Unit and E2E there; it does not run on main pushes or build installers.
-`Unit Tests` aggregates Node script tests and the three native test jobs. `E2E Tests`
+`Unit Tests` aggregates Node script tests and the five native test jobs. `E2E Tests`
 aggregates those same native jobs after their actor, static frontend and browser
 checks. Each native job stages the locked Bamboo/Lotus inputs once and invokes
 Cargo once in its debug/test profile. No second shell build or Tauri packaging
@@ -37,9 +37,8 @@ actionlint .github/workflows/ci.yml
 ```
 
 For native Unit/E2E, install the accepted frontend package and use the current
-host's target (`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu` or
-`x86_64-pc-windows-msvc`). The following Bash example stages test resources and
-does not create an installer:
+host's target. The matrix includes macOS ARM64, Linux x64 and ARM64, and Windows
+x64 and ARM64. The Bash example below stages debug test resources.
 
 ```sh
 native_target="$(rustc -vV | sed -n 's/^host: //p')"
@@ -102,14 +101,14 @@ ref; the release wrapper `admitFeature` additionally requires `release/<S>` to
 point to `S` before and after verification. The historical #118 open/merged-false
 state remains a negative case; a matching Git tree does not supply a merge receipt.
 
-Admission also requires the confirmed PR merge timestamp. All six original
-physical jobs, including the Unit/E2E aggregates, must have completed at or
+Admission also requires the confirmed PR merge timestamp. Every required
+physical job, including the Unit/E2E aggregates, must have completed at or
 before that timestamp. The final PR readback must preserve it. A copied logical
 success may appear later while retaining the original execution; an actual
 post-merge test run cannot supply feature-before-dev evidence. The source proof
 records the verified merge time without changing the context writer or schema.
 
-The Node job and all three native jobs run the same literal, byte-pinned workflow
+The Node job and every native job run the same literal, byte-pinned workflow
 source step immediately after checkout, before staging or tests. It uses only
 Node built-ins and Git; it never loads a candidate source module to record its
 own identity. This records the actual clean merge and
@@ -117,7 +116,7 @@ its raw parents, including in a shallow checkout, without changing `GITHUB_*`.
 Each original log contains one `Feature source:` line and one canonical bounded
 `Feature context:` record with schema `bodhi-feature-context/v1`, repository,
 run ID, physical attempt, PR, base/head, actual merge `M` and tree. Admission
-requires all four records to agree with their original job/attempt and API
+requires all source records to agree with their original job/attempt and API
 source evidence. The accepted `S` and tested `M` remain distinct commit identities.
 
 GitHub can return `run.pull_requests=[]` after a real PR merge. Only the new
