@@ -56,7 +56,8 @@ function fixture(arm64 = false) {
       const bytes = Buffer.alloc(1024 ** 2, i * 4 + index + 1); contents[name] = bytes;
       return { name, size: bytes.length, sha256: out.sha256(bytes) };
     });
-    const receipt = { schemaVersion, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: 11 + i, attempt: 1, checks: out.checks(target), files: outputFiles };
+    const receipt = { schemaVersion, target, reservationSha256: out.sha256(out.bytes(reservation)), jobId: 11 + i, attempt: 1,
+      checks: out.checks(target, schemaVersion), files: outputFiles };
     contents["target-receipt.json"] = out.bytes(receipt); const item = artifact(101 + i, out.artifactName(ctx, target, 1)); artifacts.push(item); files[item.id] = contents;
     return { receipt, artifact: { id: item.id, name: item.name, digest: item.digest } };
   });
@@ -88,8 +89,10 @@ function fixture(arm64 = false) {
     commits: { [S]: { sha: S, tree: { sha: ST }, parents: [{ sha: FB }, { sha: F }] }, [FM]: { sha: FM, tree: { sha: ST }, parents: [{ sha: FB }, { sha: F }] },
       [B]: { sha: B, tree: { sha: "7".repeat(40) } }, [M]: { sha: M, tree: { sha: ST }, parents: [{ sha: B }, { sha: P }] } }, trees: {} };
   const entry = (file, hash) => ({ path: file, type: "blob", mode: "100644", sha: hash });
-  const image = owner => [...main.CONTROLS.map(file => entry(file, file.endsWith("/ci.yml") ? featureBlob : file.endsWith("/release.yml") ? main.RELEASE_BLOB :
-    file.endsWith("/recover-release.yml") ? main.RECOVERY_BLOB : blob(owner + file))),
+  const controls = arm64 ? [...main.CONTROLS, "scripts/bamboo-sidecar.cjs", "scripts/installer-payload.cjs"] : main.CONTROLS;
+  const image = owner => [...controls.map(file => entry(file, file.endsWith("/ci.yml") ? featureBlob
+    : file.endsWith("/release.yml") ? (arm64 ? out.ARM64_RELEASE_WORKFLOW_BLOB : main.RELEASE_BLOB)
+      : file.endsWith("/recover-release.yml") ? (arm64 ? main.ARM64_RECOVERY_BLOB : main.RECOVERY_BLOB) : blob(owner + file))),
     entry("src-tauri/src/main.rs", blob(owner + "product")), entry("src-tauri/Cargo.toml", blob('version = "0.0.0"\n')),
     ...Object.entries(lockBytes).map(([file, bytes]) => entry(file, blob(bytes))),
     { path: "scripts", type: "tree", mode: "040000", sha: blob(owner + "scripts-directory") }];
@@ -139,7 +142,7 @@ function fixture(arm64 = false) {
   f.actual = entries => { f.commits[M].tree.sha = MT; f.trees[MT] = copy(entries); };
   f.overlay = () => {
     const entries = copy(f.trees[ST]), base = f.trees[f.commits[f.pr.base.sha].tree.sha];
-    for (const file of main.CONTROLS) {
+    for (const file of controls) {
       const entry = copy(base.find(entry => entry.path === file)), index = entries.findIndex(entry => entry.path === file);
       if (index < 0) entries.push(entry); else entries.splice(index, 1, entry);
     }
@@ -160,6 +163,11 @@ test("Main admits the reviewed five-target original and rejects a missing ARM64 
   assert.equal(proof.reservation.admission.workflowBlob, source.ARM64_FEATURE_WORKFLOW_BLOB);
   f.release.assets = f.release.assets.filter(asset => !asset.name.endsWith("arm64-setup.exe"));
   assert.throws(() => f.verify(), /Incomplete v3 installer set/);
+});
+test("Main requires the installer inspector in the five-target controller's postimage", () => {
+  const f = fixture(true);
+  f.trees[ST] = f.trees[ST].filter(entry => entry.path !== "scripts/installer-payload.cjs");
+  assert.throws(() => f.verify(), /Missing regular controller file: scripts\/installer-payload.cjs/);
 });
 test("Main accepts only a reviewed release workflow producer", () => {
   const f = fixture();

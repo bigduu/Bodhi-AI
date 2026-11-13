@@ -38,6 +38,7 @@ const CONTROLS = Object.freeze([".github/workflows/ci.yml", ".github/workflows/r
   ".github/workflows/publish-v31-preserved.yml", "scripts/publish-v31-preserved.cjs",
   "scripts/release-install-shell.cjs", "scripts/release-install-shell.test.cjs",
   "scripts/stage-release-frontend.py", "scripts/stage-release-frontend.test.py"]);
+const ARM64_CONTROLS = Object.freeze([...CONTROLS, "scripts/bamboo-sidecar.cjs", "scripts/installer-payload.cjs"]);
 const LOCKS = ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"];
 function id(value) { assert.match(String(value), /^[1-9][0-9]*$/); assert.ok(Number.isSafeInteger(Number(value))); return Number(value); }
 function sha(value) { assert.match(value || "", SHA); return value; }
@@ -98,7 +99,8 @@ const ancestors = new Set(CONTROLS.flatMap(file => file.split("/").slice(0, -1).
 function projection(value) { return [...value.entries].filter(([file]) => !ancestors.has(file)).sort(([a], [b]) => a.localeCompare(b)); }
 function overlay(base, controls) {
   const entries = new Map(base.entries);
-  for (const file of CONTROLS) {
+  const files = controls.entries.get(".github/workflows/release.yml")?.sha === out.ARM64_RELEASE_WORKFLOW_BLOB ? ARM64_CONTROLS : CONTROLS;
+  for (const file of files) {
     const entry = controls.entries.get(file);
     assert.ok(entry && entry.type === "blob" && entry.mode === "100644", `Missing regular controller file: ${file}`);
     entries.set(file, entry);
