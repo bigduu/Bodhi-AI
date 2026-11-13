@@ -55,6 +55,23 @@ that Cargo invocation. Missing or changed debug output fails; a staged input or
 an old release bundle is not a fallback. These tests exercise the real actor,
 HTTP/static-dir and browser chain, not the complete desktop GUI.
 
+### ARM64 browser runtime acceptance
+
+The [ARM64 browser workflow](../.github/workflows/arm64-browser-runtime.yml)
+runs the bundled-browser smoke on Linux ARM64 and Windows 11 ARM64 for changes
+to browser runtime inputs. It verifies the browser host from Bodhi's published
+Bamboo lock and launches it with bundled Node and Chromium against a loopback
+page. This check covers the browser runtime. The installer and same-target
+Bamboo sidecar rollout is tracked in [Bodhi #225](https://github.com/bigduu/Bodhi-AI/issues/225).
+
+Both targets use native ARM64 Node from the pinned Node distribution. Linux
+uses the ARM64 Chromium Headless Shell archive from the pinned Playwright
+revision. Staging normalizes the archive's executable and resource directory to
+the same layout as the other bundled browsers. Windows 11 ARM64 uses the pinned
+Chrome for Testing x64 Headless Shell under Windows x64 emulation. The runtime
+checks Node as ARM64 and Chromium as x64 on that target. The archive digests and
+the final file inventory are bound in the ARM64 browser runtime receipts.
+
 ## Delivery policy and cutover
 
 The shared target flow is feature Unit/E2E → accepted `dev` → frozen

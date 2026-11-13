@@ -1,0 +1,98 @@
+name: ARM64 browser runtime
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - ".github/workflows/arm64-browser-runtime.yml"
+      - "scripts/bamboo-sidecar.cjs"
+      - "scripts/browser-runtime.cjs"
+      - "scripts/browser-runtime.lock.json"
+      - "scripts/browser-runtime.test.cjs"
+      - "scripts/browser-bundle-smoke.cjs"
+      - "scripts/verify-assembly.cjs"
+      - "src-tauri/src/browser_runtime.rs"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bodhi-arm64-browser-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  runtime:
+    name: Browser bundle smoke (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            platform: linux
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            platform: win32
+    env:
+      BROWSER_PLATFORM: ${{ matrix.platform }}
+      BROWSER_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          architecture: arm64
+      - name: Check native host and exact feature snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          node -e 'const assert = require("node:assert/strict"); assert.equal(process.platform, process.env.BROWSER_PLATFORM); assert.equal(process.arch, "arm64");'
+      - name: Install Linux ARM64 headless shell dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fonts-liberation libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 \
+            libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \
+            libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2
+      - name: Stage the runtime with the browser host from the locked Bamboo release
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const assert = require("node:assert/strict");
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { downloadAsset, readLock, releaseUrl, sha256, unpackHost, validateManifest } = require("./scripts/bamboo-sidecar.cjs");
+          const { stageRuntime } = require("./scripts/browser-runtime.cjs");
+          const lock = readLock();
+          const scratch = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, "bodhi-browser-host-"));
+          try {
+            const manifestFile = path.join(scratch, lock.manifestAssetName);
+            downloadAsset(releaseUrl(lock, lock.manifestAssetName), manifestFile, 1024 * 1024);
+            const { manifest } = validateManifest(fs.readFileSync(manifestFile), lock, lock.targets[0]);
+            const host = manifest.browserHost, archive = path.join(scratch, host.assetName);
+            downloadAsset(releaseUrl(lock, host.assetName), archive, host.sizeBytes);
+            const bytes = fs.readFileSync(archive);
+            assert.equal(bytes.length, host.sizeBytes);
+            assert.equal(sha256(bytes), host.sha256);
+            fs.mkdirSync(path.join(scratch, "browser-runtime"));
+            for (const [name, content] of unpackHost(bytes, host)) {
+              fs.writeFileSync(path.join(scratch, name), content, { flag: "wx" });
+            }
+            console.log(`Bamboo browser host v${manifest.version} from ${manifest.sourceRevision} (${host.sha256})`);
+            stageRuntime(process.env.BROWSER_TARGET, scratch);
+          } finally {
+            fs.rmSync(scratch, { recursive: true, force: true });
+          }
+          NODE
+      - name: Exercise real bundled Node, Chromium and Bamboo browser host
+        shell: bash
+        run: node scripts/browser-bundle-smoke.cjs "$BROWSER_TARGET" src-tauri/browser-runtime

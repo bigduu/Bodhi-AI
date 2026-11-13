@@ -10,7 +10,9 @@ fn platform() -> Result<(&'static str, &'static str), String> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Ok(("aarch64-apple-darwin", "mac-arm64")),
         ("macos", "x86_64") => Ok(("x86_64-apple-darwin", "mac-x64")),
+        ("linux", "aarch64") => Ok(("aarch64-unknown-linux-gnu", "linux-arm64")),
         ("linux", "x86_64") => Ok(("x86_64-unknown-linux-gnu", "linux64")),
+        ("windows", "aarch64") => Ok(("aarch64-pc-windows-msvc", "win64")),
         ("windows", "x86_64") => Ok(("x86_64-pc-windows-msvc", "win64")),
         _ => Err("unsupported desktop browser target".into()),
     }
