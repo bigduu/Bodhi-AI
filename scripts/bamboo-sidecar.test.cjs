@@ -17,9 +17,9 @@ function binary(target) {
     bytes.writeUInt32LE(target.startsWith("aarch64") ? 0x0100000c : 0x01000007, 4);
   } else if (target.includes("windows")) {
     bytes.write("MZ"); bytes.writeUInt32LE(128, 0x3c);
-    bytes.write("PE\0\0", 128); bytes.writeUInt16LE(0x8664, 132);
+    bytes.write("PE\0\0", 128); bytes.writeUInt16LE(target.startsWith("aarch64") ? 0xaa64 : 0x8664, 132);
   } else {
-    bytes.write("\x7fELF"); bytes[4] = 2; bytes[5] = 1; bytes.writeUInt16LE(0x3e, 18);
+    bytes.write("\x7fELF"); bytes[4] = 2; bytes[5] = 1; bytes.writeUInt16LE(target.startsWith("aarch64") ? 0xb7 : 0x3e, 18);
   }
   return bytes;
 }
@@ -43,6 +43,8 @@ function tar(entries, trailing = Buffer.alloc(1024)) {
 }
 
 const v2Targets = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"];
+const v3Targets = ["aarch64-apple-darwin", "aarch64-pc-windows-msvc", "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"];
 
 function fixture(t, { manifestVersion = 1 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-sidecar-test-"));
@@ -50,8 +52,8 @@ function fixture(t, { manifestVersion = 1 } = {}) {
   fs.mkdirSync(path.join(root, "scripts"));
   const entries = sidecar.HOST_FILES.map((name) => ({ name, data: name.endsWith(".cjs") ? "// synthetic browser host\n" : "{}\n" }));
   const files = new Map();
-  const targets = manifestVersion === 2 ? v2Targets : sidecar.TARGETS;
-  const manifestName = manifestVersion === 2 ? "bamboo-sidecars-v2.json" : sidecar.MANIFEST;
+  const targets = [undefined, sidecar.TARGETS, v2Targets, v3Targets][manifestVersion];
+  const manifestName = "bamboo-sidecars-v" + manifestVersion + ".json";
   const artifacts = targets.map((target) => {
     const data = binary(target), name = sidecar.binaryName(target);
     files.set(name, data);
@@ -100,13 +102,40 @@ for (const target of v2Targets) test(`installs the locked v2 ${target} without c
     download() { assert.fail("offline v2 must not download"); } }).sha256, result.sha256);
 });
 
-test("locked manifest name, schema and complete target set cannot be mixed between v1 and v2", (t) => {
-  for (const manifestVersion of [1, 2]) {
+test("v3 installs native ARM64 sidecars and rejects an x64 binary advertised as ARM64", (t) => {
+  for (const [arm, x64] of [
+    ["aarch64-pc-windows-msvc", "x86_64-pc-windows-msvc"],
+    ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"],
+  ]) {
+    const f = fixture(t, { manifestVersion: 3 });
+    const install = () => sidecar.installRelease(f.root, arm, { env: {}, download: f.download });
+    const result = install();
+    assert.equal(path.basename(result.binary), sidecar.binaryName(arm));
+    assert.equal(result.manifestSha256, f.lock.manifestSha256);
+    assert.deepEqual(fs.readFileSync(result.binary), binary(arm));
+    assert.equal(sidecar.installedRelease(f.root, arm, {}).sha256, result.sha256);
+    assert.throws(() => sidecar.releaseUrl(f.lock, sidecar.binaryName("x86_64-apple-darwin")), /Unexpected/);
+
+    f.manifest.artifacts = f.manifest.artifacts.filter(item => item.target !== x64);
+    f.refresh();
+    assert.throws(install, /manifest has missing/);
+    const invalid = fixture(t, { manifestVersion: 3 });
+    const wrong = binary(x64);
+    invalid.files.set(sidecar.binaryName(arm), wrong);
+    invalid.manifest.artifacts.find(item => item.target === arm).sha256 = sidecar.sha256(wrong);
+    invalid.refresh();
+    assert.throws(() => sidecar.installRelease(invalid.root, arm, { env: {}, download: invalid.download }), /CPU architecture/);
+    assert.deepEqual(fs.readFileSync(result.binary), binary(arm));
+  }
+});
+
+test("locked manifest name, schema and complete target set cannot be mixed between versions", (t) => {
+  for (const manifestVersion of [1, 2, 3]) {
     const f = fixture(t, { manifestVersion });
     assert.equal(sidecar.validateLock(f.lock), f.lock);
     const otherName = manifestVersion === 1 ? "bamboo-sidecars-v2.json" : "bamboo-sidecars-v1.json";
     assert.throws(() => sidecar.validateLock({ ...f.lock, manifestAssetName: otherName }), /targets/);
-    for (const name of ["bamboo-sidecars-v3.json", "bamboo-sidecars-v02.json", "../bamboo-sidecars-v2.json"]) {
+    for (const name of ["bamboo-sidecars-v4.json", "bamboo-sidecars-v02.json", "../bamboo-sidecars-v2.json"]) {
       assert.throws(() => sidecar.validateLock({ ...f.lock, manifestAssetName: name }), /Invalid/);
     }
     assert.throws(() => sidecar.validateLock({ ...f.lock, schemaVersion: 2 }), /Invalid/);
@@ -229,7 +258,7 @@ test("dispatch version, source, target and invalid lock identities fail closed",
     assert.throws(() => f.install({ env }), /differs|match the Tauri/);
   }
   for (const change of [{ repository: "other/repo" }, { version: "latest" }, { buildMode: "api-only", embeddedFrontend: false }, { manifestAssetName: "../manifest.json" }, { targets: [f.target] }]) {
-    assert.throws(() => sidecar.validateLock({ ...f.lock, ...change }, {}), /Invalid|not accepted|four desktop/);
+    assert.throws(() => sidecar.validateLock({ ...f.lock, ...change }, {}), /Invalid|not accepted|desktop release targets/);
   }
   assert.throws(() => sidecar.installRelease(f.root, "../escape", { env: {} }), /Unsupported/);
   assert.equal(f.requests.length, 0);

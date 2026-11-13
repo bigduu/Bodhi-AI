@@ -11,6 +11,7 @@ const ROOT = path.resolve(__dirname, "..");
 const REPOSITORY = "bigduu/Bamboo-agent";
 const MANIFEST = "bamboo-sidecars-v1.json";
 const MANIFEST_V2 = "bamboo-sidecars-v2.json";
+const MANIFEST_V3 = "bamboo-sidecars-v3.json";
 const HOST_ASSET = "bamboo-browser-host-v1.tar.gz";
 const TARGETS = Object.freeze([
   "aarch64-apple-darwin", "x86_64-apple-darwin",
@@ -18,6 +19,15 @@ const TARGETS = Object.freeze([
 ]);
 const V2_TARGETS = Object.freeze([
   "aarch64-apple-darwin", "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu",
+]);
+const V3_TARGETS = Object.freeze([
+  "aarch64-apple-darwin", "aarch64-pc-windows-msvc", "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu",
+]);
+const MANIFEST_CONTRACTS = new Map([
+  [MANIFEST, { schemaVersion: 1, assetName: MANIFEST, targets: TARGETS }],
+  [MANIFEST_V2, { schemaVersion: 2, assetName: MANIFEST_V2, targets: V2_TARGETS }],
+  [MANIFEST_V3, { schemaVersion: 3, assetName: MANIFEST_V3, targets: V3_TARGETS }],
 ]);
 const HOST_FILES = Object.freeze([
   "browser-runtime/host.cjs", "browser-runtime/package-lock.json", "browser-runtime/package.json",
@@ -40,9 +50,9 @@ function requireCondition(condition, message) {
 // The lock container and installed receipt retain their v1 encoding. The exact
 // pinned asset name selects the independently versioned producer contract.
 function manifestContract(lock) {
-  if (lock.manifestAssetName === MANIFEST) return { schemaVersion: 1, assetName: MANIFEST, targets: TARGETS };
-  requireCondition(lock.manifestAssetName === MANIFEST_V2, "Invalid Bamboo sidecar manifest contract.");
-  return { schemaVersion: 2, assetName: MANIFEST_V2, targets: V2_TARGETS };
+  const contract = MANIFEST_CONTRACTS.get(lock.manifestAssetName);
+  requireCondition(contract, "Invalid Bamboo sidecar manifest contract.");
+  return contract;
 }
 
 function readRegular(file, maxBytes) {
@@ -75,15 +85,14 @@ function safeDirectory(root, directory) {
 
 function validateLock(lock, env = {}) {
   requireCondition(lock?.schemaVersion === 1 && lock.repository === REPOSITORY &&
-    [MANIFEST, MANIFEST_V2].includes(lock.manifestAssetName) && lock.buildMode === "embedded" && lock.embeddedFrontend === true,
+    MANIFEST_CONTRACTS.has(lock.manifestAssetName) && lock.buildMode === "embedded" && lock.embeddedFrontend === true,
   "Invalid Bamboo sidecar lock identity or build mode.");
   requireCondition(typeof lock.version === "string" && /^[1-9][0-9]*\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9][A-Za-z0-9.-]*)?$/.test(lock.version) &&
     /^[0-9a-f]{40}$/.test(lock.sourceRevision || "") && SHA256.test(lock.manifestSha256 || ""),
   "Bamboo sidecar release is not accepted: pin the real published version, full sourceRevision and manifestSha256 in scripts/bamboo-sidecar-lock.json. No source-build fallback is permitted.");
   const contract = manifestContract(lock);
-  requireCondition(isDeepStrictEqual(lock.targets, contract.targets), contract.schemaVersion === 1 ?
-    "Bamboo sidecar lock must cover the four desktop release targets in sorted order." :
-    "Bamboo sidecar lock must cover exactly the three v2 desktop release targets in sorted order.");
+  requireCondition(isDeepStrictEqual(lock.targets, contract.targets),
+    "Bamboo sidecar lock must cover exactly the desktop release targets in sorted order.");
   for (const [key, value] of [["BAMBOO_RELEASE_VERSION", lock.version], ["BAMBOO_RELEASE_SOURCE_REVISION", lock.sourceRevision]]) {
     if (env[key]) requireCondition(env[key] === value, `${key} differs from the accepted Bamboo sidecar lock.`);
   }
