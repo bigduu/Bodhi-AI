@@ -11,6 +11,8 @@ const MANIFEST = path.join(__dirname, "browser-runtime.lock.json");
 const LOCK = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
 const STAGED = path.join(ROOT, "src-tauri", "browser-runtime");
 const CACHE = path.join(ROOT, "src-tauri", ".browser-runtime-cache");
+const LINUX_ARM64 = "aarch64-unknown-linux-gnu";
+const WINDOWS_ARM64 = "aarch64-pc-windows-msvc";
 
 function signingIdentity() {
   if (process.env.APPLE_SIGNING_IDENTITY !== undefined) return process.env.APPLE_SIGNING_IDENTITY || null;
@@ -22,14 +24,25 @@ function signingIdentity() {
 function targetDetails(target, lock = LOCK) {
   if (lock?.schemaVersion !== 1 || !lock.targets || ["nodeVersion", "playwrightCoreVersion", "chromiumVersion", "chromiumRevision"]
     .some(key => typeof lock[key] !== "string" || !lock[key])) throw new Error("Unsupported browser runtime lock data.");
-  const details = lock.targets[target];
-  if (!details || !/^[a-z0-9_-]+$/.test(target)) {
+  if (typeof target !== "string" || !/^[a-z0-9_-]+$/.test(target) || !Object.hasOwn(lock.targets, target)) {
     throw new Error(`Unsupported browser target: ${target}`);
   }
-  if (!/^[a-f0-9]{64}$/.test(details.nodeSha256) || !/^[a-f0-9]{64}$/.test(details.browserSha256)) {
+  const details = lock.targets[target];
+  if (!details || !/^[a-f0-9]{64}$/.test(details.nodeSha256) || !/^[a-f0-9]{64}$/.test(details.browserSha256)) {
     throw new Error(`Browser downloads for ${target} need pinned SHA-256 values.`);
   }
   if (typeof details.platform !== "string" || !/^[a-z0-9_-]+$/.test(details.platform)) throw new Error("Invalid browser platform directory.");
+  if (typeof details.nodePlatform !== "string" || !/^[a-z0-9_-]+$/.test(details.nodePlatform)) {
+    throw new Error("Invalid Node platform directory.");
+  }
+  if (details.browserSource !== undefined && (details.browserSource !== "playwright" ||
+      target !== LINUX_ARM64 || details.platform !== "linux-arm64" || !/^\d+$/.test(lock.chromiumRevision))) {
+    throw new Error(`Unsupported browser download source for ${target}.`);
+  }
+  if (details.browserTarget !== undefined && (target !== WINDOWS_ARM64 ||
+      details.browserTarget !== "x86_64-pc-windows-msvc" || details.platform !== "win64")) {
+    throw new Error(`Unsupported browser architecture override for ${target}.`);
+  }
   return details;
 }
 
@@ -99,6 +112,24 @@ function browserPaths(runtime, target, lock = LOCK) {
   };
 }
 
+function browserArchive(details, lock) {
+  if (details.browserSource === "playwright") {
+    const name = "chromium-headless-shell-linux-arm64.zip";
+    return {
+      cacheName: `playwright-${lock.chromiumRevision}-${name}`,
+      url: `https://cdn.playwright.dev/builds/chromium/${lock.chromiumRevision}/${name}`,
+    };
+  }
+  const name = `chrome-headless-shell-${details.platform}.zip`;
+  return { cacheName: name, url: `https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${lock.chromiumVersion}/${details.platform}/${name}` };
+}
+
+function archiveIdentity(target, details) {
+  // Historical receipts predate archive digests. Preserve their verification.
+  if (target !== LINUX_ARM64 && target !== WINDOWS_ARM64) return {};
+  return { nodeArchiveSha256: details.nodeSha256, browserArchiveSha256: details.browserSha256 };
+}
+
 function machCpuTypes(file) {
   const descriptor = fs.openSync(file, "r");
   try {
@@ -150,7 +181,7 @@ function verifyArchitecture(file, target) {
 }
 
 function verifyRuntime(runtime, target, source = null, lock = LOCK) {
-  targetDetails(target, lock);
+  const details = targetDetails(target, lock);
   const runtimeStat = fs.lstatSync(runtime);
   if (!runtimeStat.isDirectory() || runtimeStat.isSymbolicLink()) {
     throw new Error(`Browser runtime root is not an owned directory: ${runtime}`);
@@ -162,7 +193,7 @@ function verifyRuntime(runtime, target, source = null, lock = LOCK) {
   regularFile(browser, true);
   regularFile(path.join(runtime, "node_modules", "playwright-core", "package.json"));
   verifyArchitecture(node, target);
-  verifyArchitecture(browser, target);
+  verifyArchitecture(browser, details.browserTarget ?? target);
   const pkg = JSON.parse(fs.readFileSync(path.join(runtime, "node_modules", "playwright-core", "package.json"), "utf8"));
   const browsers = JSON.parse(fs.readFileSync(path.join(runtime, "node_modules", "playwright-core", "browsers.json"), "utf8"));
   const shell = browsers.browsers.find((item) => item.name === "chromium-headless-shell");
@@ -175,6 +206,9 @@ function verifyRuntime(runtime, target, source = null, lock = LOCK) {
       receipt.chromiumRevision !== lock.chromiumRevision || receipt.filesSha256 !== treeHash(runtime)) {
     throw new Error("Browser runtime receipt or file inventory does not match this target.");
   }
+  for (const [key, hash] of Object.entries(archiveIdentity(target, details))) {
+    if (receipt[key] !== hash) throw new Error("Browser runtime receipt does not match the locked archives.");
+  }
   if (source && (receipt.hostSha256 !== sha256File(path.join(source, "host.cjs")) ||
       receipt.packageLockSha256 !== sha256File(path.join(source, "package-lock.json")))) {
     throw new Error("Bamboo browser host changed after this runtime was staged.");
@@ -185,7 +219,7 @@ function verifyRuntime(runtime, target, source = null, lock = LOCK) {
       execFileSync("codesign", ["--verify", "--strict", executable], { stdio: "pipe" });
     }
   }
-  return { ...receipt, ...browserPaths(runtime, target, lock) };
+  return { ...receipt, node, host, browser };
 }
 
 function download(file, url, sha256) {
@@ -225,10 +259,30 @@ function signNested(runtime) {
 function extractZip(archive, destination) {
   fs.mkdirSync(destination, { recursive: true });
   if (process.platform === "win32") {
-    execFileSync("tar", ["-xf", archive, "-C", destination], { stdio: "inherit" });
+    // Windows ships a ZIP-capable bsdtar. Git Bash can put GNU tar first on
+    // PATH, where a drive-qualified archive is interpreted as a remote file.
+    const systemRoot = process.env.SystemRoot;
+    if (!systemRoot || !path.isAbsolute(systemRoot)) {
+      throw new Error("Windows browser runtime extraction requires an absolute SystemRoot.");
+    }
+    const tar = path.join(systemRoot, "System32", "tar.exe");
+    execFileSync(tar, ["-xf", archive, "-C", destination], { stdio: "inherit" });
   } else {
     execFileSync("unzip", ["-q", archive, "-d", destination], { stdio: "inherit" });
   }
+}
+
+function extractBrowser(archive, destination, browser, details) {
+  extractZip(archive, destination);
+  if (details.browserSource === "playwright") {
+    // The Playwright ARM64 archive uses chrome-linux/headless_shell.
+    const extracted = path.join(destination, "chrome-linux");
+    fs.renameSync(extracted, path.dirname(browser));
+    fs.renameSync(path.join(path.dirname(browser), "headless_shell"), browser);
+  }
+  // Windows ZIP members may lack Unix mode bits when staged on another OS.
+  regularFile(browser);
+  if (browser.endsWith(".exe")) fs.chmodSync(browser, 0o755);
 }
 
 function stageRuntime(target, bambooSource) {
@@ -267,31 +321,30 @@ function stageRuntime(target, bambooSource) {
   }
   const nodeFolder = `node-v${LOCK.nodeVersion}-${details.nodePlatform}`;
   const nodeArchiveName = `${nodeFolder}.${target.includes("windows") ? "zip" : "tar.gz"}`;
-  const browserArchiveName = `chrome-headless-shell-${details.platform}.zip`;
+  const browserDownload = browserArchive(details, LOCK);
   const nodeArchive = path.join(CACHE, nodeArchiveName);
-  const browserArchive = path.join(CACHE, browserArchiveName);
+  const browserArchiveFile = path.join(CACHE, browserDownload.cacheName);
   download(nodeArchive, `https://nodejs.org/dist/v${LOCK.nodeVersion}/${nodeArchiveName}`, details.nodeSha256);
-  download(browserArchive, `https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${LOCK.chromiumVersion}/${details.platform}/${browserArchiveName}`, details.browserSha256);
+  download(browserArchiveFile, browserDownload.url, details.browserSha256);
 
   fs.mkdirSync(path.dirname(STAGED), { recursive: true });
   const scratch = fs.mkdtempSync(path.join(path.dirname(STAGED), ".browser-runtime-stage-"));
   const runtime = path.join(scratch, "runtime");
   fs.mkdirSync(runtime);
   try {
+    const { node, browser } = browserPaths(runtime, target);
     if (target.includes("windows")) extractZip(nodeArchive, scratch);
     else execFileSync("tar", ["-xzf", nodeArchive, "-C", scratch], { stdio: "inherit" });
     const nodeSource = target.includes("windows")
       ? path.join(scratch, nodeFolder, "node.exe")
       : path.join(scratch, nodeFolder, "bin", "node");
     fs.mkdirSync(path.join(runtime, "node"));
-    const nodeDestination = browserPaths(runtime, target).node;
-    fs.copyFileSync(nodeSource, nodeDestination);
+    fs.copyFileSync(nodeSource, node);
     const nodeLicense = path.join(scratch, nodeFolder, "LICENSE");
     regularFile(nodeLicense);
     fs.copyFileSync(nodeLicense, path.join(runtime, "node", "LICENSE"));
-    fs.chmodSync(nodeDestination, 0o755);
-    fs.mkdirSync(path.join(runtime, "chromium"));
-    extractZip(browserArchive, path.join(runtime, "chromium"));
+    fs.chmodSync(node, 0o755);
+    extractBrowser(browserArchiveFile, path.join(runtime, "chromium"), browser, details);
     for (const name of ["host.cjs", "package.json", "package-lock.json"]) {
       fs.copyFileSync(path.join(source, name), path.join(runtime, name));
     }
@@ -304,9 +357,8 @@ function stageRuntime(target, bambooSource) {
     fs.rmSync(path.join(playwright, "lib", "xdg-open"));
     fs.chmodSync(path.join(playwright, "cli.js"), 0o644);
     fs.chmodSync(path.join(playwright, "lib", "webp_codec.wasm"), 0o644);
-    const { node, browser } = browserPaths(runtime, target);
     verifyArchitecture(node, target);
-    verifyArchitecture(browser, target);
+    verifyArchitecture(browser, details.browserTarget ?? target);
     const hostPlatform = process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "win" : "linux";
     if (details.nodePlatform === `${hostPlatform}-${process.arch}`) {
       const actual = execFileSync(node, ["--version"], { encoding: "utf8" }).trim();
@@ -320,6 +372,7 @@ function stageRuntime(target, bambooSource) {
       playwrightCoreVersion: LOCK.playwrightCoreVersion,
       chromiumVersion: LOCK.chromiumVersion,
       chromiumRevision: LOCK.chromiumRevision,
+      ...archiveIdentity(target, details),
       signingIdentity: identity,
       hostSha256: sha256File(path.join(source, "host.cjs")),
       packageLockSha256: sha256File(path.join(source, "package-lock.json")),
