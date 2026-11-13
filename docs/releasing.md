@@ -55,6 +55,13 @@ that Cargo invocation. Missing or changed debug output fails; a staged input or
 an old release bundle is not a fallback. These tests exercise the real actor,
 HTTP/static-dir and browser chain, not the complete desktop GUI.
 
+Bodhi accepts the flat build-script `OUT_DIR` used through Cargo 1.99 and the
+nested package/hash directory introduced in Cargo 1.100. With the pinned
+`tauri-build` 2.5.6, Cargo 1.100 stages Tauri's resources one level below the
+profile directory. The build script synchronizes the generated frontend,
+browser runtime and Bamboo sidecar into the final Cargo target/profile in both
+unified and split build directories.
+
 ## Delivery policy and cutover
 
 The shared target flow is feature Unit/E2E → accepted `dev` → frozen
