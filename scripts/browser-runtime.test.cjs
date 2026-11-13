@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const vm = require("node:vm");
 const { LOCK, browserPaths, sha256File, signingIdentity, targetDetails, treeHash, verifyArchitecture, verifyRuntime } = require("./browser-runtime.cjs");
 
 const LINUX_ARM64 = "aarch64-unknown-linux-gnu";
@@ -35,6 +36,35 @@ test("browser archives are pinned for every supported desktop runtime target", (
     assert.match(details.browserSha256, /^[a-f0-9]{64}$/);
   }
   assert.throws(() => targetDetails("../unknown"), /Unsupported/);
+});
+
+test("Windows ZIP extraction uses system bsdtar even when Git Bash tools are on PATH", () => {
+  const calls = [];
+  const filename = require.resolve("./browser-runtime.cjs");
+  const systemRoot = "C:\\Windows";
+  const sandbox = {
+    __dirname: path.win32.dirname("D:\\Bodhi AI\\scripts\\browser-runtime.cjs"),
+    module: { exports: {} },
+    process: { platform: "win32", env: { SystemRoot: systemRoot, PATH: "C:\\Program Files\\Git\\usr\\bin" } },
+    require(name) {
+      if (name === "node:path") return path.win32;
+      if (name === "node:fs") return { readFileSync: () => JSON.stringify(LOCK), mkdirSync() {} };
+      if (name === "node:child_process") return { execFileSync: (program, args) => calls.push([program, ...args]) };
+      return require(name);
+    },
+  };
+  const implementation = fs.readFileSync(filename, "utf8");
+  vm.runInNewContext(`${implementation}\nmodule.exports.extractZip = extractZip;`, sandbox, { filename });
+  const { extractZip } = sandbox.module.exports;
+  const destination = "D:\\Bodhi AI\\staged";
+  for (const platform of ["win-arm64", "win-x64"]) {
+    const archive = `D:\\Bodhi AI\\node-v24.21.0-${platform}.zip`;
+    extractZip(archive, destination);
+    assert.deepEqual(calls.pop(), [`${systemRoot}\\System32\\tar.exe`, "-xf", archive, "-C", destination]);
+  }
+  delete sandbox.process.env.SystemRoot;
+  assert.throws(() => extractZip("archive.zip", destination), /absolute SystemRoot/);
+  assert.deepEqual(calls, []);
 });
 
 test("browser executable architecture must match the bundle target", () => {

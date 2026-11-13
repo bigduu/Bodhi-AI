@@ -259,7 +259,14 @@ function signNested(runtime) {
 function extractZip(archive, destination) {
   fs.mkdirSync(destination, { recursive: true });
   if (process.platform === "win32") {
-    execFileSync("tar", ["-xf", archive, "-C", destination], { stdio: "inherit" });
+    // Windows ships a ZIP-capable bsdtar. Git Bash can put GNU tar first on
+    // PATH, where a drive-qualified archive is interpreted as a remote file.
+    const systemRoot = process.env.SystemRoot;
+    if (!systemRoot || !path.isAbsolute(systemRoot)) {
+      throw new Error("Windows browser runtime extraction requires an absolute SystemRoot.");
+    }
+    const tar = path.join(systemRoot, "System32", "tar.exe");
+    execFileSync(tar, ["-xf", archive, "-C", destination], { stdio: "inherit" });
   } else {
     execFileSync("unzip", ["-q", archive, "-d", destination], { stdio: "inherit" });
   }
