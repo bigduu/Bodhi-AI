@@ -133,12 +133,18 @@ function jobs(ctx, request = api, { preflightOnly = false } = {}) {
   // outputs. Target selection still authenticates the complete expanded graph.
   if (preflightOnly) rows = rows.filter(job => job.name === "Reserve admitted release");
   const names = ["Reserve admitted release", "Publish original release", ...releaseContract(ctx).targets.map(target => `Build original (${target})`)];
+  const inertMatrixAttempts = new Set();
   assert.equal(new Set(rows.map(job => job.id)).size, rows.length);
-  for (const job of rows) {
-    assert.ok(names.includes(job.name), "Foreign release job"); assert.equal(job.run_id, ctx.runId);
-    assert.equal(job.head_sha, ctx.controller); assert.ok(id(job.run_attempt) <= ctx.attempt, "Future job attempt");
-  }
-  return rows;
+  return rows.filter(job => {
+    assert.equal(job.run_id, ctx.runId); assert.equal(job.head_sha, ctx.controller);
+    const attempt = id(job.run_attempt); assert.ok(attempt <= ctx.attempt, "Future job attempt");
+    if (names.includes(job.name)) return true;
+    const skippedMatrix = job.name === "Build original (${{ matrix.target }})" && attempt < ctx.attempt &&
+      job.status === "completed" && job.conclusion === "skipped" && Array.isArray(job.steps) && job.steps.length === 0;
+    assert.ok(skippedMatrix && !inertMatrixAttempts.has(attempt), "Foreign release job");
+    inertMatrixAttempts.add(attempt);
+    return false;
+  });
 }
 function gate(job, name) {
   const steps = job.steps.filter(step => step.name === name);

@@ -255,6 +255,16 @@ test("rerun preflight can restore the original reservation before its matrix exp
   f.jobs[0].head_sha = S;
   assert.throws(() => out.loadReservation(ctx, a.request, a.restore, { preflightOnly: true }), /Expected values to be strictly equal/);
 });
+test("an old skipped empty scheduler row cannot count as a target output", () => {
+  const f = fixture(), a = adapters(f);
+  const scheduler = { ...f.job(91, "Build original (${{ matrix.target }})", 1, []), conclusion: "skipped" };
+  f.jobs.push(scheduler);
+  assert.deepEqual(out.jobs(ctx, a.request), f.jobs.slice(0, -1));
+  scheduler.steps = [{ name: out.BUILD }];
+  assert.throws(() => out.jobs(ctx, a.request), /Foreign release job/);
+  scheduler.steps = []; scheduler.run_attempt = ctx.attempt;
+  assert.throws(() => out.jobs(ctx, a.request), /Foreign release job/);
+});
 test("version reservation precedes every original build and binds separate controller/product", () => {
   const f = fixture(), a = adapters(f), { reservation } = f;
   f.release = null; f.jobs = [f.job(10, "Reserve admitted release", 2, [], true)]; f.artifacts = [];
