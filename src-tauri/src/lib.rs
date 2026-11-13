@@ -162,11 +162,18 @@ fn ready_frontend_url(
     sidecar_frontend: bool,
     port: u16,
     development_url: Option<&tauri::Url>,
+    index_hash: Option<&str>,
 ) -> Result<tauri::Url, String> {
     if sidecar_frontend {
-        return format!("http://127.0.0.1:{port}")
-            .parse()
-            .map_err(|error| format!("bad sidecar url: {error}"));
+        let mut url = tauri::Url::parse(&format!("http://127.0.0.1:{port}"))
+            .map_err(|error| format!("bad sidecar url: {error}"))?;
+        if let Some(hash) = index_hash {
+            // A WebView can keep a fresh cached index across app upgrades.
+            // The verified index hash gives each entry page its own URL
+            // while preserving the origin used by the app's local storage.
+            url.query_pairs_mut().append_pair("frontend", hash);
+        }
+        return Ok(url);
     }
     let mut url = development_url
         .cloned()
@@ -256,11 +263,16 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
         let use_sidecar_frontend =
             !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
         if let Some(win) = sidecar_app.get_webview_window("main") {
-            let result = ready_frontend_url(use_sidecar_frontend, port, development_url.as_ref())
-                .and_then(|url| {
-                    log::info!("Managed backend ready; navigating webview to {url}");
-                    win.navigate(url).map_err(|error| error.to_string())
-                });
+            let result = ready_frontend_url(
+                use_sidecar_frontend,
+                port,
+                development_url.as_ref(),
+                frontend.index_hash.as_deref(),
+            )
+            .and_then(|url| {
+                log::info!("Managed backend ready; navigating webview to {url}");
+                win.navigate(url).map_err(|error| error.to_string())
+            });
             if let Err(error) = result {
                 sidecar::kill(&sidecar_app);
                 show_startup_failure(&sidecar_app, &error);
@@ -450,18 +462,36 @@ mod tests {
     fn ready_navigation_keeps_the_dev_origin_and_removes_startup_only_identity() {
         let startup = tauri::Url::parse("http://127.0.0.1:1420/__bodhi_startup?run=owned").unwrap();
         assert_eq!(
-            super::ready_frontend_url(false, 9562, Some(&startup))
+            super::ready_frontend_url(false, 9562, Some(&startup), Some(&"a".repeat(64)))
                 .unwrap()
                 .as_str(),
             "http://127.0.0.1:1420/"
         );
-        assert!(super::ready_frontend_url(false, 9562, None).is_err());
+        assert!(super::ready_frontend_url(false, 9562, None, None).is_err());
         assert_eq!(
-            super::ready_frontend_url(true, 19562, Some(&startup))
+            super::ready_frontend_url(true, 19562, Some(&startup), None)
                 .unwrap()
                 .as_str(),
             "http://127.0.0.1:19562/"
         );
+    }
+
+    #[test]
+    fn ready_navigation_uses_a_distinct_url_when_the_verified_index_changes() {
+        let previous_hash = "a".repeat(64);
+        let next_hash = "b".repeat(64);
+        let previous = super::ready_frontend_url(true, 19562, None, Some(&previous_hash)).unwrap();
+        let next = super::ready_frontend_url(true, 19562, None, Some(&next_hash)).unwrap();
+        assert_eq!(
+            previous.as_str(),
+            format!("http://127.0.0.1:19562/?frontend={previous_hash}")
+        );
+        assert_eq!(
+            next.as_str(),
+            format!("http://127.0.0.1:19562/?frontend={next_hash}")
+        );
+        assert_eq!(next.origin(), previous.origin());
+        assert_eq!(next.path(), previous.path());
     }
 
     #[test]
