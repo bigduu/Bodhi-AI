@@ -117,7 +117,7 @@ function verifyInstallerPayload({ format, file, target, shell, sidecar, browserR
       }
       const installed = sha256File(payload[name]);
       const staged = sha256File(original);
-      if (format === "appimage") {
+      if (format === "appimage" && name === "bodhi") {
         const packed = ownedPath(appDir, ["usr", "bin", name]);
         assert.equal(installed, sha256File(packed), `AppImage ${name} differs from its built AppDir`);
         if (installed !== staged) {

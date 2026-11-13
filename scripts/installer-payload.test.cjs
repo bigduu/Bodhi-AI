@@ -162,6 +162,12 @@ test("AppImage checks its Type 2 payload offset, built AppDir and original execu
   assert.equal(calls.length, previousCalls);
 });
 
+test("AppImage requires the exact locked Bamboo executable even when machine code is unchanged", t => {
+  const installer = fixture(t, "appimage");
+  fs.appendFileSync(installer.sidecarPayload, "RPATH fixture");
+  assert.throws(verifier(t, installer).verify, /Installed bamboo differs from the verified input/);
+});
+
 test("package extraction refuses linked resource directories", { skip: process.platform === "win32" }, t => {
   const installer = fixture(t, "deb");
   const { verify } = verifier(t, installer, root => {
