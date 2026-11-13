@@ -6,11 +6,15 @@ const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
 const { admitFeature, verifyAcceptedDev, requireController, requireProduct, sourceFromLog, contextFromLog,
-  executionOrigin, FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, MAIN_GATE, LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
+  executionOrigin, FEATURE_WORKFLOW_BLOB, ARM64_FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, MAIN_GATE,
+  LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_PRODUCERS, featureTargets, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND } = require("./release-source.cjs");
 const { NATIVE_TARGETS, REPOSITORY } = require("./release-finalizer.cjs");
 const S = "1".repeat(40), B = "2".repeat(40), F = "3".repeat(40), M = "4".repeat(40), T = "5".repeat(40), C = "6".repeat(40);
 const D = "7".repeat(40), D2 = "8".repeat(40);
 const sourceGate = "Require the exact feature merge source";
+const architectureGate = "Verify native runner architecture";
+const armTargets = ["aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc"];
+const fiveTargets = [...NATIVE_TARGETS, ...armTargets];
 const input = { source: S, pullRequest: 17, runId: 42, attempt: 1 };
 const processEnv = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "SystemRoot", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"]
   .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
@@ -20,10 +24,13 @@ function contextLog(value = originalContext()) {
   return `2026-10-26T17:25:40.0279841Z Feature source: ${value.snapshot} tree: ${value.tree}\n` +
     `2026-10-26T17:25:40.0280000Z Feature context: ${Buffer.from(JSON.stringify(value)).toString("base64")}\n`;
 }
-function fixture() {
+function fixture(workflowBlob = FEATURE_WORKFLOW_BLOB) {
+  const arm64 = workflowBlob === ARM64_FEATURE_WORKFLOW_BLOB;
+  const targets = arm64 ? fiveTargets : NATIVE_TARGETS;
+  const nativeGates = [sourceGate, ...(arm64 ? [architectureGate] : []), "Stage accepted inputs for debug assembly", "Run native shell unit tests",
+    "Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"];
   const gates = [["Unit Tests (Node)", [sourceGate, "Run script unit tests"]],
-    ...NATIVE_TARGETS.map(target => [`Unit and E2E (${target})`, [sourceGate, "Stage accepted inputs for debug assembly", "Run native shell unit tests",
-      "Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"]]),
+    ...targets.map(target => [`Unit and E2E (${target})`, nativeGates]),
     ["Unit Tests", ["Require every unit test result"]], ["E2E Tests", ["Require every native E2E result"]]];
   const f = {
     pr: { number: 17, state: "closed", merged: true, merged_at: "2026-10-26T18:30:00Z", merge_commit_sha: S, base: { sha: B, ref: "dev", repo: { full_name: REPOSITORY } },
@@ -36,10 +43,10 @@ function fixture() {
     snapshot: { parents: [{ sha: B }, { sha: F }], tree: { sha: T } },
     branch: { protected: true, commit: { sha: D }, protection: { required_status_checks: { enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"],
       checks: ["Unit Tests", "E2E Tests"].map(context => ({ context, app_id: 15368 })) } } },
-    frozen: S, ancestor: S, workflowBlob: FEATURE_WORKFLOW_BLOB, total: undefined,
-    logs: Object.fromEntries(gates.slice(0, 4).map((_job, i) => [100 + i, contextLog()])),
+    frozen: S, ancestor: S, workflowBlob, total: undefined,
+    logs: Object.fromEntries(gates.flatMap(([, steps], i) => steps.includes(sourceGate) ? [[100 + i, contextLog()]] : [])),
   };
-  f.jobs.push({ id: 106, name: MAIN_GATE, run_id: 42, run_attempt: 1, head_sha: F, status: "completed", conclusion: "skipped", steps: [] });
+  f.jobs.push({ id: 100 + gates.length, name: MAIN_GATE, run_id: 42, run_attempt: 1, head_sha: F, status: "completed", conclusion: "skipped", steps: [] });
   f.request = endpoint => {
     const replies = { "pulls/17": f.pr, [`git/commits/${S}`]: f.accepted, [`git/commits/${M}`]: f.snapshot,
       [`compare/${S}...${D}`]: { merge_base_commit: { sha: f.ancestor } }, [`git/ref/heads/release/${S}`]: { object: { sha: f.frozen } },
@@ -73,6 +80,68 @@ test("the original context producer has six actual jobs and no Main skip", () =>
   const f = fixture(); f.workflowBlob = CONTEXT_WORKFLOW_BLOB; f.jobs.pop();
   const proof = f.verify(); assert.equal(proof.workflowBlob, CONTEXT_WORKFLOW_BLOB); assert.equal(proof.jobs.length, 6);
 });
+
+test("the producer registry keeps both historical graphs and requires five immutable native targets for ARM64", () => {
+  assert.equal(FEATURE_PRODUCERS.get(CONTEXT_WORKFLOW_BLOB), false);
+  assert.equal(FEATURE_PRODUCERS.get(FEATURE_WORKFLOW_BLOB), true);
+  assert.equal(FEATURE_PRODUCERS.get(ARM64_FEATURE_WORKFLOW_BLOB), true);
+  for (const blob of [CONTEXT_WORKFLOW_BLOB, FEATURE_WORKFLOW_BLOB]) {
+    assert.deepEqual(featureTargets(blob), NATIVE_TARGETS);
+  }
+  assert.deepEqual(featureTargets(ARM64_FEATURE_WORKFLOW_BLOB), fiveTargets);
+  assert.ok(Object.isFrozen(featureTargets(ARM64_FEATURE_WORKFLOW_BLOB)));
+  assert.throws(() => featureTargets(B), /Unreviewed feature workflow/);
+  assert.throws(() => featureTargets(LEGACY_FEATURE_WORKFLOW_BLOB), /Legacy feature producer/);
+});
+
+test("the original Node context selects the pinned ARM64 CI blob before reading all five native originals", () => {
+  const f = fixture(ARM64_FEATURE_WORKFLOW_BLOB), observed = [];
+  f.run.pull_requests = [];
+  const proof = verifyAcceptedDev(input, endpoint => {
+    observed.push(endpoint);
+    return f.request(endpoint);
+  }, jobId => {
+    observed.push(jobId);
+    return f.logs[jobId];
+  });
+  const selectedBlob = observed.indexOf(`contents/.github/workflows/ci.yml?ref=${M}`);
+  assert.ok(observed.indexOf(100) < selectedBlob && selectedBlob < observed.indexOf(101));
+  assert.deepEqual(observed.filter(value => Number.isInteger(value)), [100, 101, 102, 103, 104, 105]);
+  assert.equal(proof.workflowBlob, ARM64_FEATURE_WORKFLOW_BLOB);
+  assert.deepEqual(proof.jobs.map(job => job.name), [
+    "Unit Tests (Node)", ...fiveTargets.map(target => `Unit and E2E (${target})`), "Unit Tests", "E2E Tests",
+  ]);
+});
+
+test("job names cannot select a different feature workflow contract", () => {
+  const historical = fixture();
+  historical.workflowBlob = ARM64_FEATURE_WORKFLOW_BLOB;
+  assert.throws(() => historical.verify(), /Missing or ambiguous gate: Verify native runner architecture/);
+  const fiveNative = fixture(ARM64_FEATURE_WORKFLOW_BLOB);
+  fiveNative.workflowBlob = FEATURE_WORKFLOW_BLOB;
+  assert.throws(() => fiveNative.verify(), /Foreign job in feature evidence/);
+  fiveNative.workflowBlob = B;
+  assert.throws(() => fiveNative.verify(), /Unreviewed feature workflow/);
+});
+
+for (const target of armTargets) {
+  const jobName = `Unit and E2E (${target})`;
+  test(`the ARM64 producer requires the original ${target} native job and its source, architecture and E2E gates`, () => {
+    for (const [mutate, expected] of [
+      [(f, job) => { f.jobs = f.jobs.filter(value => value !== job); }, /Missing required job/],
+      [(f, job) => { job.conclusion = "skipped"; }, /Unsuccessful job/],
+      [(f, job) => { delete f.logs[job.id]; }, /string/],
+      [(f, job) => { f.logs[job.id] = contextLog(originalContext({ snapshot: B })); }, /different snapshots/],
+      [(f, job) => { job.steps.find(step => step.name === architectureGate).conclusion = "skipped"; }, /Unsuccessful gate: Verify native runner architecture/],
+      [(f, job) => { job.steps.pop(); }, /Missing or ambiguous gate: Run native browser E2E/],
+      [(f, job) => { timed(job, 3600); }, /completed after accepted dev merge/],
+    ]) {
+      const f = fixture(ARM64_FEATURE_WORKFLOW_BLOB);
+      mutate(f, f.jobs.find(job => job.name === jobName));
+      assert.throws(() => f.verify(), expected);
+    }
+  });
+}
 for (const [name, mutate] of [
   ["missing skip", f => f.jobs.pop()], ["green stub", f => { f.jobs.at(-1).conclusion = "success"; }],
   ["neutral stub", f => { f.jobs.at(-1).conclusion = "neutral"; }], ["running main gate", f => { f.jobs.at(-1).status = "in_progress"; }],

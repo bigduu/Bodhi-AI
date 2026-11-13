@@ -1,5 +1,5 @@
 name: publish
-run-name: Bodhi v2 v${{ inputs.bodhi_version }} @ ${{ inputs.expected_source_sha }}
+run-name: Bodhi original v${{ inputs.bodhi_version }} @ ${{ inputs.expected_source_sha }}
 
 on:
   workflow_dispatch:
@@ -49,6 +49,8 @@ jobs:
       version: ${{ steps.reserve.outputs.version }}
       frontend_package: ${{ steps.reserve.outputs.frontend_package }}
       frontend_version: ${{ steps.reserve.outputs.frontend_version }}
+      targets: ${{ steps.reserve.outputs.targets }}
+      schema_version: ${{ steps.reserve.outputs.schema_version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -77,7 +79,7 @@ jobs:
         if: steps.reserve.outputs.reuse != 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: bodhi-v2-reservation-${{ github.run_id }}
+          name: ${{ steps.reserve.outputs.reservation_name }}
           path: ${{ runner.temp }}/reservation.json
           if-no-files-found: error
           retention-days: 90
@@ -100,17 +102,7 @@ jobs:
       NPM_CONFIG_PROGRESS: "false"
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            bundles: app,dmg
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            bundles: appimage,deb,rpm
-          - platform: windows-latest
-            target: x86_64-pc-windows-msvc
-            bundles: nsis
+      matrix: ${{ fromJSON(needs.preflight.outputs.targets) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -120,9 +112,11 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: lts/*
+          architecture: ${{ startsWith(matrix.target, 'aarch64-') && 'arm64' || 'x64' }}
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+          architecture: ${{ startsWith(matrix.target, 'aarch64-') && 'arm64' || 'x64' }}
       - name: Select retained target output
         id: original
         working-directory: controller
@@ -146,11 +140,28 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
+      - name: Install installer inspection tools
+        if: steps.original.outputs.reuse != 'true' && runner.os == 'Linux' && needs.preflight.outputs.schema_version == '3'
+        run: sudo apt-get install -y cpio squashfs-tools
       - name: Install Rust stable
         if: steps.original.outputs.reuse != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - name: Verify native installer host
+        if: steps.original.outputs.reuse != 'true'
+        working-directory: product
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const assert = require('node:assert/strict');
+          const { execFileSync } = require('node:child_process');
+          const target = process.env.BAMBOO_SIDECAR_TARGET;
+          const [arch, , os] = target.split('-');
+          assert.equal(process.arch, arch === 'aarch64' ? 'arm64' : 'x64');
+          assert.equal(process.platform, { darwin: 'darwin', linux: 'linux', windows: 'win32' }[os]);
+          assert.equal(execFileSync('rustc', ['-vV'], { encoding: 'utf8' }).match(/^host: (\S+)\s*$/m)?.[1], target);
+          NODE
       - name: Cache shell compilation
         if: steps.original.outputs.reuse != 'true'
         uses: swatinem/rust-cache@v2
@@ -216,7 +227,7 @@ jobs:
         if: failure() && steps.native_build.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
-          name: bodhi-v2-emergency-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+          name: ${{ steps.original.outputs.emergency_name }}
           path: |
             product/target/${{ matrix.target }}/release/bundle/
             product/target/${{ matrix.target }}/release/bodhi*
@@ -263,7 +274,7 @@ jobs:
       - name: Retain original publication evidence
         uses: actions/upload-artifact@v7
         with:
-          name: bodhi-v2-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          name: bodhi-v${{ needs.preflight.outputs.schema_version }}-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/evidence.json
           if-no-files-found: error
           retention-days: 90

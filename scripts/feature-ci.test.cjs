@@ -5,11 +5,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { test } = require("node:test");
-const { FEATURE_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA } = require("./release-source.cjs");
+const { FEATURE_WORKFLOW_BLOB, ARM64_FEATURE_WORKFLOW_BLOB, LEGACY_FEATURE_WORKFLOW_BLOB,
+  featureTargets, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA } = require("./release-source.cjs");
 const processEnv = Object.fromEntries(["PATH", "HOME", "USERPROFILE", "SystemRoot", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL"]
   .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
 
 const workflow = fs.readFileSync(path.join(__dirname, "../.github/workflows/ci.yml"), "utf8");
+const workflowBlob = execFileSync("git", ["hash-object", "--stdin"], { input: workflow, encoding: "utf8", env: processEnv }).trim();
 // SHA256 of the 2,118 UTF-8 heredoc-body bytes (indentation/final LF included)
 // independently extracted from the real Alpha CI blob 85fd611d3ee5171eb70b9c5a28d53c92a2c09c50.
 // Keep this literal; runtime policy checks must not require historical Git objects.
@@ -29,12 +31,16 @@ test("CI splits Dev tests from read-only Main admission with no push/release pro
   assert.match(workflow, /group: bodhi-feature-\$\{\{ github.event.pull_request.number \}\}/);
   assert.doesNotMatch(workflow, /contents: write|secrets\.|tauri-action|upload-artifact|cargo build|cargo test[^\n]*--release|release\/bundle|prepare-crates-io-build/);
 });
-test("the six-job context producer agrees with admission and records before any product or unit command", () => {
-  const blob = execFileSync("git", ["hash-object", "--stdin"], { input: workflow, encoding: "utf8", env: processEnv }).trim();
-  assert.equal(blob, FEATURE_WORKFLOW_BLOB); assert.notEqual(blob, LEGACY_FEATURE_WORKFLOW_BLOB);
+test("the context producer agrees with admission and records before any product or unit command", () => {
+  assert.ok([FEATURE_WORKFLOW_BLOB, ARM64_FEATURE_WORKFLOW_BLOB].includes(workflowBlob));
+  assert.notEqual(workflowBlob, LEGACY_FEATURE_WORKFLOW_BLOB);
   assert.equal(FEATURE_CONTEXT_SCHEMA, "bodhi-feature-context/v1"); assert.equal(ADMISSION_SCHEMA, 2);
   assert.equal([...workflow.matchAll(/^  [a-z][a-z0-9-]*:\n    name:/gm)].length, 5);
-  const writers = [...workflow.matchAll(/          node <<'NODE'\n([\s\S]*?)^          NODE$/gm)].map(match => match[1]);
+  const writers = ["unit-node", "native-tests"].map(id => {
+    const writer = job(id).match(/          node <<'NODE'\n([\s\S]*?)^          NODE$/m);
+    assert.ok(writer, `Missing source writer for ${id}`);
+    return writer[1];
+  });
   assert.equal(writers.length, 2); assert.equal(writers[0], writers[1]);
   assert.deepEqual(writers.map(writer => createHash("sha256").update(writer, "utf8").digest("hex")),
     [ORIGINAL_CONTEXT_WRITER_SHA256, ORIGINAL_CONTEXT_WRITER_SHA256], "Original Alpha writer bytes must remain unchanged");
@@ -63,10 +69,10 @@ test("context-writer policy works in a real depth-one checkout without historica
   // Run the current test bytes even while this regression is an uncommitted
   // working-tree change. Filter the child to avoid recursively cloning itself.
   fs.copyFileSync(__filename, path.join(checkout, "scripts/feature-ci.test.cjs"));
-  const child = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=^the six-job context producer agrees",
+  const child = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=^the context producer agrees",
     "scripts/feature-ci.test.cjs"], { cwd: checkout, env: processEnv, encoding: "utf8", maxBuffer: 1024 ** 2 });
   assert.equal(child.status, 0, child.stdout + child.stderr);
-  assert.match(child.stdout, /ok \d+ - the six-job context producer agrees/);
+  assert.match(child.stdout, /ok \d+ - the context producer agrees/);
 });
 test("Main executes only the base controller verifier, and all feature jobs skip on Main", () => {
   const main = job("main-admission");
@@ -93,8 +99,18 @@ test("a same-name candidate pull_request stub cannot change the trusted Target j
 test("each native target compiles once for Unit and E2E and consumes the same debug assembly", () => {
   const native = job("native-tests");
   assert.match(native, /fail-fast: false/);
-  assert.deepEqual([...native.matchAll(/^            target: (\S+)$/gm)].map((match) => match[1]),
-    ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]);
+  const runners = {
+    "x86_64-unknown-linux-gnu": "ubuntu-22.04",
+    "aarch64-unknown-linux-gnu": "ubuntu-22.04-arm",
+    "aarch64-apple-darwin": "macos-latest",
+    "x86_64-pc-windows-msvc": "windows-latest",
+    "aarch64-pc-windows-msvc": "windows-11-arm",
+  };
+  const matrix = [...native.matchAll(/^          - platform: (\S+)\n            target: (\S+)$/gm)]
+    .map(([, runner, target]) => [target, runner]);
+  const targets = featureTargets(workflowBlob);
+  assert.equal(matrix.length, targets.length);
+  assert.deepEqual(Object.fromEntries(matrix), Object.fromEntries(targets.map(target => [target, runners[target]])));
   assert.equal([...workflow.matchAll(/run: cargo test\b/g)].length, 1);
   const compile = "run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}";
   const staging = native.indexOf("run: npm run build:sidecar:dev");
@@ -103,6 +119,20 @@ test("each native target compiles once for Unit and E2E and consumes the same de
   const actor = native.indexOf('run: node scripts/sidecar-bundle-smoke.cjs "${{ matrix.target }}" --assembly=debug');
   const browser = native.indexOf('run: node scripts/browser-bundle-smoke.cjs "${{ matrix.target }}" "target/${{ matrix.target }}/debug/browser-runtime"');
   assert.ok(staging > 0 && unit > staging && assembly > unit && actor > assembly && browser > actor);
+  const architecture = native.indexOf("name: Verify native runner architecture");
+  if (workflowBlob === ARM64_FEATURE_WORKFLOW_BLOB) {
+    const rust = native.indexOf("uses: dtolnay/rust-toolchain@stable");
+    assert.ok(rust >= 0 && architecture > rust && staging > architecture);
+    assert.match(native, /architecture: \$\{\{ startsWith\(matrix.target, 'aarch64-'\) && 'arm64' \|\| 'x64' \}\}/);
+    assert.match(native, /toolchain: 1\.99\.1-\$\{\{ matrix.target \}\}/);
+    const gate = native.slice(architecture, staging);
+    assert.match(gate, /assert\.equal\(process.arch/);
+    assert.match(gate, /assert\.equal\(process.platform/);
+    assert.match(gate, /execFileSync\("rustc", \["-vV"\]/);
+    assert.doesNotMatch(gate, /\n        if:/);
+  } else {
+    assert.equal(architecture, -1);
+  }
   assert.doesNotMatch(native, /continue-on-error|\|\| true|if: (?:false|always\(\))/);
   assert.match(native, /BAMBOO_SIDECAR_TARGET: \$\{\{ matrix.target \}\}/);
   assert.match(native, /TAURI_ENV_TARGET_TRIPLE: \$\{\{ matrix.target \}\}/);
