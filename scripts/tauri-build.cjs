@@ -20,7 +20,10 @@ function appImageTarget(args, env = process.env, platform = process.platform) {
   const target = env.BAMBOO_SIDECAR_TARGET;
   if (platform !== "linux" || env.BAMBOO_SIDECAR_SOURCE !== "release" || !TARGETS.has(target)) return;
 
-  const { values, tokens } = parseArgs({ args, options: OPTIONS, tokens: true, strict: false, allowPositionals: true });
+  // Clap accepts -t=value and -b=value. Parse these as long forms while
+  // forwarding the original process.argv to Tauri.
+  const parsedArgs = args.map(arg => arg.replace(/^-t=/, "--target=").replace(/^-b=/, "--bundles="));
+  const { values, tokens } = parseArgs({ args: parsedArgs, options: OPTIONS, tokens: true, strict: false, allowPositionals: true });
   if (values.target?.length !== 1 || values.target[0] !== target ||
       values.debug || values["no-bundle"] || values.help || values.version) return;
 

@@ -89,6 +89,7 @@ test("only explicit matching Linux release AppImage bundles enable runtime byte 
       [`--target=${target}`, "--bundles=deb,appimage"],
       ["-t", target, "-b", "deb", "appimage", "-b", "rpm"],
       [`-t${target}`, "-bappimage", "--", "--profile=production"],
+      [`-t=${target}`, "-b=deb,appimage"],
     ]) assert.equal(appImageTarget(args, env, "linux"), target);
 
     const appImage = ["--target", target, "--bundles", "appimage"];
