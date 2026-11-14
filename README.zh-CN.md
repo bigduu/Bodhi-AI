@@ -20,6 +20,19 @@
 
 ## 安装
 
+### 终端一键安装
+
+适用于运行 macOS 13.5 或更高版本的 Apple Silicon Mac，以及使用 APT 的 Linux x64 发行版。
+
+```sh
+curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://bigduu.github.io/Pavilion/install.sh | sh
+```
+
+- **macOS** 会将 Bodhi 安装到 `~/Applications`。如果首次启动被拦截，请前往「系统设置 → 隐私与安全性 → 仍要打开」。
+- **Linux** 需要 Python 3 或 `jq`。按 `sudo` 和 APT 的提示授权并确认安装官方 `.deb` 及其依赖。
+
+[Bodhi 下载页](https://bigduu.github.io/Pavilion/download?lang=zh#terminal-install)
+
 | 平台 | 方式 |
 |---|---|
 | macOS Apple Silicon（推荐） | `brew tap bigduu/tap && brew trust bigduu/tap && brew install --cask bigduu/tap/bodhi` |
