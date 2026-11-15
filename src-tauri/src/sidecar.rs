@@ -34,6 +34,12 @@ pub struct SidecarState {
 #[derive(Clone, Default)]
 pub struct StartupStatus(Arc<AtomicU8>);
 
+impl StartupStatus {
+    pub(crate) fn is_ready(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == 1
+    }
+}
+
 pub fn require_available_port(port: u16) -> Result<(), String> {
     if port == 0 {
         return Err("BODHI_BACKEND_PORT must be between 1 and 65535".into());
@@ -145,6 +151,33 @@ pub async fn wait_for_health(
         .map_err(|_| format!("The local engine did not become ready on port {port} within {max_secs}s. Check its logs and restart Bodhi."))?
 }
 
+pub(crate) async fn reported_version(port: u16) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Ready {
+        status: String,
+        version: String,
+    }
+
+    let ready = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(format!("http://127.0.0.1:{port}/readyz"))
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| e.to_string())?
+        .json::<Ready>()
+        .await
+        .map_err(|e| e.to_string())?;
+    if ready.status != "ok" {
+        return Err("Bamboo did not report a ready runtime.".into());
+    }
+    Ok(ready.version)
+}
+
 /// Spawn `bamboo serve`, record its child handle, and return its startup state.
 ///
 /// IMPORTANT: [`CommandChild`] is held in [`SidecarState`] for app-exit cleanup.
@@ -156,6 +189,7 @@ pub fn spawn<R: Runtime>(
     port: u16,
     data_dir: &std::path::Path,
     static_dir: Option<&std::path::Path>,
+    kernel: Option<&std::path::Path>,
 ) -> Result<StartupStatus, String> {
     let state = app
         .try_state::<SidecarState>()
@@ -181,12 +215,14 @@ pub fn spawn<R: Runtime>(
             dir.to_string_lossy().into_owned(),
         ]);
     }
-    let mut command = app
-        .shell()
-        .sidecar("bamboo")
-        .map_err(|e| format!("resolve bamboo sidecar: {e}"))?
-        .args(args)
-        .set_raw_out(true);
+    let command = match kernel {
+        Some(path) => app.shell().command(path),
+        None => app
+            .shell()
+            .sidecar("bamboo")
+            .map_err(|e| format!("resolve bamboo sidecar: {e}"))?,
+    };
+    let mut command = command.args(args).set_raw_out(true);
     if static_dir.is_some() {
         command = command.env(
             "RUST_LOG",

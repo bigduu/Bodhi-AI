@@ -13,6 +13,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut}
 use tokio::time::sleep;
 
 pub mod app_settings;
+mod bamboo_update;
 pub mod browser_runtime;
 #[cfg(test)]
 #[path = "../build_support.rs"]
@@ -217,10 +218,33 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     // `--parent-pid` orphan guard on `bamboo serve`.
     let data_dir = app_data_dir.clone();
     app.manage(sidecar::SidecarState::default());
+    if let Some(manifest) = frontend.manifest_sha256.clone() {
+        match bamboo_update::Updates::for_app(app.handle(), &data_dir, manifest) {
+            Ok(updates) => {
+                app.manage(updates);
+            }
+            Err(error) => {
+                show_startup_failure(app.handle(), &error);
+                return Ok(());
+            }
+        }
+    }
 
     let sidecar_app = app.handle().clone();
     let development_url = app.config().build.dev_url.clone();
     tauri::async_runtime::spawn(async move {
+        let updates = sidecar_app.try_state::<bamboo_update::Updates>();
+        let selected = match updates
+            .as_ref()
+            .map(|updates| updates.selected_kernel())
+            .transpose()
+        {
+            Ok(kernel) => kernel.flatten(),
+            Err(error) => {
+                show_startup_failure(&sidecar_app, &error);
+                return;
+            }
+        };
         // Only the explicitly selected legacy rollback package retains
         // external-server reuse. Lotus Next source and package builds always own
         // the backend serving their verified resource directory.
@@ -233,6 +257,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 port,
                 &data_dir,
                 frontend.static_dir.as_deref(),
+                selected.as_ref().map(|kernel| kernel.executable.as_path()),
             ) {
                 Ok(status) => {
                     log::info!("bamboo sidecar spawned on port {port}");
@@ -259,6 +284,32 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             sidecar::kill(&sidecar_app);
             show_startup_failure(&sidecar_app, &error);
             return;
+        }
+        if let Some(updates) = updates {
+            let reported = sidecar::reported_version(port).await.and_then(|version| {
+                if owned.as_ref().is_some_and(sidecar::StartupStatus::is_ready) {
+                    Ok(version)
+                } else {
+                    Err("The managed Bamboo exited while checking its version.".into())
+                }
+            });
+            if let Some(kernel) = selected {
+                if reported.as_deref() != Ok(kernel.version.as_str()) {
+                    sidecar::kill(&sidecar_app);
+                    show_startup_failure(
+                        &sidecar_app,
+                        &format!(
+                            "The running Bamboo did not report the selected version {}.",
+                            kernel.version
+                        ),
+                    );
+                    return;
+                }
+            }
+            if let Ok(version) = reported {
+                log::info!("Managed Bamboo {version} is ready on port {port}");
+                updates.mark_ready(version);
+            }
         }
         let use_sidecar_frontend =
             !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
@@ -318,18 +369,26 @@ fn build_app_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    let update_kernel = MenuItem::with_id(
+        handle,
+        bamboo_update::MENU_ID,
+        bamboo_update::MENU_LABEL,
+        true,
+        None::<&str>,
+    )?;
 
     let mut appended = false;
     if let Some(kind) = menu.get(HELP_SUBMENU_ID) {
         if let Some(help) = kind.as_submenu() {
             help.append(&install_item)?;
+            help.append(&update_kernel)?;
             appended = true;
         }
     }
     if !appended {
         // No Help submenu in this platform's default menu — add one so the
         // item is still reachable.
-        let help = Submenu::with_items(handle, "Help", true, &[&install_item])?;
+        let help = Submenu::with_items(handle, "Help", true, &[&install_item, &update_kernel])?;
         menu.append(&help)?;
     }
 
@@ -381,6 +440,9 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id() == cli_install::MENU_ID {
                 cli_install::run_from_menu(app);
+            }
+            if event.id() == bamboo_update::MENU_ID {
+                bamboo_update::run_from_menu(app);
             }
             #[cfg(target_os = "macos")]
             if event.id() == webview_recovery::RELOAD_MENU_ID {

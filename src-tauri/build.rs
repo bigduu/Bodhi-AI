@@ -4,6 +4,10 @@ mod build_support;
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    println!(
+        "cargo:rustc-env=BODHI_BUILD_TARGET={}",
+        std::env::var("TARGET").unwrap()
+    );
     ensure_sidecar_placeholder();
     pin_frontend_receipt();
     build_support::reset_browser_destination(&out_dir)

@@ -85,6 +85,43 @@ Chrome for Testing x64 Headless Shell under Windows x64 emulation. The runtime
 checks Node as ARM64 and Chromium as x64 on that target. The archive digests and
 the final file inventory are bound in the ARM64 browser runtime receipts.
 
+## Bamboo-only updates
+
+In a Bodhi build with the published Lotus Next package, open **Help → 安装 Bamboo
+内核更新…** and select an approved JSON receipt. Bodhi downloads the published
+binary for the desktop's platform. Quit and reopen Bodhi to use the new binary
+with the same data directory and bundled Lotus resources. Import the same receipt
+again to repair a damaged copy of that version.
+
+The receipt approves a specific transition from the currently running Bamboo for
+one Bodhi release and one Lotus manifest. Before distributing it, validate that
+exact transition with the published target binary, the existing browser runtime,
+and a populated copy of the Bamboo data directory. Cover opening existing sessions
+and Work records, serving Lotus and launching the bundled browser host. Keep the
+acceptance evidence with the receipt. If the candidate needs different browser
+host files or an incompatible change to the shell or data, deliver it through the
+normal Bodhi feature and release process.
+
+```json
+{
+  "schemaVersion": 1,
+  "bodhiVersion": "<Bodhi version>",
+  "lotusManifestSha256": "<manifestSha256 from that Bodhi release's frontend-package-lock.json>",
+  "fromBambooVersion": "<currently running Bamboo version>",
+  "bambooVersion": "<approved newer Bamboo version>",
+  "sourceRevision": "<sourceRevision from the published bamboo-sidecars-v2.json>",
+  "manifestSha256": "<SHA-256 of the published bamboo-sidecars-v2.json>"
+}
+```
+
+Distribute the receipt from a trusted project source. It supplies the compatibility
+decision and the digest that pins the official Bamboo manifest. Bodhi also verifies
+the selected binary's size and hash, checks its version, and verifies the managed
+process and Lotus index on startup. A failed download leaves the current selection
+in place. A startup failure with an already selected binary stops startup because
+the newer version may have opened the live data directory. Preserve that profile
+and repair the same version or use a Bodhi build carrying a compatible newer core.
+
 ## Delivery policy and cutover
 
 The shared target flow is feature Unit/E2E → accepted `dev` → frozen
