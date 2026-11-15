@@ -1,36 +1,26 @@
 use super::*;
-use crate::sidecar;
 use serde_json::{json, Value};
-use shared_child::SharedChild;
 use std::net::TcpListener;
-use std::process::Command;
-use std::sync::Arc;
 
 const BASELINE: &str = "2026.11.18";
 const BASELINE_MANIFEST_SHA: &str =
     "7c97150255963c8917344f323513beca272e2a9d79a6da20bd0731a8159ae8a1";
 
-struct Child(Arc<SharedChild>);
+struct DesktopRuntime(SidecarState);
 
-impl Drop for Child {
+impl Drop for DesktopRuntime {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        self.0.exit();
     }
 }
 
-fn start(
+fn bamboo_command(
     profile: &Profile,
-    writer: File,
     binary: &Path,
     frontend: &Path,
     scratch: &Path,
-) -> (Child, StartupStatus, u16) {
-    let port = TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    port: u16,
+) -> Command {
     let mut command = Command::new(binary);
     command.env_clear().envs(
         [
@@ -66,8 +56,7 @@ fn start(
         .arg(&profile.data)
         .arg("--static-dir")
         .arg(frontend);
-    let (child, status) = sidecar::spawn_owned(command, writer, port).unwrap();
-    (Child(child), status, port)
+    command
 }
 
 #[tokio::test]
@@ -120,17 +109,24 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .await
         .unwrap();
 
-    let (old, old_status, old_port) = start(
-        &profile,
-        profile.writer().unwrap(),
-        &baseline,
-        &frontend,
-        scratch.path(),
-    );
-    sidecar::wait_for_health(old_port, 45, Some(&old_status), Some(&index))
+    let port = TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let runtime = DesktopRuntime(SidecarState::default());
+    runtime.0.reserve_writer(profile.writer().unwrap()).unwrap();
+    let old_status = runtime
+        .0
+        .start(
+            bamboo_command(&profile, &baseline, &frontend, scratch.path(), port),
+            port,
+        )
+        .unwrap();
+    sidecar::wait_for_health(port, 45, Some(&old_status), Some(&index))
         .await
         .unwrap();
-    let old_version = sidecar::reported_version(old_port).await.unwrap();
+    let old_version = sidecar::owned_version(port, &old_status).await.unwrap();
     assert_eq!(old_version, BASELINE);
     assert!(
         Profile::open(&profile.data).unwrap().writer().is_err(),
@@ -143,7 +139,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .build()
         .unwrap();
     let response = http
-        .post(format!("http://127.0.0.1:{old_port}/api/v1/sessions"))
+        .post(format!("http://127.0.0.1:{port}/api/v1/sessions"))
         .json(&json!({"title": "Bodhi native kernel test", "workspace_path": scratch.path()}))
         .send()
         .await
@@ -165,7 +161,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         lotus_manifest_sha256: lotus.into(),
         bundled_version: old_version.clone(),
         bundled_binary: baseline,
-        running_version: OnceLock::new(),
+        running_version: Mutex::new(None),
     };
     updates.mark_ready(old_version, old_status);
     let mut upgrade = Upgrade {
@@ -182,34 +178,47 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .await
         .unwrap_err()
         .contains("SHA-256"));
-    assert!(ProfileState::read(&profile).unwrap().selection.is_none());
+    assert!(ProfileState::read(&profile).unwrap().pending.is_none());
     upgrade.manifest_sha256 = lock["manifestSha256"].as_str().unwrap().into();
+    let expected_version = upgrade.bamboo_version.clone();
     updates.stage(upgrade).await.unwrap();
-    assert_eq!(sidecar::reported_version(old_port).await.unwrap(), BASELINE);
-    drop(old);
+    let staged = ProfileState::read(&profile).unwrap();
+    assert!(staged.selection.is_none() && staged.started_version.is_none());
+    assert!(
+        updates.prepare_launch().await.unwrap().is_none(),
+        "staging alone must not activate even on relaunch"
+    );
+    let candidate = updates.activation_target(&staged).unwrap();
+    let mut stale = candidate.clone();
+    stale.upgrade.manifest_sha256 = "d".repeat(64);
+    assert!(updates
+        .activate(&stale, &runtime.0, port, Some(&index), |_| panic!(
+            "stale approval reached process setup"
+        ))
+        .await
+        .is_err());
+    assert_eq!(sidecar::reported_version(port).await.unwrap(), BASELINE);
 
-    let writer = profile.writer().unwrap();
-    let selected = updates.prepare_launch().await.unwrap().unwrap();
-    assert_eq!(
-        ProfileState::read(&profile)
-            .unwrap()
-            .started_version
-            .as_deref(),
-        Some(selected.version.as_str())
-    );
-    let (_child, status, port) = start(
-        &profile,
-        writer,
-        &selected.executable,
-        &frontend,
-        scratch.path(),
-    );
-    sidecar::wait_for_health(port, 45, Some(&status), Some(&index))
+    let active = updates
+        .activate(candidate, &runtime.0, port, Some(&index), |kernel| {
+            Ok(bamboo_command(
+                &profile,
+                &kernel.executable,
+                &frontend,
+                scratch.path(),
+                port,
+            ))
+        })
         .await
         .unwrap();
-    assert_eq!(
-        sidecar::reported_version(port).await.unwrap(),
-        selected.version
+    assert_eq!(active, expected_version);
+    assert_eq!(sidecar::reported_version(port).await.unwrap(), active);
+    let state = ProfileState::read(&profile).unwrap();
+    assert!(state.pending.is_none());
+    assert_eq!(state.started_version.as_deref(), Some(active.as_str()));
+    assert!(
+        updates.activation_target(&state).is_err(),
+        "successful activation clears the pending update"
     );
     let list = http
         .get(format!("http://127.0.0.1:{port}/api/v1/sessions"))
@@ -224,5 +233,10 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     assert!(
         list.contains(session_id),
         "previous session survives the upgrade"
+    );
+    runtime.0.stop().await.unwrap();
+    assert!(
+        profile.writer().is_err(),
+        "the profile remains owned between managed processes"
     );
 }

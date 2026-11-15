@@ -89,10 +89,16 @@ the final file inventory are bound in the ARM64 browser runtime receipts.
 
 In a Bodhi build with the published Lotus Next package, open **Help → 安装 Bamboo
 内核更新…** and select the JSON compatibility receipt supplied by the maintainer.
-Bodhi downloads the published
-binary for the desktop's platform. Quit and reopen Bodhi to use the new binary
-with the same data directory and bundled Lotus resources. Import the same receipt
-again to repair a damaged copy of that version.
+Bodhi downloads and verifies the published binary in the background. The update
+stays pending until you open **Help → 应用 Bamboo 内核更新…** and confirm all
+interactive and background tasks have finished and new submissions are paused.
+Bodhi stops the old Bamboo process, keeps the profile lease, and starts the new
+one on the same port. Once the new process is ready, Bodhi refreshes the existing
+window. A pending download also stays pending across a Bodhi relaunch.
+
+Import the same receipt again to repair a damaged copy of that version. If a
+confirmed switch fails after the old process has stopped, retry the approved
+version from the same menu. Bodhi retains the minimum version with the profile.
 
 The receipt approves a specific transition from the currently running Bamboo for
 one Bodhi release and one Lotus manifest. Before distributing it, validate that
@@ -130,10 +136,10 @@ profile for standalone writers that run concurrently or use an older kernel.
 The existing native feature jobs exercise the real upgrade from the published
 Bamboo 2026.11.18 fixture with the staged Lotus package. The test uses the same
 managed process, profile lease and update code as the desktop shell. It rejects
-an incorrect manifest digest, keeps the first process open during staging,
-checks the switched version after restart and reads back the session created
-before the upgrade. For the same local check, run the native commands above with
-`LOTUS_SOURCE=package` and `BAMBOO_SIDECAR_SOURCE=release`.
+an incorrect manifest digest and a stale confirmation, keeps the first process
+open during staging, switches on the same port after confirmation, and reads
+back the session created before the upgrade. For the same local check, run the
+native commands above with `LOTUS_SOURCE=package` and `BAMBOO_SIDECAR_SOURCE=release`.
 
 ## Delivery policy and cutover
 
