@@ -4,7 +4,7 @@
 //! spawns the standalone `bamboo serve` binary as a Tauri sidecar and owns its
 //! lifecycle. Two guarantees keep the backend from outliving the app:
 //!
-//! 1. **Graceful** — the spawned [`CommandChild`] is held in [`SidecarState`]
+//! 1. **Graceful** — the spawned [`SharedChild`] is held in [`SidecarState`]
 //!    and killed on `RunEvent::Exit` / `ExitRequested`.
 //! 2. **Crash-safe** — `bamboo serve --parent-pid <this-pid>` runs an orphan
 //!    guard: a dedicated thread that exits the backend when this process goes
@@ -14,19 +14,23 @@
 //!    is the half a naive sidecar misses — the reason a backend can outlive a
 //!    force-quit.
 
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use shared_child::SharedChild;
 use tauri::{AppHandle, Manager, Runtime};
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 /// Holds the running sidecar child so the app-exit handler can kill it.
 /// `None` until the child is spawned (or if an external backend was reused).
 #[derive(Default)]
 pub struct SidecarState {
-    child: Mutex<Option<CommandChild>>,
+    child: Mutex<Option<Arc<SharedChild>>>,
     exiting: AtomicBool,
 }
 
@@ -37,6 +41,11 @@ pub struct StartupStatus(Arc<AtomicU8>);
 impl StartupStatus {
     pub(crate) fn is_ready(&self) -> bool {
         self.0.load(Ordering::SeqCst) == 1
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ready_for_test() -> Self {
+        Self(Arc::new(AtomicU8::new(1)))
     }
 }
 
@@ -180,16 +189,17 @@ pub(crate) async fn reported_version(port: u16) -> Result<String, String> {
 
 /// Spawn `bamboo serve`, record its child handle, and return its startup state.
 ///
-/// IMPORTANT: [`CommandChild`] is held in [`SidecarState`] for app-exit cleanup.
+/// IMPORTANT: [`SharedChild`] is held in [`SidecarState`] for app-exit cleanup.
 /// The `--parent-pid` orphan guard
 /// (wired below) is the crash-safe backstop for unclean exits where that kill
 /// never runs.
 pub fn spawn<R: Runtime>(
     app: &AppHandle<R>,
     port: u16,
-    data_dir: &std::path::Path,
-    static_dir: Option<&std::path::Path>,
-    kernel: Option<&std::path::Path>,
+    data_dir: &Path,
+    static_dir: Option<&Path>,
+    kernel: Option<&Path>,
+    writer: File,
 ) -> Result<StartupStatus, String> {
     let state = app
         .try_state::<SidecarState>()
@@ -198,23 +208,6 @@ pub fn spawn<R: Runtime>(
     if state.exiting.load(Ordering::SeqCst) {
         return Err("Bodhi is exiting".into());
     }
-    let mut args = vec![
-        "serve".to_string(),
-        "--parent-pid".to_string(),
-        std::process::id().to_string(),
-        "--port".to_string(),
-        port.to_string(),
-        "--bind".to_string(),
-        "127.0.0.1".to_string(),
-        "--data-dir".to_string(),
-        data_dir.to_string_lossy().into_owned(),
-    ];
-    if let Some(dir) = static_dir {
-        args.extend([
-            "--static-dir".to_string(),
-            dir.to_string_lossy().into_owned(),
-        ]);
-    }
     let command = match kernel {
         Some(path) => app.shell().command(path),
         None => app
@@ -222,9 +215,24 @@ pub fn spawn<R: Runtime>(
             .sidecar("bamboo")
             .map_err(|e| format!("resolve bamboo sidecar: {e}"))?,
     };
-    let mut command = command.args(args).set_raw_out(true);
+    let mut command: Command = command.into();
+    command
+        .args([
+            "serve",
+            "--parent-pid",
+            &std::process::id().to_string(),
+            "--port",
+            &port.to_string(),
+            "--bind",
+            "127.0.0.1",
+            "--data-dir",
+        ])
+        .arg(data_dir);
+    if let Some(dir) = static_dir {
+        command.arg("--static-dir").arg(dir);
+    }
     if static_dir.is_some() {
-        command = command.env(
+        command.env(
             "RUST_LOG",
             local_log_filter(&std::env::var("RUST_LOG").unwrap_or_default()),
         );
@@ -233,49 +241,66 @@ pub fn spawn<R: Runtime>(
     let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
     let [node, host, browser] = crate::browser_runtime::resolve(&resources)?;
     log::info!("Managed browser runtime: {}", host.display());
-    command = command
+    command
         .env("BAMBOO_BROWSER_NODE", node)
         .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
         .env("BAMBOO_BROWSER_EXECUTABLE", browser);
 
-    let (mut rx, child) = command
-        .spawn()
-        .map_err(|e| format!("spawn bamboo sidecar: {e}"))?;
-    log::info!("Managed bamboo pid={} port={port}", child.pid());
+    let (child, status) =
+        spawn_owned(command, writer, port).map_err(|e| format!("spawn bamboo sidecar: {e}"))?;
+    log::info!("Managed bamboo pid={} port={port}", child.id());
     *recorded = Some(child);
-    drop(recorded);
-    let status = StartupStatus::default();
-    let reader_status = status.clone();
+    Ok(status)
+}
 
-    // Drain the event stream so the child's stdout/stderr pipe never fills and
-    // blocks the backend, and surface its logs under our logger.
-    tauri::async_runtime::spawn(async move {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => {
-                    consume_output(&mut stdout, &bytes, port, &reader_status)
-                }
-                CommandEvent::Stderr(bytes) => {
-                    consume_output(&mut stderr, &bytes, port, &reader_status)
-                }
-                CommandEvent::Error(err) => {
-                    reader_status.0.store(2, Ordering::SeqCst);
-                    log::warn!("[bamboo] sidecar error: {err}");
-                }
-                CommandEvent::Terminated(payload) => {
-                    reader_status.0.store(2, Ordering::SeqCst);
-                    log::warn!("[bamboo] sidecar terminated: {payload:?}");
+pub(crate) fn spawn_owned(
+    mut command: Command,
+    writer: File,
+    port: u16,
+) -> io::Result<(Arc<SharedChild>, StartupStatus)> {
+    // Bamboo serve holds the profile lease via stdin until its process exits,
+    // including if the shell is force-quit while the child is still alive.
+    command
+        .stdin(Stdio::from(writer))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = Arc::new(SharedChild::spawn(&mut command)?);
+    let status = StartupStatus::default();
+    drain(
+        child.take_stdout().expect("piped Bamboo stdout"),
+        port,
+        status.clone(),
+    );
+    drain(
+        child.take_stderr().expect("piped Bamboo stderr"),
+        port,
+        status.clone(),
+    );
+    let (process, exited) = (child.clone(), status.clone());
+    std::thread::spawn(move || {
+        let result = process.wait();
+        exited.0.store(2, Ordering::SeqCst);
+        log::info!("[bamboo] managed process exited: {result:?}");
+    });
+    Ok((child, status))
+}
+
+fn drain(mut pipe: impl Read + Send + 'static, port: u16, status: StartupStatus) {
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let mut bytes = [0; 4096];
+        loop {
+            match pipe.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(length) => consume_output(&mut buffer, &bytes[..length], port, &status),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    log::warn!("[bamboo] cannot read process output: {error}");
                     break;
                 }
-                _ => {}
             }
         }
-        reader_status.0.store(2, Ordering::SeqCst);
     });
-
-    Ok(status)
 }
 
 /// Kill the recorded sidecar, if any. Idempotent; safe to call on app exit.

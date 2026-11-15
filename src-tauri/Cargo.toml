@@ -56,6 +56,7 @@ tauri-plugin-shell = { workspace = true }
 tauri-plugin-process = { workspace = true }
 tauri-plugin-notification = { workspace = true }
 tempfile = { workspace = true }
+shared_child = "1.1"
 tokio = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 uuid = { workspace = true }
@@ -87,6 +88,7 @@ once_cell = { workspace = true }
 winreg = "0.55"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

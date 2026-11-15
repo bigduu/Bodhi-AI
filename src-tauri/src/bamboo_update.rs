@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -11,17 +11,22 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_fs::FsExt;
+use tauri_plugin_shell::ShellExt;
+
+use crate::bamboo_profile::{create_directory, persist, Profile};
+use crate::sidecar::StartupStatus;
 
 pub const MENU_ID: &str = "install-bamboo-update";
 pub const MENU_LABEL: &str = "安装 Bamboo 内核更新…";
 const TITLE: &str = "Bamboo 内核更新";
 const RELEASES: &str = "https://github.com/bigduu/Bamboo-agent/releases/download";
+const BUNDLED_LOCK: &str = include_str!("../../scripts/bamboo-sidecar-lock.json");
 const MAX_JSON: u64 = 1024 * 1024;
 const MAX_BINARY: u64 = 1024 * 1024 * 1024;
 const TARGET: &str = env!("BODHI_BUILD_TARGET");
 const MIN_BINARY: u64 = 65536;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Upgrade {
     schema_version: u32,
@@ -72,17 +77,78 @@ struct Selection {
     artifact: Artifact,
 }
 
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileState {
+    selection: Option<Selection>,
+    started_version: Option<String>,
+}
+
+impl ProfileState {
+    fn read(profile: &Profile) -> Result<Self, String> {
+        let bytes = match read_json(&profile.state_dir.join("state.json")) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let state: Self = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        if let Some(selection) = &state.selection {
+            upgrade_version(&selection.upgrade)?;
+        }
+        if state
+            .started_version
+            .as_deref()
+            .is_some_and(|started| version(started).is_none())
+        {
+            return Err("The Bamboo profile contains an invalid minimum kernel version.".into());
+        }
+        Ok(state)
+    }
+
+    fn save(&self, profile: &Profile) -> Result<(), String> {
+        let mut file = tempfile::NamedTempFile::new_in(&profile.state_dir)
+            .map_err(|error| error.to_string())?;
+        serde_json::to_writer(&mut file, self).map_err(|error| error.to_string())?;
+        file.as_file()
+            .sync_all()
+            .map_err(|error| error.to_string())?;
+        persist(file.into_temp_path(), &profile.state_dir.join("state.json"))
+            .map_err(|error| error.to_string())
+    }
+
+    fn require_kernel(&self, candidate: &str) -> Result<(), String> {
+        if let Some(started) = &self.started_version {
+            if version(candidate) < version(started) {
+                return Err(format!("This profile has already started Bamboo {started}. Open it with that version or a compatible newer kernel."));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn check_unmanaged_profile(profile: &Profile) -> Result<(), String> {
+    let _lock = profile.update_lock()?;
+    let state = ProfileState::read(profile)?;
+    if state.started_version.is_some() || state.selection.is_some() {
+        return Err("This Bamboo profile has independent kernel updates. Open it from a compatible packaged Bodhi build.".into());
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
 pub struct Kernel {
     pub executable: PathBuf,
     pub version: String,
 }
 
 pub struct Updates {
+    profile: Profile,
     root: PathBuf,
     bodhi_version: String,
     lotus_manifest_sha256: String,
     bundled_version: String,
-    running_version: OnceLock<String>,
+    bundled_binary: PathBuf,
+    running_version: OnceLock<(String, StartupStatus)>,
 }
 
 fn version(value: &str) -> Option<[u32; 3]> {
@@ -226,12 +292,11 @@ fn matches_binary(path: &Path, artifact: &Artifact) -> io::Result<bool> {
 impl Updates {
     pub fn for_app<R: Runtime>(
         app: &AppHandle<R>,
-        data_dir: &Path,
+        profile: Profile,
         lotus_manifest_sha256: String,
     ) -> Result<Self, String> {
         let bundled_lock: serde_json::Value =
-            serde_json::from_str(include_str!("../../scripts/bamboo-sidecar-lock.json"))
-                .map_err(|e| e.to_string())?;
+            serde_json::from_str(BUNDLED_LOCK).map_err(|e| e.to_string())?;
         let bundled_version = bundled_lock["version"]
             .as_str()
             .ok_or("Missing bundled Bamboo version.")?;
@@ -240,45 +305,35 @@ impl Updates {
             .ok_or("Cannot locate the local Bamboo update directory.")?;
         // The managed executables and selection are outside the WebView's app
         // data directory and are explicitly forbidden even after a file dialog.
-        let store = local_data.join("com.bodhi.app-kernels");
+        let store = local_data.join(format!("{}-kernels", app.config().identifier));
         app.fs_scope()
             .forbid_directory(&store, true)
             .map_err(|e| e.to_string())?;
-        let profile = data_dir.canonicalize().map_err(|e| e.to_string())?;
-        let profile = crate::frontend::hash_bytes(profile.as_os_str().as_encoded_bytes());
+        let key = crate::frontend::hash_bytes(profile.data.as_os_str().as_encoded_bytes());
+        let bundled: std::process::Command = app
+            .shell()
+            .sidecar("bamboo")
+            .map_err(|error| error.to_string())?
+            .into();
         Ok(Self {
-            root: store.join(profile),
+            profile,
+            root: store.join(key),
             bodhi_version: app.package_info().version.to_string(),
             lotus_manifest_sha256,
             bundled_version: bundled_version.into(),
+            bundled_binary: PathBuf::from(bundled.get_program()),
             running_version: OnceLock::new(),
         })
     }
 
-    pub fn mark_ready(&self, version: String) {
-        let _ = self.running_version.set(version);
+    pub fn mark_ready(&self, version: String, process: StartupStatus) {
+        let _ = self.running_version.set((version, process));
     }
 
-    fn selection(&self) -> Result<Option<Selection>, String> {
-        let store = self.root.parent().expect("kernel store parent");
-        for dir in [store, self.root.as_path()] {
-            match directory(dir) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-                Err(e) => return Err(e.to_string()),
-            }
-        }
-        let bytes = match read_json(&self.root.join("selection.json")) {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.to_string()),
-        };
-        let selection: Selection = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        let installed = upgrade_version(&selection.upgrade)?;
-        if version(&self.bundled_version).is_some_and(|bundled| bundled >= installed) {
-            return Ok(None);
-        }
-        Ok(Some(selection))
+    fn selection<'a>(&self, state: &'a ProfileState) -> Option<&'a Selection> {
+        state.selection.as_ref().filter(|selection| {
+            version(&selection.upgrade.bamboo_version) > version(&self.bundled_version)
+        })
     }
 
     fn check_pair(&self, upgrade: &Upgrade) -> Result<(), String> {
@@ -296,10 +351,16 @@ impl Updates {
     }
 
     fn check_transition(&self, upgrade: &Upgrade) -> Result<(), String> {
+        let state = ProfileState::read(&self.profile)?;
+        self.check_transition_from(&state, upgrade)
+    }
+
+    fn check_transition_from(&self, state: &ProfileState, upgrade: &Upgrade) -> Result<(), String> {
         self.check_pair(upgrade)?;
         upgrade_version(upgrade)?;
-        let selected = self.selection()?;
-        if selected.as_ref().is_some_and(|selection| {
+        state.require_kernel(&upgrade.bamboo_version)?;
+        let selected = self.selection(state);
+        if selected.is_some_and(|selection| {
             let installed = &selection.upgrade;
             installed.from_bamboo_version == upgrade.from_bamboo_version
                 && installed.bamboo_version == upgrade.bamboo_version
@@ -310,18 +371,22 @@ impl Updates {
             // the Bodhi assembly changes. The same rule permits repair.
             return Ok(());
         }
-        let current = selected
-            .as_ref()
-            .map_or(self.bundled_version.as_str(), |selection| {
-                selection.upgrade.bamboo_version.as_str()
-            });
+        let current = selected.map_or(self.bundled_version.as_str(), |selection| {
+            selection.upgrade.bamboo_version.as_str()
+        });
         if current != upgrade.from_bamboo_version {
             return Err(format!(
                 "This update requires Bamboo {}, but {} is selected for startup.",
                 upgrade.from_bamboo_version, current
             ));
         }
-        if self.running_version.get() != Some(&upgrade.from_bamboo_version) {
+        if !self
+            .running_version
+            .get()
+            .is_some_and(|(version, process)| {
+                version == &upgrade.from_bamboo_version && process.is_ready()
+            })
+        {
             return Err(
                 "Start Bodhi with the required Bamboo version before installing this update."
                     .into(),
@@ -339,65 +404,58 @@ impl Updates {
         ))
     }
 
-    pub fn selected_kernel(&self) -> Result<Option<Kernel>, String> {
-        let Some(selection) = self.selection()? else {
+    fn selected_kernel(&self, state: &ProfileState) -> Result<Option<Kernel>, String> {
+        let Some(selection) = self.selection(state) else {
             return Ok(None);
         };
         self.check_pair(&selection.upgrade)?;
         check_artifact(&selection.artifact)?;
+        directory(self.root.parent().expect("kernel store parent")).map_err(|e| e.to_string())?;
+        directory(&self.root).map_err(|e| e.to_string())?;
         let executable = self.artifact_path(&selection.upgrade, &selection.artifact);
         if !matches!(matches_binary(&executable, &selection.artifact), Ok(true)) {
             return Err(format!("Selected Bamboo {} is missing or damaged. Repair the selected kernel before opening this data directory.", selection.upgrade.bamboo_version));
         }
         Ok(Some(Kernel {
             executable,
-            version: selection.upgrade.bamboo_version,
+            version: selection.upgrade.bamboo_version.clone(),
         }))
     }
 
-    async fn stage(&self, upgrade: Upgrade) -> Result<(), String> {
-        let store = self.root.parent().expect("kernel store parent");
-        fs::create_dir_all(store).map_err(|e| e.to_string())?;
-        directory(store).map_err(|e| e.to_string())?;
-        match fs::create_dir(&self.root) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.to_string()),
+    pub async fn prepare_launch(&self) -> Result<Option<Kernel>, String> {
+        let _lock = self.profile.update_lock()?;
+        let mut state = ProfileState::read(&self.profile)?;
+        let selected = self.selected_kernel(&state)?;
+        let chosen = selected
+            .as_ref()
+            .map_or(self.bundled_version.as_str(), |kernel| {
+                kernel.version.as_str()
+            });
+        state.require_kernel(chosen)?;
+        if state.selection.is_some() || state.started_version.is_some() {
+            if selected.is_none() {
+                check_executable_version(&self.bundled_binary, chosen).await?;
+            }
+            if state.started_version.as_deref() != Some(chosen) {
+                // Commit before the process can open or migrate the profile.
+                state.started_version = Some(chosen.into());
+                state.save(&self.profile)?;
+            }
         }
-        directory(&self.root).map_err(|e| e.to_string())?;
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(self.root.join("update.lock"))
-            .map_err(|e| e.to_string())?;
-        lock.try_lock()
-            .map_err(|e| format!("Cannot lock the Bamboo update directory: {e}"))?;
-        self.check_transition(&upgrade)?;
+        Ok(selected)
+    }
 
-        let client = reqwest::Client::builder()
-            .https_only(true)
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() < 5
-                    && matches!(
-                        attempt.url().host_str(),
-                        Some(
-                            "github.com"
-                                | "release-assets.githubusercontent.com"
-                                | "objects.githubusercontent.com"
-                        )
-                    )
-                {
-                    attempt.follow()
-                } else {
-                    attempt.error("unexpected Bamboo release redirect")
-                }
-            }))
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(300))
-            .build()
+    async fn stage(&self, upgrade: Upgrade) -> Result<(), String> {
+        let _lock = self.profile.update_lock()?;
+        let mut state = ProfileState::read(&self.profile)?;
+        self.check_transition_from(&state, &upgrade)?;
+        let store = self.root.parent().expect("kernel store parent");
+        fs::create_dir_all(store.parent().expect("local data directory"))
             .map_err(|e| e.to_string())?;
+        create_directory(store).map_err(|e| e.to_string())?;
+        create_directory(&self.root).map_err(|e| e.to_string())?;
+
+        let client = release_client()?;
         let base = format!("{RELEASES}/v{}", upgrade.bamboo_version);
         let mut manifest = Vec::new();
         download(
@@ -421,16 +479,34 @@ impl Updates {
             .await?;
         }
 
-        let mut selection =
-            tempfile::NamedTempFile::new_in(&self.root).map_err(|e| e.to_string())?;
-        serde_json::to_writer(&mut selection, &Selection { upgrade, artifact })
-            .map_err(|e| e.to_string())?;
-        selection.as_file().sync_all().map_err(|e| e.to_string())?;
-        selection
-            .persist(self.root.join("selection.json"))
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        state.selection = Some(Selection { upgrade, artifact });
+        state.save(&self.profile)
     }
+}
+
+fn release_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() < 5
+                && matches!(
+                    attempt.url().host_str(),
+                    Some(
+                        "github.com"
+                            | "release-assets.githubusercontent.com"
+                            | "objects.githubusercontent.com"
+                    )
+                )
+            {
+                attempt.follow()
+            } else {
+                attempt.error("unexpected Bamboo release redirect")
+            }
+        }))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 async fn install_binary(
@@ -467,12 +543,7 @@ async fn install_binary(
     // writable executable). The temp path is removed on unsuccessful probes.
     let file = file.into_temp_path();
     check_executable_version(&file, version).await?;
-    file.persist(destination).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    File::open(root)
-        .and_then(|dir| dir.sync_all())
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    persist(file, destination).map_err(|e| e.to_string())
 }
 
 async fn check_executable_version(path: &Path, expected: &str) -> Result<(), String> {
@@ -540,7 +611,7 @@ pub fn run_from_menu<R: Runtime>(app: &AppHandle<R>) {
     let handle = app.clone();
     app.dialog()
         .file()
-        .set_title("选择已批准的 Bamboo 内核更新凭据")
+        .set_title("选择维护方提供的 Bamboo 兼容性凭据")
         .add_filter("Bamboo 更新凭据", &["json"])
         .pick_file(move |file| {
             let Some(file) = file else {
@@ -564,7 +635,7 @@ fn confirm<R: Runtime>(app: &AppHandle<R>, upgrade: Upgrade) {
     let handle = app.clone();
     app.dialog()
         .message(format!(
-            "从官方发布下载 Bamboo {}？\n\n安装完成后，退出并重新打开 Bodhi 即可使用新内核。",
+            "从 Bamboo 官方发布下载 {}？\n\nBodhi 会根据你选择的维护方凭据校验发布文件。下载完成后，退出并重新打开 Bodhi 即可使用新内核。",
             upgrade.bamboo_version
         ))
         .title(TITLE)
@@ -599,17 +670,26 @@ fn report<R: Runtime>(app: &AppHandle<R>, result: Result<(), String>) {
 }
 
 #[cfg(test)]
+#[path = "bamboo_update_native.rs"]
+mod native;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     fn updates(root: &Path) -> Updates {
+        let data = root.join("data");
+        fs::create_dir_all(&data).unwrap();
+        let profile = Profile::open(&data).unwrap();
         let root = root.join("kernels/profile");
         fs::create_dir_all(&root).unwrap();
         Updates {
+            profile,
             root,
             bodhi_version: "2026.11.16".into(),
             lotus_manifest_sha256: "a".repeat(64),
             bundled_version: "2026.11.18".into(),
+            bundled_binary: PathBuf::new(),
             running_version: OnceLock::new(),
         }
     }
@@ -642,10 +722,14 @@ mod tests {
         let artifact = artifact(binary);
         let path = updates.artifact_path(&upgrade, &artifact);
         fs::write(&path, binary).unwrap();
-        let selection = Selection { upgrade, artifact };
-        let bytes = serde_json::to_vec(&selection).unwrap();
-        fs::write(updates.root.join("selection.json"), bytes).unwrap();
+        let mut state = ProfileState::read(&updates.profile).unwrap();
+        state.selection = Some(Selection { upgrade, artifact });
+        state.save(&updates.profile).unwrap();
         path
+    }
+
+    fn selected(updates: &Updates) -> Result<Option<Kernel>, String> {
+        updates.selected_kernel(&ProfileState::read(&updates.profile).unwrap())
     }
 
     #[test]
@@ -654,7 +738,7 @@ mod tests {
         let updates = updates(temp.path());
         let mut upgrade = receipt("2026.11.18", "2026.11.19");
         assert!(updates.check_transition(&upgrade).is_err());
-        updates.mark_ready("2026.11.18".into());
+        updates.mark_ready("2026.11.18".into(), StartupStatus::ready_for_test());
         assert!(updates.check_transition(&upgrade).is_ok());
         upgrade.lotus_manifest_sha256 = "d".repeat(64);
         assert!(updates.check_transition(&upgrade).is_err());
@@ -666,17 +750,17 @@ mod tests {
     fn a_staged_upgrade_cannot_be_skipped_by_a_second_install() {
         let temp = tempfile::tempdir().unwrap();
         let baseline = updates(temp.path());
-        baseline.mark_ready("2026.11.18".into());
-        assert!(baseline.selected_kernel().unwrap().is_none());
+        baseline.mark_ready("2026.11.18".into(), StartupStatus::ready_for_test());
+        assert!(selected(&baseline).unwrap().is_none());
         let binary = vec![0; MIN_BINARY as usize];
         write_selection(&baseline, receipt("2026.11.18", "2026.11.19"), &binary);
         let next = receipt("2026.11.19", "2026.11.20");
         assert!(baseline.check_transition(&next).is_err());
 
         let restarted = updates(temp.path());
-        let selected = restarted.selected_kernel().unwrap().unwrap();
+        let selected = selected(&restarted).unwrap().unwrap();
         assert_eq!(selected.version, "2026.11.19");
-        restarted.mark_ready(selected.version);
+        restarted.mark_ready(selected.version, StartupStatus::ready_for_test());
         assert!(restarted.check_transition(&next).is_ok());
     }
 
@@ -687,12 +771,12 @@ mod tests {
         let binary = vec![0; MIN_BINARY as usize];
         let path = write_selection(&updates, receipt("2026.11.18", "2026.11.19"), &binary);
         fs::write(&path, vec![1; binary.len()]).unwrap();
-        assert!(updates.selected_kernel().is_err());
+        assert!(selected(&updates).is_err());
         assert!(updates
             .check_transition(&receipt("2026.11.18", "2026.11.19"))
             .is_ok());
         updates.bundled_version = "2026.11.20".into();
-        assert!(updates.selected_kernel().unwrap().is_none());
+        assert!(selected(&updates).unwrap().is_none());
     }
 
     #[test]
@@ -702,12 +786,39 @@ mod tests {
         let binary = vec![0; MIN_BINARY as usize];
         write_selection(&updates, receipt("2026.11.18", "2026.11.19"), &binary);
         updates.bodhi_version = "2026.11.17".into();
-        assert!(updates.selected_kernel().is_err());
+        assert!(selected(&updates).is_err());
         let mut renewed = receipt("2026.11.18", "2026.11.19");
         renewed.bodhi_version = updates.bodhi_version.clone();
         assert!(updates.check_transition(&renewed).is_ok());
         renewed.manifest_sha256 = "d".repeat(64);
         assert!(updates.check_transition(&renewed).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_version_floor_moves_with_the_profile_and_blocks_older_launches() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut updates = updates(temp.path());
+        let binary = vec![0; MIN_BINARY as usize];
+        write_selection(&updates, receipt("2026.11.18", "2026.11.19"), &binary);
+        let kernel = updates.prepare_launch().await.unwrap().unwrap();
+        assert_eq!(kernel.version, "2026.11.19");
+
+        let moved = temp.path().join("moved");
+        fs::rename(&updates.profile.data, &moved).unwrap();
+        updates.profile = Profile::open(&moved).unwrap();
+        let mut state = ProfileState::read(&updates.profile).unwrap();
+        assert_eq!(state.started_version.as_deref(), Some("2026.11.19"));
+        state.started_version = Some("2026.11.20".into());
+        state.save(&updates.profile).unwrap();
+        assert!(updates
+            .prepare_launch()
+            .await
+            .unwrap_err()
+            .contains("2026.11.20"));
+        assert!(updates
+            .check_transition(&receipt("2026.11.18", "2026.11.19"))
+            .is_err());
+        assert!(check_unmanaged_profile(&updates.profile).is_err());
     }
 
     #[test]

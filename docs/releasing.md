@@ -88,7 +88,8 @@ the final file inventory are bound in the ARM64 browser runtime receipts.
 ## Bamboo-only updates
 
 In a Bodhi build with the published Lotus Next package, open **Help → 安装 Bamboo
-内核更新…** and select an approved JSON receipt. Bodhi downloads the published
+内核更新…** and select the JSON compatibility receipt supplied by the maintainer.
+Bodhi downloads the published
 binary for the desktop's platform. Quit and reopen Bodhi to use the new binary
 with the same data directory and bundled Lotus resources. Import the same receipt
 again to repair a damaged copy of that version.
@@ -118,9 +119,19 @@ Distribute the receipt from a trusted project source. It supplies the compatibil
 decision and the digest that pins the official Bamboo manifest. Bodhi also verifies
 the selected binary's size and hash, checks its version, and verifies the managed
 process and Lotus index on startup. A failed download leaves the current selection
-in place. A startup failure with an already selected binary stops startup because
-the newer version may have opened the live data directory. Preserve that profile
-and repair the same version or use a Bodhi build carrying a compatible newer core.
+in place. Bodhi keeps the selection and minimum started Bamboo version with the
+data profile. Keep its `.bodhi-kernel` directory when moving or restoring a
+profile. If the selected artifact is missing, import the same receipt to repair
+it, or use a Bodhi build carrying a compatible newer kernel. Give concurrent
+Bodhi instances separate `BAMBOO_DATA_DIR` values and ports.
+
+The existing native feature jobs exercise the real upgrade from the published
+Bamboo 2026.11.18 fixture with the staged Lotus package. The test uses the same
+managed process, profile lease and update code as the desktop shell. It rejects
+an incorrect manifest digest, keeps the first process open during staging,
+checks the switched version after restart and reads back the session created
+before the upgrade. For the same local check, run the native commands above with
+`LOTUS_SOURCE=package` and `BAMBOO_SIDECAR_SOURCE=release`.
 
 ## Delivery policy and cutover
 
