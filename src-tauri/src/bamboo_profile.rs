@@ -93,16 +93,30 @@ pub(crate) fn persist(file: tempfile::TempPath, destination: &Path) -> io::Resul
     {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Storage::FileSystem::{
-            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+            MoveFileExW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL, MOVEFILE_REPLACE_EXISTING,
+            MOVEFILE_WRITE_THROUGH,
         };
-        let source: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
+        let source: Vec<u16> = file
+            .canonicalize()?
+            .as_os_str()
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let destination = destination
+            .parent()
+            .expect("checkpoint parent")
+            .canonicalize()?
+            .join(destination.file_name().expect("checkpoint filename"));
         let destination: Vec<u16> = destination
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect();
-        // Both paths are adjacent and NUL-terminated. Write-through keeps the
-        // rename ahead of process startup on the local Windows filesystem.
+        // These are adjacent, NUL-terminated paths. Clear NamedTempFile's
+        // temporary attribute before the write-through rename.
+        if unsafe { SetFileAttributesW(source.as_ptr(), FILE_ATTRIBUTE_NORMAL) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
         if unsafe {
             MoveFileExW(
                 source.as_ptr(),
@@ -115,4 +129,19 @@ pub(crate) fn persist(file: tempfile::TempPath, destination: &Path) -> io::Resul
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn the_committed_checkpoint_is_a_regular_windows_file() {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_TEMPORARY;
+
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("state.json");
+    let checkpoint = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+    checkpoint.as_file().sync_all().unwrap();
+    persist(checkpoint.into_temp_path(), &destination).unwrap();
+    let attributes = fs::metadata(destination).unwrap().file_attributes();
+    assert_eq!(attributes & FILE_ATTRIBUTE_TEMPORARY, 0);
 }

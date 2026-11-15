@@ -123,7 +123,9 @@ in place. Bodhi keeps the selection and minimum started Bamboo version with the
 data profile. Keep its `.bodhi-kernel` directory when moving or restoring a
 profile. If the selected artifact is missing, import the same receipt to repair
 it, or use a Bodhi build carrying a compatible newer kernel. Give concurrent
-Bodhi instances separate `BAMBOO_DATA_DIR` values and ports.
+Bodhi instances separate `BAMBOO_DATA_DIR` values and ports. A standalone CLI
+that opens the same profile needs a compatible kernel version. Use a separate
+profile for standalone writers that run concurrently or use an older kernel.
 
 The existing native feature jobs exercise the real upgrade from the published
 Bamboo 2026.11.18 fixture with the staged Lotus package. The test uses the same
