@@ -122,28 +122,31 @@ normal Bodhi feature and release process.
   "lotusManifestSha256": "<manifestSha256 from that Bodhi release's frontend-package-lock.json>",
   "fromBambooVersion": "<currently running Bamboo version>",
   "bambooVersion": "<approved newer Bamboo version>",
-  "sourceRevision": "<sourceRevision from the published bamboo-sidecars-v2.json>",
-  "manifestSha256": "<SHA-256 of the published bamboo-sidecars-v2.json>"
+  "sourceRevision": "<sourceRevision from the selected official sidecar manifest>",
+  "manifestSha256": "<SHA-256 of that official sidecar manifest>"
 }
 ```
 
 Distribute the receipt from a trusted project source. It supplies the compatibility
-decision and the digest that pins the official Bamboo manifest. Bodhi also verifies
-the selected binary's size and hash, checks its version, and verifies the managed
-process and Lotus index on startup. A failed download leaves the current selection
-in place. Bodhi keeps the selection and minimum started Bamboo version with the
-data profile. Keep its `.bodhi-kernel` directory when moving or restoring a
-profile. If the selected artifact is missing, import the same receipt to repair
-it, or use a Bodhi build carrying a compatible newer kernel. Give concurrent
+decision and a digest that selects the exact published `bamboo-sidecars-v2.json`
+or `bamboo-sidecars-v3.json` asset. The manifest's schema must match its filename.
+Both use the same receipt format. Bodhi verifies the selected binary's size and
+hash, checks its version, and verifies the managed process and Lotus index on
+startup. A failed download leaves the current selection in place. Bodhi keeps
+the selection and minimum started Bamboo version with the data profile. Keep
+its `.bodhi-kernel` directory when moving or restoring a profile. If the
+selected artifact is missing, import the same receipt to repair it, or use a
+Bodhi build carrying a compatible newer kernel. Give concurrent
 Bodhi instances separate `BAMBOO_DATA_DIR` values and ports. A standalone CLI
 that opens the same profile needs a compatible kernel version. Use a separate
 profile for standalone writers that run concurrently or use an older kernel.
 
-The existing native feature jobs exercise the real upgrade from the published
-Bamboo 2026.11.18 fixture with the staged Lotus package. The test uses the same
-managed process, profile lease and update code as the desktop shell. It rejects
-an incorrect manifest digest and a stale confirmation, keeps the first process
-open during staging and a failed page transition, and blocks the switch while an
+The existing native feature jobs use the published Bamboo 2026.11.19 V2 manifest
+and upgrade that kernel to the published 2026.11.22 V3 binary with the staged
+Lotus package. The test uses the same managed process, profile lease and update
+code as the desktop shell. It rejects an incorrect manifest digest and a stale
+confirmation, keeps the first process open during staging and a failed page
+transition, and blocks the switch while an
 inherited profile lease remains. After that lease is released, it switches on the
 same port and reads back the session created before the upgrade. For the same
 local check, run the native commands above with `LOTUS_SOURCE=package` and

@@ -2,9 +2,13 @@ use super::*;
 use serde_json::{json, Value};
 use std::net::TcpListener;
 
-const BASELINE: &str = "2026.11.18";
+const BASELINE: &str = "2026.11.19";
 const BASELINE_MANIFEST_SHA: &str =
-    "7c97150255963c8917344f323513beca272e2a9d79a6da20bd0731a8159ae8a1";
+    "2cb847499ba187ccc3da0eb76f9779a3c3dce9ac2f46725cf312186c5aca7f21";
+const CANDIDATE: &str = "2026.11.22";
+const CANDIDATE_SOURCE: &str = "13336567999504a8c7deb89fba94f7907b04c3ee";
+const CANDIDATE_MANIFEST_SHA: &str =
+    "b50c37033e436a020fcf89f6a21361e0c55892e7bf1b14215a4529c6f88a6a78";
 
 struct DesktopRuntime(SidecarState);
 
@@ -82,20 +86,12 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
 
     let client = release_client().unwrap();
     let base = format!("{RELEASES}/v{BASELINE}");
-    let mut manifest = Vec::new();
-    download(
-        &client,
-        &format!("{base}/bamboo-sidecars-v2.json"),
-        MAX_JSON,
-        &mut manifest,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        crate::frontend::hash_bytes(&manifest),
-        BASELINE_MANIFEST_SHA
-    );
+    let (schema, manifest) = download_manifest(&client, &base, BASELINE_MANIFEST_SHA)
+        .await
+        .unwrap();
+    assert_eq!(schema, 2);
     let manifest: Manifest = serde_json::from_slice(&manifest).unwrap();
+    assert_eq!(manifest.schema_version, schema);
     assert_eq!(manifest.version, BASELINE);
     let mut artifacts = manifest
         .artifacts
@@ -151,8 +147,6 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     assert_eq!(status, reqwest::StatusCode::CREATED, "{session}");
     let session_id = session["session"]["id"].as_str().unwrap();
 
-    let lock: Value = serde_json::from_str(BUNDLED_LOCK).unwrap();
-    assert_eq!(lock["manifestAssetName"], "bamboo-sidecars-v2.json");
     let receipt: Value =
         serde_json::from_slice(&fs::read(assembly.join("frontend/receipt.json")).unwrap()).unwrap();
     let lotus = receipt["artifactManifestSha256"].as_str().unwrap();
@@ -171,8 +165,8 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         bodhi_version: "0.0.0".into(),
         lotus_manifest_sha256: lotus.into(),
         from_bamboo_version: BASELINE.into(),
-        bamboo_version: lock["version"].as_str().unwrap().into(),
-        source_revision: lock["sourceRevision"].as_str().unwrap().into(),
+        bamboo_version: CANDIDATE.into(),
+        source_revision: CANDIDATE_SOURCE.into(),
         manifest_sha256: "a".repeat(64),
     };
     assert!(updates
@@ -181,8 +175,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .unwrap_err()
         .contains("SHA-256"));
     assert!(ProfileState::read(&profile).unwrap().pending.is_none());
-    upgrade.manifest_sha256 = lock["manifestSha256"].as_str().unwrap().into();
-    let expected_version = upgrade.bamboo_version.clone();
+    upgrade.manifest_sha256 = CANDIDATE_MANIFEST_SHA.into();
     updates.stage(upgrade).await.unwrap();
     let staged = ProfileState::read(&profile).unwrap();
     assert!(staged.selection.is_none() && staged.started_version.is_none());
@@ -261,7 +254,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
             Some(&index),
             async |kernel| command(kernel),
             |version| {
-                assert_eq!(version, expected_version);
+                assert_eq!(version, CANDIDATE);
                 let (observed, owner) = updates.running()?.unwrap();
                 assert_eq!(observed, version);
                 assert!(owner.is_ready());
@@ -270,7 +263,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         )
         .await
         .unwrap();
-    assert_eq!(active, expected_version);
+    assert_eq!(active, CANDIDATE);
     assert_eq!(sidecar::reported_version(port).await.unwrap(), active);
     let state = ProfileState::read(&profile).unwrap();
     assert!(state.pending.is_none());

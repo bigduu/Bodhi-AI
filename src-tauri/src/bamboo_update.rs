@@ -28,6 +28,7 @@ const MAX_JSON: u64 = 1024 * 1024;
 const MAX_BINARY: u64 = 1024 * 1024 * 1024;
 const TARGET: &str = env!("BODHI_BUILD_TARGET");
 const MIN_BINARY: u64 = 65536;
+const MANIFEST_DIGEST_ERROR: &str = "The Bamboo manifest failed its SHA-256 check.";
 
 #[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -215,14 +216,15 @@ fn check_artifact(artifact: &Artifact) -> Result<(), String> {
 
 fn verify_manifest(
     bytes: &[u8],
+    schema: u32,
     upgrade: &Upgrade,
     host_hashes: [&str; 2],
 ) -> Result<Artifact, String> {
     if crate::frontend::hash_bytes(bytes) != upgrade.manifest_sha256 {
-        return Err("The Bamboo manifest failed its SHA-256 check.".into());
+        return Err(MANIFEST_DIGEST_ERROR.into());
     }
     let manifest: Manifest = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-    if manifest.schema_version != 2
+    if manifest.schema_version != schema
         || manifest.version != upgrade.bamboo_version
         || manifest.source_revision != upgrade.source_revision
     {
@@ -488,16 +490,10 @@ impl Updates {
 
         let client = release_client()?;
         let base = format!("{RELEASES}/v{}", upgrade.bamboo_version);
-        let mut manifest = Vec::new();
-        download(
-            &client,
-            &format!("{base}/bamboo-sidecars-v2.json"),
-            MAX_JSON,
-            &mut manifest,
-        )
-        .await?;
+        let (schema, manifest) =
+            download_manifest(&client, &base, &upgrade.manifest_sha256).await?;
         let host = crate::browser_runtime::host_hashes()?;
-        let artifact = verify_manifest(&manifest, &upgrade, [&host[0], &host[1]])?;
+        let artifact = verify_manifest(&manifest, schema, &upgrade, [&host[0], &host[1]])?;
         let destination = self.artifact_path(&upgrade, &artifact);
         if !matches!(matches_binary(&destination, &artifact), Ok(true)) {
             install_binary(
@@ -644,6 +640,37 @@ fn release_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
+async fn download_manifest(
+    client: &reqwest::Client,
+    base: &str,
+    expected_digest: &str,
+) -> Result<(u32, Vec<u8>), String> {
+    let mut found = false;
+    for schema in [2, 3] {
+        let response = client
+            .get(format!("{base}/bamboo-sidecars-v{schema}.json"))
+            .send()
+            .await
+            .map_err(download_error)?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        let (_, digest) = read_download(response, MAX_JSON, &mut bytes).await?;
+        found = true;
+        // A release may publish both formats. The receipt selects the exact
+        // asset bytes, and verification binds its schema to the asset name.
+        if digest == expected_digest {
+            return Ok((schema, bytes));
+        }
+    }
+    Err(if found {
+        MANIFEST_DIGEST_ERROR.into()
+    } else {
+        "The Bamboo release has no published V2 or V3 sidecar manifest.".into()
+    })
+}
+
 async fn install_binary(
     client: &reqwest::Client,
     base: &str,
@@ -704,17 +731,23 @@ async fn download(
     limit: u64,
     output: &mut (impl Write + Send),
 ) -> Result<(u64, String), String> {
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| {
-            format!(
-                "Cannot download the published Bamboo release: {}",
-                e.without_url()
-            )
-        })?;
+    let response = client.get(url).send().await.map_err(download_error)?;
+    read_download(response, limit, output).await
+}
+
+fn download_error(error: reqwest::Error) -> String {
+    format!(
+        "Cannot download the published Bamboo release: {}",
+        error.without_url()
+    )
+}
+
+async fn read_download(
+    response: reqwest::Response,
+    limit: u64,
+    output: &mut (impl Write + Send),
+) -> Result<(u64, String), String> {
+    let mut response = response.error_for_status().map_err(download_error)?;
     if response
         .content_length()
         .is_some_and(|length| length > limit)
@@ -1119,14 +1152,62 @@ mod tests {
                 { "path": "browser-runtime/package-lock.json", "sha256": "lock" }
             ] },
         });
-        let bytes = serde_json::to_vec(&manifest).unwrap();
-        assert!(verify_manifest(&bytes, &upgrade, ["host", "lock"]).is_err());
-        upgrade.manifest_sha256 = crate::frontend::hash_bytes(&bytes);
-        assert!(verify_manifest(&bytes, &upgrade, ["host", "lock"]).is_ok());
-        assert!(verify_manifest(&bytes, &upgrade, ["other", "lock"]).is_err());
-        manifest["artifacts"][0]["assetName"] = "different-executable".into();
-        let bytes = serde_json::to_vec(&manifest).unwrap();
-        upgrade.manifest_sha256 = crate::frontend::hash_bytes(&bytes);
-        assert!(verify_manifest(&bytes, &upgrade, ["host", "lock"]).is_err());
+        for (schema, other_schema) in [(2, 3), (3, 2)] {
+            manifest["schemaVersion"] = schema.into();
+            let bytes = serde_json::to_vec(&manifest).unwrap();
+            assert!(verify_manifest(&bytes, schema, &upgrade, ["host", "lock"]).is_err());
+            upgrade.manifest_sha256 = crate::frontend::hash_bytes(&bytes);
+            assert!(verify_manifest(&bytes, schema, &upgrade, ["host", "lock"]).is_ok());
+            assert!(verify_manifest(&bytes, other_schema, &upgrade, ["host", "lock"]).is_err());
+            assert!(verify_manifest(&bytes, schema, &upgrade, ["other", "lock"]).is_err());
+
+            let mut wrong_target = manifest.clone();
+            wrong_target["artifacts"][0]["assetName"] = "different-executable".into();
+            let bytes = serde_json::to_vec(&wrong_target).unwrap();
+            upgrade.manifest_sha256 = crate::frontend::hash_bytes(&bytes);
+            assert!(verify_manifest(&bytes, schema, &upgrade, ["host", "lock"]).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn selects_the_pinned_manifest_when_the_release_publishes_both_schemas() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        const V2: &str = r#"{"schemaVersion":2}"#;
+        const V3: &str = r#"{"schemaVersion":3}"#;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for (schema, body) in [(2, V2), (3, V3)] {
+                let (stream, _) = listener.accept().await.unwrap();
+                let (reader, mut writer) = stream.into_split();
+                let mut lines = BufReader::new(reader).lines();
+                assert_eq!(
+                    lines.next_line().await.unwrap().unwrap(),
+                    format!("GET /bamboo-sidecars-v{schema}.json HTTP/1.1")
+                );
+                while let Some(line) = lines.next_line().await.unwrap() {
+                    if line.is_empty() {
+                        break;
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                writer.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let digest = crate::frontend::hash_bytes(V3.as_bytes());
+        let (schema, bytes) = download_manifest(&client, &base, &digest).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(schema, 3);
+        assert_eq!(bytes, V3.as_bytes());
     }
 }
