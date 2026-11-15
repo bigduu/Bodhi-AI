@@ -608,9 +608,13 @@ pub fn run_from_menu<R: Runtime>(app: &AppHandle<R>) {
         report(app, Err("此 Bodhi 构建没有独立内核更新入口。".into()));
         return;
     }
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
     let handle = app.clone();
     app.dialog()
         .file()
+        .set_parent(&window)
         .set_title("选择维护方提供的 Bamboo 兼容性凭据")
         .add_filter("Bamboo 更新凭据", &["json"])
         .pick_file(move |file| {
@@ -632,6 +636,9 @@ pub fn run_from_menu<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn confirm<R: Runtime>(app: &AppHandle<R>, upgrade: Upgrade) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
     let handle = app.clone();
     app.dialog()
         .message(format!(
@@ -639,6 +646,7 @@ fn confirm<R: Runtime>(app: &AppHandle<R>, upgrade: Upgrade) {
             upgrade.bamboo_version
         ))
         .title(TITLE)
+        .parent(&window)
         .buttons(MessageDialogButtons::OkCancelCustom(
             "下载更新".into(),
             "取消".into(),
@@ -647,6 +655,7 @@ fn confirm<R: Runtime>(app: &AppHandle<R>, upgrade: Upgrade) {
             if accepted {
                 tauri::async_runtime::spawn(async move {
                     let updates = handle.state::<Updates>();
+                    log::info!("Staging Bamboo kernel {}", upgrade.bamboo_version);
                     let result = updates.stage(upgrade).await;
                     report(&handle, result);
                 });
@@ -660,11 +669,18 @@ fn report<R: Runtime>(app: &AppHandle<R>, result: Result<(), String>) {
             "Bamboo 内核已下载并校验。退出并重新打开 Bodhi 后生效。".into(),
             MessageDialogKind::Info,
         ),
-        Err(error) => (error, MessageDialogKind::Error),
+        Err(error) => {
+            log::warn!("Bamboo kernel update failed: {error}");
+            (error, MessageDialogKind::Error)
+        }
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
     };
     app.dialog()
         .message(message)
         .title(TITLE)
+        .parent(&window)
         .kind(kind)
         .show(|_| {});
 }
