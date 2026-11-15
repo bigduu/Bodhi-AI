@@ -400,6 +400,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "shared_child",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

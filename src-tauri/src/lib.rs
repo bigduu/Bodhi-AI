@@ -9,10 +9,13 @@ use tauri::menu::{Menu, MenuItem, Submenu, HELP_SUBMENU_ID};
 use tauri::Manager;
 use tauri::{App, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_fs::FsExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use tokio::time::sleep;
 
 pub mod app_settings;
+mod bamboo_profile;
+mod bamboo_update;
 pub mod browser_runtime;
 #[cfg(test)]
 #[path = "../build_support.rs"]
@@ -209,39 +212,65 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     }
     let app_data_dir = app_settings::bamboo_dir();
     std::fs::create_dir_all(&app_data_dir)?;
-    log::info!("App data dir: {:?}", app_data_dir);
+    let profile = bamboo_profile::Profile::open(&app_data_dir)?;
+    // The profile state is trusted by the native launcher even if the user
+    // chooses a data directory normally writable by the WebView.
+    app.fs_scope().forbid_directory(&profile.state_dir, true)?;
+    log::info!("App data dir: {:?}", profile.data);
 
     // Run the bamboo backend as a managed sidecar process (replaces the in-process
     // WebService). The child is held in SidecarState and killed on app exit; it also
     // self-exits if this process dies uncleanly — see `sidecar` and the
     // `--parent-pid` orphan guard on `bamboo serve`.
-    let data_dir = app_data_dir.clone();
     app.manage(sidecar::SidecarState::default());
+    if let Some(manifest) = frontend.manifest_sha256.clone() {
+        match bamboo_update::Updates::for_app(app.handle(), profile.clone(), manifest) {
+            Ok(updates) => {
+                app.manage(updates);
+            }
+            Err(error) => {
+                show_startup_failure(app.handle(), &error);
+                return Ok(());
+            }
+        }
+    }
 
     let sidecar_app = app.handle().clone();
     let development_url = app.config().build.dev_url.clone();
     tauri::async_runtime::spawn(async move {
+        let updates = sidecar_app.try_state::<bamboo_update::Updates>();
         // Only the explicitly selected legacy rollback package retains
         // external-server reuse. Lotus Next source and package builds always own
         // the backend serving their verified resource directory.
-        let owned = if !owns_frontend && sidecar::backend_already_running(port).await {
-            log::info!("Backend already running on port {port}; reusing it");
-            None
-        } else {
-            match sidecar::spawn(
+        let launch = async {
+            if !owns_frontend && sidecar::backend_already_running(port).await {
+                bamboo_update::check_unmanaged_profile(&profile)?;
+                log::info!("Backend already running on port {port}; reusing it");
+                return Ok((None, None));
+            }
+            let writer = profile.writer()?;
+            let selected = match &updates {
+                Some(updates) => updates.prepare_launch().await?,
+                None => {
+                    bamboo_update::check_unmanaged_profile(&profile)?;
+                    None
+                }
+            };
+            let status = sidecar::spawn(
                 &sidecar_app,
                 port,
-                &data_dir,
+                &profile.data,
                 frontend.static_dir.as_deref(),
-            ) {
-                Ok(status) => {
-                    log::info!("bamboo sidecar spawned on port {port}");
-                    Some(status)
-                }
-                Err(error) => {
-                    show_startup_failure(&sidecar_app, &error);
-                    return;
-                }
+                selected.as_ref().map(|kernel| kernel.executable.as_path()),
+                writer,
+            )?;
+            Ok::<_, String>((Some(status), selected))
+        };
+        let (owned, selected) = match launch.await {
+            Ok(result) => result,
+            Err(error) => {
+                show_startup_failure(&sidecar_app, &error);
+                return;
             }
         };
 
@@ -259,6 +288,32 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             sidecar::kill(&sidecar_app);
             show_startup_failure(&sidecar_app, &error);
             return;
+        }
+        if let Some(updates) = updates {
+            let reported = sidecar::reported_version(port).await.and_then(|version| {
+                if owned.as_ref().is_some_and(sidecar::StartupStatus::is_ready) {
+                    Ok(version)
+                } else {
+                    Err("The managed Bamboo exited while checking its version.".into())
+                }
+            });
+            if let Some(kernel) = selected {
+                if reported.as_deref() != Ok(kernel.version.as_str()) {
+                    sidecar::kill(&sidecar_app);
+                    show_startup_failure(
+                        &sidecar_app,
+                        &format!(
+                            "The running Bamboo did not report the selected version {}.",
+                            kernel.version
+                        ),
+                    );
+                    return;
+                }
+            }
+            if let (Ok(version), Some(status)) = (reported, owned) {
+                log::info!("Managed Bamboo {version} is ready on port {port}");
+                updates.mark_ready(version, status);
+            }
         }
         let use_sidecar_frontend =
             !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
@@ -318,18 +373,26 @@ fn build_app_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    let update_kernel = MenuItem::with_id(
+        handle,
+        bamboo_update::MENU_ID,
+        bamboo_update::MENU_LABEL,
+        true,
+        None::<&str>,
+    )?;
 
     let mut appended = false;
     if let Some(kind) = menu.get(HELP_SUBMENU_ID) {
         if let Some(help) = kind.as_submenu() {
             help.append(&install_item)?;
+            help.append(&update_kernel)?;
             appended = true;
         }
     }
     if !appended {
         // No Help submenu in this platform's default menu — add one so the
         // item is still reachable.
-        let help = Submenu::with_items(handle, "Help", true, &[&install_item])?;
+        let help = Submenu::with_items(handle, "Help", true, &[&install_item, &update_kernel])?;
         menu.append(&help)?;
     }
 
@@ -382,6 +445,9 @@ pub fn run() {
             if event.id() == cli_install::MENU_ID {
                 cli_install::run_from_menu(app);
             }
+            if event.id() == bamboo_update::MENU_ID {
+                bamboo_update::run_from_menu(app);
+            }
             #[cfg(target_os = "macos")]
             if event.id() == webview_recovery::RELOAD_MENU_ID {
                 webview_recovery::reload(app);
@@ -418,7 +484,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(move |app_handle, event| match &event {
             // App is exiting (incl. after `app_handle.exit(0)` below): make sure the
-            // bamboo sidecar goes with us. The stdin death-link is the crash-safe
+            // bamboo sidecar goes with us. Its parent-pid guard is the crash-safe
             // backstop; this is the clean path.
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 if matches!(event, tauri::RunEvent::Exit) {
