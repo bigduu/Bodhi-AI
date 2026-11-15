@@ -26,17 +26,11 @@ use shared_child::SharedChild;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_shell::ShellExt;
 
-/// Owns the managed child and retains the profile lease across a kernel switch.
+/// Owns the managed child and distinguishes a kernel switch from app exit.
 #[derive(Default)]
 pub struct SidecarState {
-    managed: Mutex<ManagedSidecar>,
+    child: Mutex<Option<ManagedChild>>,
     exiting: AtomicBool,
-}
-
-#[derive(Default)]
-struct ManagedSidecar {
-    writer: Option<File>,
-    child: Option<ManagedChild>,
 }
 
 #[derive(Clone)]
@@ -46,21 +40,17 @@ struct ManagedChild {
 }
 
 impl SidecarState {
-    pub(crate) fn reserve_writer(&self, writer: File) -> Result<(), String> {
-        let mut managed = self.managed.lock().map_err(|e| e.to_string())?;
-        if self.exiting.load(Ordering::SeqCst) || managed.writer.is_some() {
-            return Err("The managed Bamboo profile cannot be reserved.".into());
-        }
-        managed.writer = Some(writer);
-        Ok(())
-    }
-
-    pub(crate) fn start(&self, command: Command, port: u16) -> Result<StartupStatus, String> {
-        let mut managed = self.managed.lock().map_err(|e| e.to_string())?;
+    pub(crate) fn start(
+        &self,
+        command: Command,
+        writer: File,
+        port: u16,
+    ) -> Result<StartupStatus, String> {
+        let mut recorded = self.child.lock().map_err(|e| e.to_string())?;
         if self.exiting.load(Ordering::SeqCst) {
             return Err("Bodhi is exiting".into());
         }
-        if let Some(child) = &managed.child {
+        if let Some(child) = &*recorded {
             if child
                 .process
                 .try_wait()
@@ -70,18 +60,10 @@ impl SidecarState {
                 return Err("The previous managed Bamboo is still running.".into());
             }
         }
-        let writer = managed
-            .writer
-            .as_ref()
-            .ok_or("Bodhi does not own the Bamboo profile.")?;
-        let (child, status) = spawn_owned(
-            command,
-            writer.try_clone().map_err(|e| e.to_string())?,
-            port,
-        )
-        .map_err(|e| format!("spawn bamboo sidecar: {e}"))?;
+        let (child, status) =
+            spawn_owned(command, writer, port).map_err(|e| format!("spawn bamboo sidecar: {e}"))?;
         log::info!("Managed bamboo pid={} port={port}", child.id());
-        managed.child = Some(ManagedChild {
+        *recorded = Some(ManagedChild {
             process: child,
             startup: status.clone(),
         });
@@ -89,39 +71,37 @@ impl SidecarState {
     }
 
     pub(crate) async fn stop(&self) -> Result<(), String> {
-        let child = {
-            let managed = self.managed.lock().map_err(|e| e.to_string())?;
-            if self.exiting.load(Ordering::SeqCst) || managed.writer.is_none() {
-                return Err("Bodhi no longer owns the Bamboo profile.".into());
-            }
-            managed.child.clone()
-        };
-        if let Some(ManagedChild { process, startup }) = child {
-            process
-                .kill()
-                .map_err(|e| format!("stop managed Bamboo: {e}"))?;
-            let exited =
-                tokio::task::spawn_blocking(move || process.wait_timeout(Duration::from_secs(10)))
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .map_err(|e| format!("reap managed Bamboo: {e}"))?;
-            if exited.is_none() {
-                return Err("The managed Bamboo process did not exit. Try applying the update again after it stops.".into());
-            }
-            startup.0.store(2, Ordering::SeqCst);
+        if self.exiting.load(Ordering::SeqCst) {
+            return Err("Bodhi is exiting".into());
         }
+        let ManagedChild { process, startup } = self
+            .child
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clone()
+            .ok_or("Bodhi does not own a Bamboo process.")?;
+        process
+            .kill()
+            .map_err(|e| format!("stop managed Bamboo: {e}"))?;
+        let exited =
+            tokio::task::spawn_blocking(move || process.wait_timeout(Duration::from_secs(10)))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("reap managed Bamboo: {e}"))?;
+        if exited.is_none() {
+            return Err("The managed Bamboo process did not exit. Try applying the update again after it stops.".into());
+        }
+        startup.0.store(2, Ordering::SeqCst);
         Ok(())
     }
 
     pub(crate) fn exit(&self) {
         self.exiting.store(true, Ordering::SeqCst);
-        if let Ok(mut managed) = self.managed.lock() {
-            if let Some(child) = managed.child.take() {
+        if let Ok(mut recorded) = self.child.lock() {
+            if let Some(child) = recorded.take() {
                 log::info!("Killing bamboo sidecar on app exit");
                 let _ = child.process.kill();
             }
-            // A live child still has the inherited lease until it exits.
-            managed.writer.take();
         }
     }
 }

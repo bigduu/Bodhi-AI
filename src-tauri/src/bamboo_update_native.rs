@@ -115,11 +115,13 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .unwrap()
         .port();
     let runtime = DesktopRuntime(SidecarState::default());
-    runtime.0.reserve_writer(profile.writer().unwrap()).unwrap();
+    let writer = profile.writer().unwrap();
+    let surviving_writer = writer.try_clone().unwrap();
     let old_status = runtime
         .0
         .start(
             bamboo_command(&profile, &baseline, &frontend, scratch.path(), port),
+            writer,
             port,
         )
         .unwrap();
@@ -199,6 +201,28 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .is_err());
     assert_eq!(sidecar::reported_version(port).await.unwrap(), BASELINE);
 
+    // A descendant can outlive the old server while retaining an inherited
+    // lease. A separate handle with the same lifetime demonstrates the fence.
+    let blocked = updates
+        .activate(candidate, &runtime.0, port, Some(&index), |kernel| {
+            Ok(bamboo_command(
+                &profile,
+                &kernel.executable,
+                &frontend,
+                scratch.path(),
+                port,
+            ))
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        blocked.contains("Cannot open the Bamboo profile"),
+        "{blocked}"
+    );
+    let retry = ProfileState::read(&profile).unwrap();
+    assert!(retry.pending.as_ref() == Some(candidate) && retry.started_version.is_none());
+    drop(surviving_writer);
+
     let active = updates
         .activate(candidate, &runtime.0, port, Some(&index), |kernel| {
             Ok(bamboo_command(
@@ -236,7 +260,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     );
     runtime.0.stop().await.unwrap();
     assert!(
-        profile.writer().is_err(),
-        "the profile remains owned between managed processes"
+        profile.writer().is_ok(),
+        "the exited child releases its writer lease"
     );
 }

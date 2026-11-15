@@ -253,7 +253,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 return Ok((None, None));
             }
             let runtime = sidecar_app.state::<sidecar::SidecarState>();
-            runtime.reserve_writer(profile.writer()?)?;
+            let writer = profile.writer()?;
             let selected = match &updates {
                 Some(updates) => updates.prepare_launch().await?,
                 None => {
@@ -268,7 +268,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 frontend.static_dir.as_deref(),
                 selected.as_ref().map(|kernel| kernel.executable.as_path()),
             )?;
-            let status = runtime.start(command, port)?;
+            let status = runtime.start(command, writer, port)?;
             Ok::<_, String>((Some(status), selected))
         };
         let (owned, selected) = match launch.await {

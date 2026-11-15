@@ -510,7 +510,15 @@ impl Updates {
             .is_some_and(|active| active.pins_release(&selection.upgrade))
         {
             state.selection = Some(selection);
-            format!("Bamboo {version} 的内核文件已校验。如需重新启动内核，请从帮助菜单选择「应用 Bamboo 内核更新」。")
+            match self.running_snapshot()? {
+                None => {
+                    format!("Bamboo {version} 的内核文件已修复。请重新打开 Bodhi 以恢复初次启动。")
+                }
+                Some((_, false)) => {
+                    format!("Bamboo {version} 的内核文件已修复。可以从帮助菜单重试应用。")
+                }
+                Some((_, true)) => format!("正在使用的 Bamboo {version} 内核文件已校验。"),
+            }
         } else {
             state.pending = Some(selection);
             format!("Bamboo {version} 已下载并校验。确认所有任务结束后，从帮助菜单选择「应用 Bamboo 内核更新」。")
@@ -561,6 +569,9 @@ impl Updates {
         // Resolve the resources and executable before stopping the serving child.
         let command = prepare_command(&kernel)?;
         runtime.stop().await?;
+        // The update lock serializes Bodhi launches during the gap. Take a
+        // fresh writer so a surviving inherited lease blocks the switch.
+        let writer = self.profile.writer()?;
         sidecar::require_available_port(port)?;
 
         // One durable checkpoint authorizes this exact version before it can
@@ -570,7 +581,7 @@ impl Updates {
         state.started_version = Some(kernel.version.clone());
         state.save(&self.profile)?;
 
-        let startup = runtime.start(command, port)?;
+        let startup = runtime.start(command, writer, port)?;
         let readiness = async {
             sidecar::wait_for_health(port, 60, Some(&startup), index_hash).await?;
             if sidecar::owned_version(port, &startup).await? != kernel.version {

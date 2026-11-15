@@ -92,13 +92,16 @@ In a Bodhi build with the published Lotus Next package, open **Help → 安装 B
 Bodhi downloads and verifies the published binary in the background. The update
 stays pending until you open **Help → 应用 Bamboo 内核更新…** and confirm all
 interactive and background tasks have finished and new submissions are paused.
-Bodhi stops the old Bamboo process, keeps the profile lease, and starts the new
-one on the same port. Once the new process is ready, Bodhi refreshes the existing
-window. A pending download also stays pending across a Bodhi relaunch.
+Bodhi serializes the switch, waits for the old Bamboo process to exit and
+acquires a fresh profile lease before starting the new one on the same port.
+Once the new process is ready, Bodhi refreshes the existing window. A pending
+download also stays pending across a Bodhi relaunch.
 
 Import the same receipt again to repair a damaged copy of that version. If a
 confirmed switch fails after the old process has stopped, retry the approved
 version from the same menu. Bodhi retains the minimum version with the profile.
+For a repair during an initial startup failure, reopen Bodhi after reimporting
+the receipt.
 
 The receipt approves a specific transition from the currently running Bamboo for
 one Bodhi release and one Lotus manifest. Before distributing it, validate that
