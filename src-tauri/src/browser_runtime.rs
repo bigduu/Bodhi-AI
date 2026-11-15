@@ -6,11 +6,25 @@ use std::path::{Path, PathBuf};
 
 const COMPILED_RECEIPT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/browser-receipt.json"));
 
+pub(crate) fn host_hashes() -> Result<[String; 2], String> {
+    let receipt: serde_json::Value =
+        serde_json::from_slice(COMPILED_RECEIPT).map_err(|e| e.to_string())?;
+    let hash = |key: &str| {
+        receipt[key]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "The bundled browser host has no verified identity.".to_string())
+    };
+    Ok([hash("hostSha256")?, hash("packageLockSha256")?])
+}
+
 fn platform() -> Result<(&'static str, &'static str), String> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Ok(("aarch64-apple-darwin", "mac-arm64")),
         ("macos", "x86_64") => Ok(("x86_64-apple-darwin", "mac-x64")),
+        ("linux", "aarch64") => Ok(("aarch64-unknown-linux-gnu", "linux-arm64")),
         ("linux", "x86_64") => Ok(("x86_64-unknown-linux-gnu", "linux64")),
+        ("windows", "aarch64") => Ok(("aarch64-pc-windows-msvc", "win64")),
         ("windows", "x86_64") => Ok(("x86_64-pc-windows-msvc", "win64")),
         _ => Err("unsupported desktop browser target".into()),
     }

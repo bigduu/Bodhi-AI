@@ -9,10 +9,14 @@ use tauri::menu::{Menu, MenuItem, Submenu, HELP_SUBMENU_ID};
 use tauri::Manager;
 use tauri::{App, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_fs::FsExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use tokio::time::sleep;
 
 pub mod app_settings;
+mod bamboo_profile;
+mod bamboo_update;
+mod bamboo_update_page;
 pub mod browser_runtime;
 #[cfg(test)]
 #[path = "../build_support.rs"]
@@ -162,11 +166,18 @@ fn ready_frontend_url(
     sidecar_frontend: bool,
     port: u16,
     development_url: Option<&tauri::Url>,
+    index_hash: Option<&str>,
 ) -> Result<tauri::Url, String> {
     if sidecar_frontend {
-        return format!("http://127.0.0.1:{port}")
-            .parse()
-            .map_err(|error| format!("bad sidecar url: {error}"));
+        let mut url = tauri::Url::parse(&format!("http://127.0.0.1:{port}"))
+            .map_err(|error| format!("bad sidecar url: {error}"))?;
+        if let Some(hash) = index_hash {
+            // A WebView can keep a fresh cached index across app upgrades.
+            // The verified index hash gives each entry page its own URL
+            // while preserving the origin used by the app's local storage.
+            url.query_pairs_mut().append_pair("frontend", hash);
+        }
+        return Ok(url);
     }
     let mut url = development_url
         .cloned()
@@ -177,6 +188,10 @@ fn ready_frontend_url(
     url.set_query(None);
     url.set_fragment(None);
     Ok(url)
+}
+
+fn uses_sidecar_frontend() -> bool {
+    !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok()
 }
 
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -196,45 +211,75 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     let port = web_service_port();
     if owns_frontend {
         if let Err(error) = sidecar::require_available_port(port) {
-            show_startup_failure(app.handle(), &error);
+            show_startup_failure(
+                app.handle(),
+                &format!("{error}\n\nRelaunch Bodhi with an available BODHI_BACKEND_PORT."),
+            );
             return Ok(());
         }
     }
     let app_data_dir = app_settings::bamboo_dir();
     std::fs::create_dir_all(&app_data_dir)?;
-    log::info!("App data dir: {:?}", app_data_dir);
+    let profile = bamboo_profile::Profile::open(&app_data_dir)?;
+    // The profile state is trusted by the native launcher even if the user
+    // chooses a data directory normally writable by the WebView.
+    app.fs_scope().forbid_directory(&profile.state_dir, true)?;
+    log::info!("App data dir: {:?}", profile.data);
 
     // Run the bamboo backend as a managed sidecar process (replaces the in-process
     // WebService). The child is held in SidecarState and killed on app exit; it also
     // self-exits if this process dies uncleanly — see `sidecar` and the
     // `--parent-pid` orphan guard on `bamboo serve`.
-    let data_dir = app_data_dir.clone();
     app.manage(sidecar::SidecarState::default());
+    if let Some(manifest) = frontend.manifest_sha256.clone() {
+        match bamboo_update::Updates::for_app(app.handle(), profile.clone(), manifest) {
+            Ok(updates) => {
+                app.manage(updates);
+            }
+            Err(error) => {
+                show_startup_failure(app.handle(), &error);
+                return Ok(());
+            }
+        }
+    }
 
     let sidecar_app = app.handle().clone();
     let development_url = app.config().build.dev_url.clone();
     tauri::async_runtime::spawn(async move {
+        let updates = sidecar_app.try_state::<bamboo_update::Updates>();
         // Only the explicitly selected legacy rollback package retains
         // external-server reuse. Lotus Next source and package builds always own
         // the backend serving their verified resource directory.
-        let owned = if !owns_frontend && sidecar::backend_already_running(port).await {
-            log::info!("Backend already running on port {port}; reusing it");
-            None
-        } else {
-            match sidecar::spawn(
+        let launch = async {
+            if !owns_frontend && sidecar::backend_already_running(port).await {
+                bamboo_update::check_unmanaged_profile(&profile)?;
+                log::info!("Backend already running on port {port}; reusing it");
+                return Ok((None, None));
+            }
+            let runtime = sidecar_app.state::<sidecar::SidecarState>();
+            let writer = profile.writer()?;
+            let selected = match &updates {
+                Some(updates) => updates.prepare_launch().await?,
+                None => {
+                    bamboo_update::check_unmanaged_profile(&profile)?;
+                    None
+                }
+            };
+            let command = sidecar::command(
                 &sidecar_app,
                 port,
-                &data_dir,
+                &profile.data,
                 frontend.static_dir.as_deref(),
-            ) {
-                Ok(status) => {
-                    log::info!("bamboo sidecar spawned on port {port}");
-                    Some(status)
-                }
-                Err(error) => {
-                    show_startup_failure(&sidecar_app, &error);
-                    return;
-                }
+                selected.as_ref().map(|kernel| kernel.executable.as_path()),
+            )?;
+            let status = runtime.start(command, writer, port)?;
+            Ok::<_, String>((Some(status), selected))
+        };
+        let (owned, selected) = match launch.await {
+            Ok(result) => result,
+            Err(error) => {
+                show_startup_failure(&sidecar_app, &error);
+                return;
             }
         };
 
@@ -250,21 +295,51 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
         .await
         {
             sidecar::kill(&sidecar_app);
-            show_startup_failure(&sidecar_app, &error);
+            show_startup_failure(
+                &sidecar_app,
+                &format!("{error}\n\nCheck the engine logs and restart Bodhi."),
+            );
             return;
         }
-        let use_sidecar_frontend =
-            !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
+        let reported = if let (Some(_), Some(status)) = (&updates, &owned) {
+            let reported = sidecar::owned_version(port, status).await;
+            if let Some(kernel) = &selected {
+                if reported.as_deref() != Ok(kernel.version.as_str()) {
+                    sidecar::kill(&sidecar_app);
+                    show_startup_failure(
+                        &sidecar_app,
+                        &format!(
+                            "The running Bamboo did not report the selected version {}.",
+                            kernel.version
+                        ),
+                    );
+                    return;
+                }
+            }
+            reported.ok()
+        } else {
+            None
+        };
         if let Some(win) = sidecar_app.get_webview_window("main") {
-            let result = ready_frontend_url(use_sidecar_frontend, port, development_url.as_ref())
-                .and_then(|url| {
-                    log::info!("Managed backend ready; navigating webview to {url}");
-                    win.navigate(url).map_err(|error| error.to_string())
-                });
+            let result = ready_frontend_url(
+                uses_sidecar_frontend(),
+                port,
+                development_url.as_ref(),
+                frontend.index_hash.as_deref(),
+            )
+            .and_then(|url| {
+                log::info!("Managed backend ready; navigating webview to {url}");
+                win.navigate(url).map_err(|error| error.to_string())
+            });
             if let Err(error) = result {
                 sidecar::kill(&sidecar_app);
                 show_startup_failure(&sidecar_app, &error);
+                return;
             }
+        }
+        if let (Some(updates), Some(version), Some(status)) = (updates, reported, owned) {
+            log::info!("Managed Bamboo {version} is ready on port {port}");
+            updates.mark_ready(version, status);
         }
     });
 
@@ -306,18 +381,39 @@ fn build_app_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    let update_kernel = MenuItem::with_id(
+        handle,
+        bamboo_update::MENU_ID,
+        bamboo_update::MENU_LABEL,
+        true,
+        None::<&str>,
+    )?;
+    let apply_kernel = MenuItem::with_id(
+        handle,
+        bamboo_update::APPLY_MENU_ID,
+        bamboo_update::APPLY_MENU_LABEL,
+        true,
+        None::<&str>,
+    )?;
 
     let mut appended = false;
     if let Some(kind) = menu.get(HELP_SUBMENU_ID) {
         if let Some(help) = kind.as_submenu() {
             help.append(&install_item)?;
+            help.append(&update_kernel)?;
+            help.append(&apply_kernel)?;
             appended = true;
         }
     }
     if !appended {
         // No Help submenu in this platform's default menu — add one so the
         // item is still reachable.
-        let help = Submenu::with_items(handle, "Help", true, &[&install_item])?;
+        let help = Submenu::with_items(
+            handle,
+            "Help",
+            true,
+            &[&install_item, &update_kernel, &apply_kernel],
+        )?;
         menu.append(&help)?;
     }
 
@@ -354,6 +450,9 @@ pub fn run() {
     let mut last_window_size = None;
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |_, _| {
+            bamboo_update_page::response()
+        })
         .append_invoke_initialization_script(if frontend::uses_managed_frontend() {
             managed_backend_initialization(web_service_port())
         } else {
@@ -369,6 +468,12 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id() == cli_install::MENU_ID {
                 cli_install::run_from_menu(app);
+            }
+            if event.id() == bamboo_update::MENU_ID {
+                bamboo_update::run_from_menu(app);
+            }
+            if event.id() == bamboo_update::APPLY_MENU_ID {
+                bamboo_update::apply_from_menu(app);
             }
             #[cfg(target_os = "macos")]
             if event.id() == webview_recovery::RELOAD_MENU_ID {
@@ -406,7 +511,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(move |app_handle, event| match &event {
             // App is exiting (incl. after `app_handle.exit(0)` below): make sure the
-            // bamboo sidecar goes with us. The stdin death-link is the crash-safe
+            // bamboo sidecar goes with us. Its parent-pid guard is the crash-safe
             // backstop; this is the clean path.
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 if matches!(event, tauri::RunEvent::Exit) {
@@ -450,18 +555,36 @@ mod tests {
     fn ready_navigation_keeps_the_dev_origin_and_removes_startup_only_identity() {
         let startup = tauri::Url::parse("http://127.0.0.1:1420/__bodhi_startup?run=owned").unwrap();
         assert_eq!(
-            super::ready_frontend_url(false, 9562, Some(&startup))
+            super::ready_frontend_url(false, 9562, Some(&startup), Some(&"a".repeat(64)))
                 .unwrap()
                 .as_str(),
             "http://127.0.0.1:1420/"
         );
-        assert!(super::ready_frontend_url(false, 9562, None).is_err());
+        assert!(super::ready_frontend_url(false, 9562, None, None).is_err());
         assert_eq!(
-            super::ready_frontend_url(true, 19562, Some(&startup))
+            super::ready_frontend_url(true, 19562, Some(&startup), None)
                 .unwrap()
                 .as_str(),
             "http://127.0.0.1:19562/"
         );
+    }
+
+    #[test]
+    fn ready_navigation_uses_a_distinct_url_when_the_verified_index_changes() {
+        let previous_hash = "a".repeat(64);
+        let next_hash = "b".repeat(64);
+        let previous = super::ready_frontend_url(true, 19562, None, Some(&previous_hash)).unwrap();
+        let next = super::ready_frontend_url(true, 19562, None, Some(&next_hash)).unwrap();
+        assert_eq!(
+            previous.as_str(),
+            format!("http://127.0.0.1:19562/?frontend={previous_hash}")
+        );
+        assert_eq!(
+            next.as_str(),
+            format!("http://127.0.0.1:19562/?frontend={next_hash}")
+        );
+        assert_eq!(next.origin(), previous.origin());
+        assert_eq!(next.path(), previous.path());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Replace only Tauri's generated frontend copy before its overlay-style copy.
+//! Keep Tauri's generated resources beside the final Cargo executable.
 //! Shared with shell unit tests; this helper uses no build/runtime dependencies.
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -7,10 +7,13 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-fn cargo_profile_directory(out_dir: &Path) -> io::Result<PathBuf> {
-    // tauri-build 2.5.6 derives its copy destination with exactly three parents:
-    // <profile>/build/bodhi-<cargo-hash>/out -> <profile>. Check those directories
-    // before doing any removal; never accept a caller-supplied cleanup target.
+struct CargoOutput {
+    profile: PathBuf,
+    tauri_staging: PathBuf,
+}
+
+fn cargo_output(out_dir: &Path) -> io::Result<CargoOutput> {
+    // Validate Cargo's package-specific suffix before using any path for cleanup.
     if !out_dir.is_absolute()
         || out_dir
             .components()
@@ -20,28 +23,28 @@ fn cargo_profile_directory(out_dir: &Path) -> io::Result<PathBuf> {
             "OUT_DIR must be an absolute Cargo build output path",
         ));
     }
-    let ancestors = out_dir.ancestors().take(4).collect::<Vec<_>>();
-    if ancestors.len() != 4
-        || out_dir.file_name() != Some("out".as_ref())
-        || ancestors[2].file_name() != Some("build".as_ref())
-    {
-        return Err(invalid(
-            "OUT_DIR must end with <profile>/build/bodhi-<hash>/out",
-        ));
+    let parents = out_dir.ancestors().skip(1).take(4).collect::<Vec<_>>();
+    let invalid_layout = || {
+        invalid("OUT_DIR must end with <profile>/build/bodhi-<hash>/out or <profile>/build/bodhi/<hash>/out")
+    };
+    if out_dir.file_name() != Some("out".as_ref()) {
+        return Err(invalid_layout());
     }
-    let package = ancestors[1]
+    let is_hash = |hash: &str| hash.len() >= 8 && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let [unit, parent, staging, ..] = parents.as_slice() else {
+        return Err(invalid_layout());
+    };
+    let unit_name = unit
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| invalid("invalid Cargo package output directory"))?;
-    if !package
-        .strip_prefix("bodhi-")
-        .is_some_and(|hash| hash.len() >= 8 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    {
-        return Err(invalid(
-            "OUT_DIR does not belong to Bodhi's Cargo build script",
-        ));
-    }
-    let profile = ancestors[3];
+        .ok_or_else(invalid_layout)?;
+    let profile = match parent.file_name().and_then(|name| name.to_str()) {
+        Some("build") if unit_name.strip_prefix("bodhi-").is_some_and(is_hash) => staging,
+        Some("bodhi") if staging.file_name() == Some("build".as_ref()) && is_hash(unit_name) => {
+            parents.get(3).ok_or_else(invalid_layout)?
+        }
+        _ => return Err(invalid_layout()),
+    };
     if !profile
         .file_name()
         .and_then(|name| name.to_str())
@@ -54,21 +57,36 @@ fn cargo_profile_directory(out_dir: &Path) -> io::Result<PathBuf> {
     {
         return Err(invalid("invalid Cargo profile directory"));
     }
-    for directory in ancestors {
+    for directory in out_dir.ancestors() {
         let metadata = std::fs::symlink_metadata(directory)?;
         if !metadata.is_dir() || metadata.is_symlink() {
             return Err(invalid(
                 "Cargo output/profile ancestry must contain real directories, not symlinks",
             ));
         }
+        if directory == *profile {
+            break;
+        }
     }
     let canonical_profile = profile.canonicalize()?;
-    if out_dir.canonicalize()? != canonical_profile.join("build").join(package).join("out") {
+    let canonical_child = |directory: &Path| {
+        directory
+            .strip_prefix(profile)
+            .map(|relative| canonical_profile.join(relative))
+            .map_err(|_| invalid("Cargo output ancestry changed while resolving resources"))
+    };
+    if out_dir.canonicalize()? != canonical_child(out_dir)? {
         return Err(invalid(
             "Cargo output ancestry changed while resolving resources",
         ));
     }
-    Ok(canonical_profile)
+    // tauri-build 2.5.6 copies three parents above OUT_DIR, which is the
+    // profile on the old layout and its build directory on Cargo 1.100.
+    let tauri_staging = canonical_child(staging)?;
+    Ok(CargoOutput {
+        profile: canonical_profile,
+        tauri_staging,
+    })
 }
 
 pub fn reset_frontend_destination(out_dir: &Path) -> io::Result<PathBuf> {
@@ -80,7 +98,7 @@ pub fn reset_browser_destination(out_dir: &Path) -> io::Result<PathBuf> {
 }
 
 fn reset_resource_destination(out_dir: &Path, name: &str) -> io::Result<PathBuf> {
-    let destination = cargo_profile_directory(out_dir)?.join(name);
+    let destination = cargo_output(out_dir)?.tauri_staging.join(name);
     match std::fs::symlink_metadata(&destination) {
         Ok(metadata) if metadata.is_symlink() => {
             // Unlink only the generated destination itself. A link's target may
@@ -107,10 +125,12 @@ fn reset_resource_destination(out_dir: &Path, name: &str) -> io::Result<PathBuf>
     Ok(destination)
 }
 
-/// Tauri currently copies resources into OUT_DIR's profile directory. Keep
-/// final programs independent of the optional intermediate cache location.
+/// Sync from Tauri's copy directory to Cargo's final target/profile directory.
 pub fn sync_runtime_resources(out_dir: &Path, target_dir: &Path, triple: &str) -> io::Result<()> {
-    let source = cargo_profile_directory(out_dir)?;
+    let CargoOutput {
+        profile,
+        tauri_staging: source,
+    } = cargo_output(out_dir)?;
     if !target_dir.is_absolute()
         || target_dir
             .components()
@@ -120,15 +140,15 @@ pub fn sync_runtime_resources(out_dir: &Path, target_dir: &Path, triple: &str) -
             "target directory must be absolute without traversal",
         ));
     }
-    let profile = source
+    let profile_name = profile
         .file_name()
         .ok_or_else(|| invalid("missing Cargo profile name"))?;
     let mut destination = target_dir.to_path_buf();
     // Explicit --target builds (including the host triple) nest both layouts.
-    if source.parent().and_then(Path::file_name) == Some(triple.as_ref()) {
+    if profile.parent().and_then(Path::file_name) == Some(triple.as_ref()) {
         destination.push(triple);
     }
-    destination.push(profile);
+    destination.push(profile_name);
     std::fs::create_dir_all(&destination)?;
     let destination = destination.canonicalize()?;
     if source.canonicalize()? == destination {
@@ -202,10 +222,13 @@ fn copy_resource_tree(source: &Path, destination: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    const OLD_OUT: &str = "build/bodhi-0123456789abcdef/out";
+    const NEW_OUT: &str = "build/bodhi/0123456789abcdef/out";
+
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let profile = temp.path().join("target/debug");
-        let out = profile.join("build/bodhi-0123456789abcdef/out");
+        let out = profile.join(OLD_OUT);
         std::fs::create_dir_all(&out).unwrap();
         (temp, out, profile)
     }
@@ -266,7 +289,8 @@ mod tests {
             .path()
             .join("cache")
             .join(triple)
-            .join("release/build/bodhi-0123456789abcdef/out");
+            .join("release")
+            .join(OLD_OUT);
         std::fs::create_dir_all(&out).unwrap();
         let generated = reset_frontend_destination(&out).unwrap();
         std::fs::write(generated.join("receipt.json"), "receipt").unwrap();
@@ -280,6 +304,73 @@ mod tests {
             .exists());
         assert!(target.join(triple).join("release/bamboo.exe").exists());
         assert!(!target.join("release").exists());
+    }
+
+    #[test]
+    fn cargo_1_100_syncs_tauri_staging_to_the_actual_profile() {
+        let triple = "x86_64-pc-windows-msvc";
+        for (split, explicit_target) in [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let target = temp.path().join("target");
+            let build = if split {
+                temp.path().join("cache")
+            } else {
+                target.clone()
+            };
+            let profile = if explicit_target {
+                PathBuf::from(triple).join("release")
+            } else {
+                PathBuf::from("debug")
+            };
+            let staging = build.join(&profile).join("build");
+            let out = build.join(&profile).join(NEW_OUT);
+            std::fs::create_dir_all(&out).unwrap();
+
+            let final_profile = target.join(&profile);
+            let frontend = final_profile.join("frontend");
+            let browser = final_profile.join("browser-runtime");
+            for directory in [&frontend, &browser] {
+                std::fs::create_dir_all(directory).unwrap();
+                std::fs::write(directory.join("old.js"), "stale").unwrap();
+            }
+            std::fs::write(final_profile.join("keep.txt"), "preserve").unwrap();
+            std::fs::create_dir(staging.join("frontend")).unwrap();
+            std::fs::write(staging.join("frontend/old.js"), "stale").unwrap();
+
+            let staged_frontend = reset_frontend_destination(&out).unwrap();
+            let staged_browser = reset_browser_destination(&out).unwrap();
+            assert_eq!(
+                staged_frontend,
+                staging.canonicalize().unwrap().join("frontend")
+            );
+            assert!(!staged_frontend.join("old.js").exists());
+            assert!(frontend.join("old.js").exists());
+            std::fs::write(staged_frontend.join("receipt.json"), "frontend receipt").unwrap();
+            std::fs::write(staged_browser.join("host.cjs"), "browser host").unwrap();
+            std::fs::write(staging.join("bamboo.exe"), "sidecar").unwrap();
+
+            sync_runtime_resources(&out, &target, triple).unwrap();
+            assert_eq!(
+                std::fs::read(frontend.join("receipt.json")).unwrap(),
+                b"frontend receipt"
+            );
+            assert_eq!(
+                std::fs::read(browser.join("host.cjs")).unwrap(),
+                b"browser host"
+            );
+            assert_eq!(
+                std::fs::read(final_profile.join("bamboo.exe")).unwrap(),
+                b"sidecar"
+            );
+            assert_eq!(
+                std::fs::read(final_profile.join("keep.txt")).unwrap(),
+                b"preserve"
+            );
+            assert!(!frontend.join("old.js").exists());
+            assert!(!browser.join("old.js").exists());
+            assert!(!target.join("release").exists());
+        }
     }
 
     #[test]
@@ -330,6 +421,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn cargo_1_100_rejects_other_packages_and_invalid_hashes() {
+        let temp = tempfile::tempdir().unwrap();
+        let build = temp.path().join("target/debug/build");
+        std::fs::create_dir_all(&build).unwrap();
+        let sentinel = build.join("frontend");
+        std::fs::write(&sentinel, "preserve").unwrap();
+        for suffix in [
+            "other/0123456789abcdef/out",
+            "bodhi/1234/out",
+            "bodhi/0123456789abcdeg/out",
+            "bodhi/0123456789abcdef/not-out",
+        ] {
+            let out = build.join(suffix);
+            std::fs::create_dir_all(&out).unwrap();
+            assert!(reset_frontend_destination(&out).is_err());
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn destination_and_nested_symlinks_never_remove_their_targets() {
@@ -362,5 +473,20 @@ mod tests {
             "preserve"
         );
         assert!(borrowed.join("bodhi-0123456789abcdef/out").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_1_100_rejects_a_symlinked_package_before_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let build = temp.path().join("target/debug/build");
+        let borrowed = temp.path().join("borrowed-package");
+        std::fs::create_dir_all(borrowed.join("0123456789abcdef/out")).unwrap();
+        std::fs::create_dir_all(&build).unwrap();
+        std::os::unix::fs::symlink(&borrowed, build.join("bodhi")).unwrap();
+        let sentinel = build.join("browser-runtime");
+        std::fs::write(&sentinel, "preserve").unwrap();
+        assert!(reset_browser_destination(&build.join("bodhi/0123456789abcdef/out")).is_err());
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"preserve");
     }
 }

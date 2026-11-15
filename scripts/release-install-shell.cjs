@@ -21,6 +21,8 @@ function install(root, target, execute = spawnSync) {
   assert.match(expected || "", /^\d+\.\d+\.\d+$/);
   const platform = {
     "aarch64-apple-darwin": ["darwin", "arm64", "cli-darwin-arm64"],
+    "aarch64-unknown-linux-gnu": ["linux", "arm64", "cli-linux-arm64-gnu"],
+    "aarch64-pc-windows-msvc": ["win32", "arm64", "cli-win32-arm64-msvc"],
     "x86_64-unknown-linux-gnu": ["linux", "x64", "cli-linux-x64-gnu"],
     "x86_64-pc-windows-msvc": ["win32", "x64", "cli-win32-x64-msvc"],
   }[target];

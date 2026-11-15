@@ -3,8 +3,11 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
-const { signingIdentity, targetDetails, treeHash, verifyArchitecture, verifyRuntime } = require("./browser-runtime.cjs");
-const { LOCK, sha256File } = require("./browser-runtime.cjs");
+const vm = require("node:vm");
+const { LOCK, browserPaths, sha256File, signingIdentity, targetDetails, treeHash, verifyArchitecture, verifyRuntime } = require("./browser-runtime.cjs");
+
+const LINUX_ARM64 = "aarch64-unknown-linux-gnu";
+const WINDOWS_ARM64 = "aarch64-pc-windows-msvc";
 
 test("nested browser code uses the outer release signing identity", () => {
   const previousApple = process.env.APPLE_SIGNING_IDENTITY;
@@ -26,13 +29,42 @@ test("nested browser code uses the outer release signing identity", () => {
   }
 });
 
-test("browser archives are pinned for every desktop release target", () => {
-  for (const target of ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]) {
+test("browser archives are pinned for every supported desktop runtime target", () => {
+  for (const target of ["aarch64-apple-darwin", LINUX_ARM64, WINDOWS_ARM64, "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]) {
     const details = targetDetails(target);
     assert.match(details.nodeSha256, /^[a-f0-9]{64}$/);
     assert.match(details.browserSha256, /^[a-f0-9]{64}$/);
   }
   assert.throws(() => targetDetails("../unknown"), /Unsupported/);
+});
+
+test("Windows ZIP extraction uses system bsdtar even when Git Bash tools are on PATH", () => {
+  const calls = [];
+  const filename = require.resolve("./browser-runtime.cjs");
+  const systemRoot = "C:\\Windows";
+  const sandbox = {
+    __dirname: path.win32.dirname("D:\\Bodhi AI\\scripts\\browser-runtime.cjs"),
+    module: { exports: {} },
+    process: { platform: "win32", env: { SystemRoot: systemRoot, PATH: "C:\\Program Files\\Git\\usr\\bin" } },
+    require(name) {
+      if (name === "node:path") return path.win32;
+      if (name === "node:fs") return { readFileSync: () => JSON.stringify(LOCK), mkdirSync() {} };
+      if (name === "node:child_process") return { execFileSync: (program, args) => calls.push([program, ...args]) };
+      return require(name);
+    },
+  };
+  const implementation = fs.readFileSync(filename, "utf8");
+  vm.runInNewContext(`${implementation}\nmodule.exports.extractZip = extractZip;`, sandbox, { filename });
+  const { extractZip } = sandbox.module.exports;
+  const destination = "D:\\Bodhi AI\\staged";
+  for (const platform of ["win-arm64", "win-x64"]) {
+    const archive = `D:\\Bodhi AI\\node-v24.21.0-${platform}.zip`;
+    extractZip(archive, destination);
+    assert.deepEqual(calls.pop(), [`${systemRoot}\\System32\\tar.exe`, "-xf", archive, "-C", destination]);
+  }
+  delete sandbox.process.env.SystemRoot;
+  assert.throws(() => extractZip("archive.zip", destination), /absolute SystemRoot/);
+  assert.deepEqual(calls, []);
 });
 
 test("browser executable architecture must match the bundle target", () => {
@@ -68,24 +100,86 @@ test("runtime inventory changes on tampering and rejects symlink escapes", { ski
   }
 });
 
-function runtimeFixture(t, lock) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-browser-selected-lock-")), target = "x86_64-unknown-linux-gnu";
+function executableHeader(target) {
+  const arm64 = target.startsWith("aarch64-");
+  if (target.includes("windows")) {
+    const pe = Buffer.alloc(70);
+    pe.write("MZ"); pe.writeUInt32LE(64, 60); pe.write("PE\x00\x00", 64);
+    pe.writeUInt16LE(arm64 ? 0xaa64 : 0x8664, 68);
+    return pe;
+  }
+  const elf = Buffer.alloc(20);
+  elf.write("\x7fELF"); elf[4] = 2; elf[5] = 1; elf.writeUInt16LE(arm64 ? 0xb7 : 0x3e, 18);
+  return elf;
+}
+
+function runtimeFixture(t, lock, target = "x86_64-unknown-linux-gnu") {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-browser-selected-lock-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const save = (name, data, mode = 0o644) => {
     const file = path.join(root, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data, { mode }); return file;
   };
-  const elf = Buffer.alloc(20); elf.write("\x7fELF"); elf[4] = 2; elf[5] = 1; elf.writeUInt16LE(0x3e, 18);
-  save("node/node", elf, 0o755); save("node/LICENSE", "fixture license"); save("host.cjs", "fixture host");
-  save(`chromium/chrome-headless-shell-${lock.targets[target].platform}/chrome-headless-shell`, elf, 0o755);
+  const paths = browserPaths(root, target, lock);
+  const details = lock.targets[target];
+  save(path.relative(root, paths.node), executableHeader(target), 0o755);
+  save("node/LICENSE", "fixture license"); save("host.cjs", "fixture host");
+  save(path.relative(root, paths.browser), executableHeader(details.browserTarget ?? target), 0o755);
   save("node_modules/playwright-core/package.json", JSON.stringify({ version: lock.playwrightCoreVersion }));
   save("node_modules/playwright-core/browsers.json", JSON.stringify({ browsers: [{ name: "chromium-headless-shell", revision: lock.chromiumRevision, browserVersion: lock.chromiumVersion }] }));
   const source = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-browser-selected-host-")); t.after(() => fs.rmSync(source, { recursive: true, force: true }));
   fs.writeFileSync(path.join(source, "host.cjs"), "fixture host"); fs.writeFileSync(path.join(source, "package-lock.json"), "fixture lock");
-  save("receipt.json", JSON.stringify({ schemaVersion: 1, target, nodeVersion: lock.nodeVersion, playwrightCoreVersion: lock.playwrightCoreVersion,
+  const receipt = { schemaVersion: 1, target, nodeVersion: lock.nodeVersion, playwrightCoreVersion: lock.playwrightCoreVersion,
     chromiumVersion: lock.chromiumVersion, chromiumRevision: lock.chromiumRevision, hostSha256: sha256File(path.join(source, "host.cjs")),
-    packageLockSha256: sha256File(path.join(source, "package-lock.json")), filesSha256: treeHash(root) }));
-  return { root, source, target };
+    packageLockSha256: sha256File(path.join(source, "package-lock.json")), filesSha256: treeHash(root) };
+  if ([LINUX_ARM64, WINDOWS_ARM64].includes(target)) {
+    receipt.nodeArchiveSha256 = details.nodeSha256;
+    receipt.browserArchiveSha256 = details.browserSha256;
+  }
+  const receiptPath = save("receipt.json", JSON.stringify(receipt));
+  return { root, source, target, paths, receipt, receiptPath };
 }
+
+test("ARM64 runtime verification requires native Node and the declared browser architecture", t => {
+  for (const target of [LINUX_ARM64, WINDOWS_ARM64]) {
+    const fixture = runtimeFixture(t, LOCK, target);
+    const { root, source, paths } = fixture;
+    const x64 = target.replace("aarch64-", "x86_64-");
+    assert.equal(verifyRuntime(root, target, source).browser, paths.browser);
+    fs.writeFileSync(paths.node, executableHeader(x64));
+    assert.throws(() => verifyRuntime(root, target, source), new RegExp(`the ${target} CPU architecture`));
+    fs.writeFileSync(paths.node, executableHeader(target));
+    const wrongBrowser = target === WINDOWS_ARM64 ? target : x64;
+    fs.writeFileSync(paths.browser, executableHeader(wrongBrowser));
+    const expectedBrowser = target === WINDOWS_ARM64 ? x64 : target;
+    assert.throws(() => verifyRuntime(root, target, source), new RegExp(`the ${expectedBrowser} CPU architecture`));
+  }
+});
+
+test("ARM64 runtimes bind both archive digests and restrict browser source and architecture overrides", t => {
+  for (const target of [LINUX_ARM64, WINDOWS_ARM64]) {
+    const fixture = runtimeFixture(t, LOCK, target);
+    const verify = lock => verifyRuntime(fixture.root, target, fixture.source, lock);
+    for (const archive of ["nodeSha256", "browserSha256"]) {
+      const wrong = structuredClone(LOCK);
+      wrong.targets[target][archive] = "f".repeat(64);
+      assert.throws(() => verify(wrong), /locked archives/);
+    }
+    for (const field of ["nodeArchiveSha256", "browserArchiveSha256"]) {
+      const receipt = { ...fixture.receipt };
+      delete receipt[field];
+      fs.writeFileSync(fixture.receiptPath, JSON.stringify(receipt));
+      assert.throws(() => verify(LOCK), /locked archives/);
+    }
+  }
+  const wrong = structuredClone(LOCK);
+  wrong.targets[LINUX_ARM64].browserSource = "untrusted";
+  assert.throws(() => targetDetails(LINUX_ARM64, wrong), /download source/);
+  wrong.targets[LINUX_ARM64].browserSource = "playwright";
+  wrong.chromiumRevision = "../escape";
+  assert.throws(() => targetDetails(LINUX_ARM64, wrong), /download source/);
+  wrong.targets["x86_64-unknown-linux-gnu"].browserTarget = LINUX_ARM64;
+  assert.throws(() => targetDetails("x86_64-unknown-linux-gnu", wrong), /architecture override/);
+});
 test("C static verifier accepts selected S lock data without mutating C defaults or another S context", t => {
   const unchanged = JSON.stringify(LOCK), a = structuredClone(LOCK), b = structuredClone(LOCK);
   Object.assign(a, { nodeVersion: "99.0.1", playwrightCoreVersion: "99.1.1", chromiumVersion: "199.0.1", chromiumRevision: "9991" });

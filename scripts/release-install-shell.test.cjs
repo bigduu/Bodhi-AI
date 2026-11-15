@@ -11,6 +11,8 @@ function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-release-shell-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const target = { "darwin:arm64": ["aarch64-apple-darwin", "cli-darwin-arm64"],
+    "linux:arm64": ["aarch64-unknown-linux-gnu", "cli-linux-arm64-gnu"],
+    "win32:arm64": ["aarch64-pc-windows-msvc", "cli-win32-arm64-msvc"],
     "linux:x64": ["x86_64-unknown-linux-gnu", "cli-linux-x64-gnu"],
     "win32:x64": ["x86_64-pc-windows-msvc", "cli-win32-x64-msvc"] }[`${process.platform}:${process.arch}`];
   assert.ok(target, "Tests require a supported native target");

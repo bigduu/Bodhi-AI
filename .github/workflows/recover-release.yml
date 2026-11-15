@@ -5,13 +5,13 @@ on:
   workflow_dispatch:
     inputs:
       evidence_schema:
-        description: "2 for original-output releases; 1 only for historical v1 runs (including #116)"
+        description: "Original evidence schema (1 only for historical v1 runs)"
         type: choice
         required: true
         default: "2"
-        options: ["2", "1"]
+        options: ["2", "3", "1"]
       release_run_id:
-        description: "Original release.yml run whose three supported native builds passed"
+        description: "Original release.yml run with every required native output"
         required: true
         type: string
       release_attempt:
@@ -70,8 +70,8 @@ jobs:
           ORIGINAL_EVIDENCE_ARTIFACT_ID: ${{ steps.original.outputs.artifact_id }}
         run: node scripts/release-finalizer.cjs recover "${{ runner.temp }}/bodhi-original-release/bodhi-release-evidence.json"
 
-  recover-v2:
-    if: inputs.evidence_schema == '2'
+  recover-original:
+    if: inputs.evidence_schema == '2' || inputs.evidence_schema == '3'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -79,6 +79,7 @@ jobs:
       RELEASE_VERSION: ${{ inputs.bodhi_version }}
       ORIGINAL_RELEASE_RUN_ID: ${{ inputs.release_run_id }}
       ORIGINAL_RELEASE_ATTEMPT: ${{ inputs.release_attempt }}
+      EXPECTED_EVIDENCE_SCHEMA: ${{ inputs.evidence_schema }}
     steps:
       - uses: actions/checkout@v6
         with:

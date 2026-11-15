@@ -16,12 +16,21 @@ const FEATURE_WORKFLOW = ".github/workflows/ci.yml";
 const LEGACY_FEATURE_WORKFLOW_BLOB = "492770d810a8c51df8f63057ed95f1446426c7c6";
 const CONTEXT_WORKFLOW_BLOB = "85fd611d3ee5171eb70b9c5a28d53c92a2c09c50";
 const FEATURE_WORKFLOW_BLOB = "577c4f021a0f543c7ceb06232504d87d07cd9a05";
+const ARM64_FEATURE_WORKFLOW_BLOB = "e7716b6d4c9a1ca26917c68d7ad57aa392c30b29";
 const MAIN_GATE = "Main Admission";
-const FEATURE_PRODUCERS = new Map([[CONTEXT_WORKFLOW_BLOB, false], [FEATURE_WORKFLOW_BLOB, true]]);
+const FEATURE_PRODUCERS = new Map([
+  [CONTEXT_WORKFLOW_BLOB, false], [FEATURE_WORKFLOW_BLOB, true], [ARM64_FEATURE_WORKFLOW_BLOB, true],
+]);
 const FEATURE_CONTEXT_SCHEMA = "bodhi-feature-context/v1";
 const ADMISSION_SCHEMA = 2;
 const ADMISSION_KIND = "bodhi-accepted-dev";
 const SOURCE_GATE = "Require the exact feature merge source";
+const NATIVE_ARCHITECTURE_GATE = "Verify native runner architecture";
+const NODE_JOB = "Unit Tests (Node)";
+const NODE_GATES = [SOURCE_GATE, "Run script unit tests"];
+const ARM64_NATIVE_TARGETS = Object.freeze([
+  ...NATIVE_TARGETS, "aarch64-unknown-linux-gnu", "aarch64-pc-windows-msvc",
+]);
 const SHA = /^[0-9a-f]{40}$/;
 const digest = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
@@ -31,6 +40,11 @@ function id(value, label) {
   return Number(value);
 }
 function sha(value, label) { assert.match(value || "", SHA, `Invalid ${label}`); return value; }
+function featureTargets(workflowBlob) {
+  assert.notEqual(workflowBlob, LEGACY_FEATURE_WORKFLOW_BLOB, "Legacy feature producer cannot authorize new releases or bootstrap");
+  assert.ok(FEATURE_PRODUCERS.has(workflowBlob), "Unreviewed feature workflow");
+  return workflowBlob === ARM64_FEATURE_WORKFLOW_BLOB ? ARM64_NATIVE_TARGETS : NATIVE_TARGETS;
+}
 function workflow(value) {
   assert.equal(typeof value, "string");
   const [file, ref, extra] = value.split("@");
@@ -168,7 +182,7 @@ function devHead(branch) {
 }
 function association(run, pullRequest, base, head) {
   assert.ok(Array.isArray(run.pull_requests), "Missing feature association API state");
-  // GitHub can remove this array's entries after merge. Only the new pinned
+  // GitHub can remove this array's entries after merge. Only the pinned
   // producer's original contexts below can supply the missing association.
   if (!run.pull_requests.length) return;
   assert.equal(run.pull_requests.length, 1, "Ambiguous feature association");
@@ -210,17 +224,10 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
   assert.equal(run.run_attempt, attempt, "Feature attempt changed");
   assert.equal(run.status, "completed"); assert.equal(run.conclusion, "success");
   association(run, pullRequest, base, head);
-  const expected = new Map([
-    ["Unit Tests (Node)", [SOURCE_GATE, "Run script unit tests"]],
-    ...NATIVE_TARGETS.map((target) => [`Unit and E2E (${target})`, [SOURCE_GATE, "Stage accepted inputs for debug assembly",
-      "Run native shell unit tests", "Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"]]),
-    ["Unit Tests", ["Require every unit test result"]], ["E2E Tests", ["Require every native E2E result"]],
-  ]);
   const jobs = pages(`actions/runs/${runId}/jobs?filter=all`, "jobs", request), selected = [];
   assert.equal(new Set(jobs.map((job) => job.id)).size, jobs.length, "Duplicate job evidence");
-  assert.ok(jobs.every((job) => expected.has(job.name) || job.name === MAIN_GATE), "Foreign job in feature evidence");
   let snapshot;
-  for (const [name, gates] of expected) {
+  function select(name, gates) {
     const matching = jobs.filter((job) => job.name === name);
     assert.ok(matching.length, `Missing required job: ${name}`);
     for (const job of matching) {
@@ -245,12 +252,22 @@ function verifyAcceptedDev({ source, pullRequest, runId, attempt }, request = ap
     selected.push({ id: id(job.id, "job ID"), name, attempt: job.run_attempt,
       logical: { id: id(logical.id, "logical job ID"), attempt: logical.run_attempt } });
   }
+  // The original Node source record selects the immutable CI blob. Job names
+  // and counts in the run cannot choose the producer contract.
+  select(NODE_JOB, NODE_GATES);
   const merge = request(`git/commits/${snapshot}`);
   assert.deepEqual(merge.parents.map((parent) => parent.sha), [base, head], "Actual snapshot parents differ");
   assert.equal(merge.tree.sha, tree);
   const blob = request(`contents/${FEATURE_WORKFLOW}?ref=${snapshot}`)?.sha;
-  assert.notEqual(blob, LEGACY_FEATURE_WORKFLOW_BLOB, "Legacy feature producer cannot authorize new releases or bootstrap");
-  assert.ok(FEATURE_PRODUCERS.has(blob), "Unreviewed feature workflow");
+  const nativeGates = [SOURCE_GATE, "Stage accepted inputs for debug assembly", "Run native shell unit tests",
+    "Verify debug assembly inputs", "Run native actor and static frontend E2E", "Run native browser E2E"];
+  if (blob === ARM64_FEATURE_WORKFLOW_BLOB) nativeGates.splice(1, 0, NATIVE_ARCHITECTURE_GATE);
+  const expected = new Map([
+    ...featureTargets(blob).map((target) => [`Unit and E2E (${target})`, nativeGates]),
+    ["Unit Tests", ["Require every unit test result"]], ["E2E Tests", ["Require every native E2E result"]],
+  ]);
+  assert.ok(jobs.every((job) => job.name === NODE_JOB || expected.has(job.name) || job.name === MAIN_GATE), "Foreign job in feature evidence");
+  for (const [name, gates] of expected) select(name, gates);
   const skipped = jobs.filter(job => job.name === MAIN_GATE);
   if (!FEATURE_PRODUCERS.get(blob)) assert.equal(skipped.length, 0, "Foreign main gate in original context producer");
   else {
@@ -297,6 +314,7 @@ function main() {
   fs.writeFileSync(output, JSON.stringify({ ...proof, controller, lockHashes: product.lockHashes,
     frontend: product.frontend }, null, 2) + "\n", { flag: "wx" });
 }
-module.exports = { LEGACY_FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, FEATURE_WORKFLOW_BLOB, MAIN_GATE, FEATURE_PRODUCERS, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND,
+module.exports = { LEGACY_FEATURE_WORKFLOW_BLOB, CONTEXT_WORKFLOW_BLOB, FEATURE_WORKFLOW_BLOB, ARM64_FEATURE_WORKFLOW_BLOB,
+  MAIN_GATE, FEATURE_PRODUCERS, featureTargets, FEATURE_CONTEXT_SCHEMA, ADMISSION_SCHEMA, ADMISSION_KIND,
   requireController, requireProduct, sourceFromLog, contextFromLog, executionOrigin, devHead, verifyAcceptedDev, admitFeature };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi source: ${error.message}`); process.exitCode = 1; } }

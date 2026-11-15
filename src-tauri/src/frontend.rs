@@ -25,6 +25,7 @@ struct Receipt {
 pub struct VerifiedFrontend {
     pub static_dir: Option<PathBuf>,
     pub index_hash: Option<String>,
+    pub(crate) manifest_sha256: Option<String>,
 }
 
 pub fn uses_managed_frontend() -> bool {
@@ -162,6 +163,7 @@ fn verify_resource(resources: &Path, expected: &[u8]) -> Result<VerifiedFrontend
         return Ok(VerifiedFrontend {
             static_dir: None,
             index_hash: None,
+            manifest_sha256: None,
         });
     }
     let revision = receipt
@@ -216,6 +218,7 @@ fn verify_resource(resources: &Path, expected: &[u8]) -> Result<VerifiedFrontend
     Ok(VerifiedFrontend {
         static_dir: Some(dist),
         index_hash: Some(index_hash),
+        manifest_sha256: receipt.artifact_manifest_sha256,
     })
 }
 
