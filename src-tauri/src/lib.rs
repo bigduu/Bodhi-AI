@@ -16,6 +16,7 @@ use tokio::time::sleep;
 pub mod app_settings;
 mod bamboo_profile;
 mod bamboo_update;
+mod bamboo_update_page;
 pub mod browser_runtime;
 #[cfg(test)]
 #[path = "../build_support.rs"]
@@ -210,7 +211,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     let port = web_service_port();
     if owns_frontend {
         if let Err(error) = sidecar::require_available_port(port) {
-            show_startup_failure(app.handle(), &error);
+            show_startup_failure(
+                app.handle(),
+                &format!("{error}\n\nRelaunch Bodhi with an available BODHI_BACKEND_PORT."),
+            );
             return Ok(());
         }
     }
@@ -291,7 +295,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
         .await
         {
             sidecar::kill(&sidecar_app);
-            show_startup_failure(&sidecar_app, &error);
+            show_startup_failure(
+                &sidecar_app,
+                &format!("{error}\n\nCheck the engine logs and restart Bodhi."),
+            );
             return;
         }
         let reported = if let (Some(_), Some(status)) = (&updates, &owned) {
@@ -443,6 +450,9 @@ pub fn run() {
     let mut last_window_size = None;
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |_, _| {
+            bamboo_update_page::response()
+        })
         .append_invoke_initialization_script(if frontend::uses_managed_frontend() {
             managed_backend_initialization(web_service_port())
         } else {

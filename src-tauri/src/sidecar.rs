@@ -127,7 +127,7 @@ pub fn require_available_port(port: u16) -> Result<(), String> {
     }
     std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .map(drop)
-        .map_err(|_| format!("Port {port} is unavailable. Another local service may be using it. Launch Bodhi with a different BODHI_BACKEND_PORT; the existing service was left untouched."))
+        .map_err(|_| format!("Port {port} is unavailable. Another local service may be using it."))
 }
 
 fn local_log_filter(existing: &str) -> String {
@@ -199,7 +199,7 @@ pub async fn wait_for_health(
                 .map(|status| status.0.load(Ordering::SeqCst))
                 .unwrap_or(1);
             if state == 2 {
-                return Err("The managed Bamboo process exited before startup completed. Check the engine logs and restart Bodhi.".into());
+                return Err("The managed Bamboo process exited before startup completed.".into());
             }
             if state == 1 {
                 if let Ok(resp) = client.get(&url).send().await {
@@ -228,8 +228,11 @@ pub async fn wait_for_health(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };
-    tokio::time::timeout(Duration::from_secs(max_secs), poll).await
-        .map_err(|_| format!("The local engine did not become ready on port {port} within {max_secs}s. Check its logs and restart Bodhi."))?
+    tokio::time::timeout(Duration::from_secs(max_secs), poll)
+        .await
+        .map_err(|_| {
+            format!("The local engine did not become ready on port {port} within {max_secs}s.")
+        })?
 }
 
 pub(crate) async fn reported_version(port: u16) -> Result<String, String> {
@@ -383,7 +386,7 @@ mod tests {
         let port = foreign.local_addr().unwrap().port();
         assert!(require_available_port(port)
             .unwrap_err()
-            .contains("BODHI_BACKEND_PORT"));
+            .contains(&format!("Port {port} is unavailable")));
         assert!(std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_ok());
         drop(foreign);
         assert!(require_available_port(port).is_ok());

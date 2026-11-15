@@ -14,6 +14,7 @@ use tauri_plugin_fs::FsExt;
 use tauri_plugin_shell::ShellExt;
 
 use crate::bamboo_profile::{create_directory, persist, Profile};
+use crate::bamboo_update_page::UpdatePage;
 use crate::sidecar::{self, SidecarState, StartupStatus};
 
 pub const MENU_ID: &str = "install-bamboo-update";
@@ -557,7 +558,8 @@ impl Updates {
         runtime: &SidecarState,
         port: u16,
         index_hash: Option<&str>,
-        prepare_command: impl FnOnce(&Kernel) -> Result<Command, String>,
+        prepare: impl AsyncFnOnce(&Kernel) -> Result<Command, String>,
+        restore_page: impl FnOnce(&str) -> Result<(), String>,
     ) -> Result<String, String> {
         let _lock = self.profile.update_lock()?;
         let mut state = ProfileState::read(&self.profile)?;
@@ -566,13 +568,15 @@ impl Updates {
         }
         state.require_kernel(&approved.upgrade.bamboo_version)?;
         let kernel = self.verify_kernel(approved)?;
-        // Resolve the resources and executable before stopping the serving child.
-        let command = prepare_command(&kernel)?;
+        // Prepare the launch and move the desktop to its local page while the
+        // serving child still owns the loopback origin.
+        let command = prepare(&kernel).await?;
         runtime.stop().await?;
         // The update lock serializes Bodhi launches during the gap. Take a
         // fresh writer so a surviving inherited lease blocks the switch.
         let writer = self.profile.writer()?;
-        sidecar::require_available_port(port)?;
+        sidecar::require_available_port(port)
+            .map_err(|error| format!("{error}\n\n端口释放后，可从帮助菜单重试应用。"))?;
 
         // One durable checkpoint authorizes this exact version before it can
         // write the profile. A failed start can retry this version in-place.
@@ -595,10 +599,13 @@ impl Updates {
         .await;
         if let Err(error) = readiness {
             runtime.stop().await?;
-            return Err(error);
+            return Err(format!(
+                "{error}\n\n请查看内核日志，然后从帮助菜单重试应用。"
+            ));
         }
         self.mark_ready(kernel.version.clone(), startup);
         log::info!("Managed Bamboo {} is ready on port {port}", kernel.version);
+        restore_page(&kernel.version)?;
         Ok(kernel.version)
     }
 }
@@ -844,32 +851,30 @@ async fn apply_in_window<R: Runtime>(
         app.config().build.dev_url.as_ref(),
         frontend.index_hash.as_deref(),
     )?;
+    let page = app.state::<UpdatePage>();
     let version = updates
         .activate(
             candidate,
             &runtime,
             port,
             frontend.index_hash.as_deref(),
-            |kernel| {
-                sidecar::command(
+            async |kernel| {
+                let command = sidecar::command(
                     app,
                     port,
                     &updates.profile.data,
                     frontend.static_dir.as_deref(),
                     Some(&kernel.executable),
-                )
+                )?;
+                page.park(&window, &ready_url).await?;
+                Ok(command)
+            },
+            |version| {
+                page.resume(&window)
+                    .map_err(|_| format!("Bamboo {version} 已启用，当前页面刷新失败。"))
             },
         )
         .await?;
-    let refresh = if window
-        .url()
-        .is_ok_and(|url| url.origin() == ready_url.origin())
-    {
-        window.reload()
-    } else {
-        window.navigate(ready_url)
-    };
-    refresh.map_err(|_| format!("Bamboo {version} 已启用，当前页面刷新失败。"))?;
     Ok(format!("Bamboo {version} 已在当前窗口启用。"))
 }
 

@@ -194,25 +194,50 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     let mut stale = candidate.clone();
     stale.upgrade.manifest_sha256 = "d".repeat(64);
     assert!(updates
-        .activate(&stale, &runtime.0, port, Some(&index), |_| panic!(
-            "stale approval reached process setup"
-        ))
+        .activate(
+            &stale,
+            &runtime.0,
+            port,
+            Some(&index),
+            async |_| panic!("stale approval reached process setup"),
+            |_| panic!("stale approval reached page restore"),
+        )
         .await
         .is_err());
+    let unable_to_park = updates
+        .activate(
+            candidate,
+            &runtime.0,
+            port,
+            Some(&index),
+            async |_| Err("update page did not commit".into()),
+            |_| panic!("failed page transition reached page restore"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unable_to_park, "update page did not commit");
     assert_eq!(sidecar::reported_version(port).await.unwrap(), BASELINE);
 
+    let command = |kernel: &Kernel| {
+        Ok(bamboo_command(
+            &profile,
+            &kernel.executable,
+            &frontend,
+            scratch.path(),
+            port,
+        ))
+    };
     // A descendant can outlive the old server while retaining an inherited
     // lease. A separate handle with the same lifetime demonstrates the fence.
     let blocked = updates
-        .activate(candidate, &runtime.0, port, Some(&index), |kernel| {
-            Ok(bamboo_command(
-                &profile,
-                &kernel.executable,
-                &frontend,
-                scratch.path(),
-                port,
-            ))
-        })
+        .activate(
+            candidate,
+            &runtime.0,
+            port,
+            Some(&index),
+            async |kernel| command(kernel),
+            |_| panic!("writer conflict reached page restore"),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -224,15 +249,18 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     drop(surviving_writer);
 
     let active = updates
-        .activate(candidate, &runtime.0, port, Some(&index), |kernel| {
-            Ok(bamboo_command(
-                &profile,
-                &kernel.executable,
-                &frontend,
-                scratch.path(),
-                port,
-            ))
-        })
+        .activate(
+            candidate,
+            &runtime.0,
+            port,
+            Some(&index),
+            async |kernel| command(kernel),
+            |version| {
+                assert_eq!(version, expected_version);
+                assert_eq!(updates.running_snapshot()?, Some((version.into(), true)));
+                Ok(())
+            },
+        )
         .await
         .unwrap();
     assert_eq!(active, expected_version);

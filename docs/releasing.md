@@ -92,10 +92,12 @@ In a Bodhi build with the published Lotus Next package, open **Help → 安装 B
 Bodhi downloads and verifies the published binary in the background. The update
 stays pending until you open **Help → 应用 Bamboo 内核更新…** and confirm all
 interactive and background tasks have finished and new submissions are paused.
-Bodhi serializes the switch, waits for the old Bamboo process to exit and
-acquires a fresh profile lease before starting the new one on the same port.
-Once the new process is ready, Bodhi refreshes the existing window. A pending
-download also stays pending across a Bodhi relaunch.
+Bodhi moves the existing window to a bundled transition page, waits for the old
+Bamboo process to exit and acquires a fresh profile lease before starting the
+new one on the same port. Bodhi returns to the previous page once the new
+process serves the verified frontend. The transition page remains available
+from the same window if an application attempt fails. A pending download also
+stays pending across a Bodhi relaunch.
 
 Import the same receipt again to repair a damaged copy of that version. If a
 confirmed switch fails after the old process has stopped, retry the approved
@@ -140,9 +142,11 @@ The existing native feature jobs exercise the real upgrade from the published
 Bamboo 2026.11.18 fixture with the staged Lotus package. The test uses the same
 managed process, profile lease and update code as the desktop shell. It rejects
 an incorrect manifest digest and a stale confirmation, keeps the first process
-open during staging, switches on the same port after confirmation, and reads
-back the session created before the upgrade. For the same local check, run the
-native commands above with `LOTUS_SOURCE=package` and `BAMBOO_SIDECAR_SOURCE=release`.
+open during staging and a failed page transition, and blocks the switch while an
+inherited profile lease remains. After that lease is released, it switches on the
+same port and reads back the session created before the upgrade. For the same
+local check, run the native commands above with `LOTUS_SOURCE=package` and
+`BAMBOO_SIDECAR_SOURCE=release`.
 
 ## Delivery policy and cutover
 
