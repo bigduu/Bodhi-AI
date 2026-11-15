@@ -95,9 +95,10 @@ interactive and background tasks have finished and new submissions are paused.
 Bodhi moves the existing window to a bundled transition page, waits for the old
 Bamboo process to exit and acquires a fresh profile lease before starting the
 new one on the same port. Bodhi returns to the previous page once the new
-process serves the verified frontend. The transition page remains available
-from the same window if an application attempt fails. A pending download also
-stays pending across a Bodhi relaunch.
+process serves the verified frontend. If opening the transition page fails and
+the old kernel still verifies, Bodhi restores the original page. After a
+failed handoff, the transition page remains available in the same window for a
+retry. A pending download also stays pending across a Bodhi relaunch.
 
 Import the same receipt again to repair a damaged copy of that version. If a
 confirmed switch fails after the old process has stopped, retry the approved

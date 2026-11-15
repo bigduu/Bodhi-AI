@@ -217,6 +217,10 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .unwrap_err();
     assert_eq!(unable_to_park, "update page did not commit");
     assert_eq!(sidecar::reported_version(port).await.unwrap(), BASELINE);
+    assert_eq!(
+        updates.verify_running(port, Some(&index)).await.unwrap(),
+        BASELINE
+    );
 
     let command = |kernel: &Kernel| {
         Ok(bamboo_command(
@@ -246,6 +250,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     );
     let retry = ProfileState::read(&profile).unwrap();
     assert!(retry.pending.as_ref() == Some(candidate) && retry.started_version.is_none());
+    assert!(updates.verify_running(port, Some(&index)).await.is_err());
     drop(surviving_writer);
 
     let active = updates
@@ -257,7 +262,9 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
             async |kernel| command(kernel),
             |version| {
                 assert_eq!(version, expected_version);
-                assert_eq!(updates.running_snapshot()?, Some((version.into(), true)));
+                let (observed, owner) = updates.running()?.unwrap();
+                assert_eq!(observed, version);
+                assert!(owner.is_ready());
                 Ok(())
             },
         )

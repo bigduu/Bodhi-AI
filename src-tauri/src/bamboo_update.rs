@@ -347,14 +347,18 @@ impl Updates {
         }
     }
 
-    fn running_snapshot(&self) -> Result<Option<(String, bool)>, String> {
+    fn running(&self) -> Result<Option<(String, StartupStatus)>, String> {
         let running = self
             .running_version
             .lock()
             .map_err(|error| error.to_string())?;
-        Ok(running
-            .as_ref()
-            .map(|(version, process)| (version.clone(), process.is_ready())))
+        Ok(running.clone())
+    }
+
+    async fn verify_running(&self, port: u16, index_hash: Option<&str>) -> Result<String, String> {
+        let (version, owner) = self.running()?.ok_or("Bamboo 尚未就绪。")?;
+        verify_ready_kernel(port, 3, index_hash, &owner, &version).await?;
+        Ok(version)
     }
 
     fn selection<'a>(&self, state: &'a ProfileState) -> Option<&'a Selection> {
@@ -408,7 +412,9 @@ impl Updates {
         {
             return Ok(());
         }
-        if self.running_snapshot()? != Some((upgrade.from_bamboo_version.clone(), true)) {
+        if !self.running()?.is_some_and(|(version, owner)| {
+            version == upgrade.from_bamboo_version && owner.is_ready()
+        }) {
             return Err(
                 "Start Bodhi with the required Bamboo version before installing this update."
                     .into(),
@@ -511,14 +517,14 @@ impl Updates {
             .is_some_and(|active| active.pins_release(&selection.upgrade))
         {
             state.selection = Some(selection);
-            match self.running_snapshot()? {
+            match self.running()? {
                 None => {
                     format!("Bamboo {version} 的内核文件已修复。请重新打开 Bodhi 以恢复初次启动。")
                 }
-                Some((_, false)) => {
-                    format!("Bamboo {version} 的内核文件已修复。可以从帮助菜单重试应用。")
+                Some((_, owner)) if owner.is_ready() => {
+                    format!("正在使用的 Bamboo {version} 内核文件已校验。")
                 }
-                Some((_, true)) => format!("正在使用的 Bamboo {version} 内核文件已校验。"),
+                Some(_) => format!("Bamboo {version} 的内核文件已修复。可以从帮助菜单重试应用。"),
             }
         } else {
             state.pending = Some(selection);
@@ -529,9 +535,7 @@ impl Updates {
     }
 
     fn activation_target<'a>(&self, state: &'a ProfileState) -> Result<&'a Selection, String> {
-        let (observed, ready) = self
-            .running_snapshot()?
-            .ok_or("请先等待 Bodhi 完成内核启动。")?;
+        let (observed, owner) = self.running()?.ok_or("请先等待 Bodhi 完成内核启动。")?;
         let selected = self.selection(state);
         if let Some(pending) = &state.pending {
             let current = selected.map_or(self.bundled_version.as_str(), |active| {
@@ -544,7 +548,7 @@ impl Updates {
             }
             return Ok(pending);
         }
-        if !ready {
+        if !owner.is_ready() {
             if let Some(selected) = selected {
                 return Ok(selected);
             }
@@ -586,18 +590,9 @@ impl Updates {
         state.save(&self.profile)?;
 
         let startup = runtime.start(command, writer, port)?;
-        let readiness = async {
-            sidecar::wait_for_health(port, 60, Some(&startup), index_hash).await?;
-            if sidecar::owned_version(port, &startup).await? != kernel.version {
-                return Err(
-                    "The managed Bamboo reported the wrong version after applying the update."
-                        .into(),
-                );
-            }
-            Ok::<_, String>(())
-        }
-        .await;
-        if let Err(error) = readiness {
+        if let Err(error) =
+            verify_ready_kernel(port, 60, index_hash, &startup, &kernel.version).await
+        {
             runtime.stop().await?;
             return Err(format!(
                 "{error}\n\n请查看内核日志，然后从帮助菜单重试应用。"
@@ -608,6 +603,20 @@ impl Updates {
         restore_page(&kernel.version)?;
         Ok(kernel.version)
     }
+}
+
+async fn verify_ready_kernel(
+    port: u16,
+    timeout: u64,
+    index_hash: Option<&str>,
+    owner: &StartupStatus,
+    version: &str,
+) -> Result<(), String> {
+    sidecar::wait_for_health(port, timeout, Some(owner), index_hash).await?;
+    if sidecar::owned_version(port, owner).await? != version {
+        return Err("The managed Bamboo reported the wrong version.".into());
+    }
+    Ok(())
 }
 
 fn release_client() -> Result<reqwest::Client, String> {
@@ -808,7 +817,19 @@ pub fn apply_from_menu<R: Runtime>(app: &AppHandle<R>) {
     let candidate = match candidate {
         Ok(candidate) => candidate,
         Err(error) => {
-            report(app, Err(error));
+            if app.state::<UpdatePage>().needs_restore()
+                && updates
+                    .running()
+                    .is_ok_and(|running| running.is_some_and(|(_, owner)| owner.is_ready()))
+            {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = recover_running_page(&handle).await;
+                    report(&handle, result);
+                });
+            } else {
+                report(app, Err(error));
+            }
             return;
         }
     };
@@ -866,16 +887,45 @@ async fn apply_in_window<R: Runtime>(
                     frontend.static_dir.as_deref(),
                     Some(&kernel.executable),
                 )?;
-                page.park(&window, &ready_url).await?;
+                if let Err(error) = page.park(&window, &ready_url).await {
+                    // Failure before stopping Bamboo can restore the previous
+                    // page only while its owned server still verifies. Leave
+                    // the fence in place on a retry from a stopped kernel.
+                    if updates
+                        .verify_running(port, frontend.index_hash.as_deref())
+                        .await
+                        .is_ok()
+                    {
+                        if let Err(error) = page.resume(&window) {
+                            log::warn!("Cannot restore the previous Bodhi page: {error}");
+                        }
+                    }
+                    return Err(error);
+                }
                 Ok(command)
             },
             |version| {
-                page.resume(&window)
-                    .map_err(|_| format!("Bamboo {version} 已启用，当前页面刷新失败。"))
+                page.resume(&window).map_err(|_| {
+                    format!("Bamboo {version} 已启用，当前页面刷新失败。请从帮助菜单重试。")
+                })
             },
         )
         .await?;
     Ok(format!("Bamboo {version} 已在当前窗口启用。"))
+}
+
+async fn recover_running_page<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+    let updates = app.state::<Updates>();
+    let _lock = updates.profile.update_lock()?;
+    let frontend = crate::frontend::resolve(app)?;
+    let version = updates
+        .verify_running(crate::web_service_port(), frontend.index_hash.as_deref())
+        .await?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Bodhi's main window is unavailable.")?;
+    app.state::<UpdatePage>().resume(&window)?;
+    Ok(format!("已恢复连接到 Bamboo {version}。"))
 }
 
 fn report<R: Runtime>(app: &AppHandle<R>, result: Result<String, String>) {

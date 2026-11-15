@@ -42,9 +42,19 @@ impl UpdatePage {
     }
 
     pub(crate) fn allows_navigation(&self, url: &Url) -> bool {
-        self.parked
-            .lock()
-            .is_ok_and(|parked| parked.as_ref().is_none_or(|page| &page.url == url))
+        let Ok(parked) = self.parked.lock() else {
+            return false;
+        };
+        match parked.as_ref() {
+            Some(page) => &page.url == url,
+            // Once a restore begins, a delayed transition navigation must
+            // not take the window back to the local update page.
+            None => url.scheme() != self.base.scheme() || url.host() != self.base.host(),
+        }
+    }
+
+    pub(crate) fn needs_restore(&self) -> bool {
+        self.parked.lock().is_ok_and(|parked| parked.is_some())
     }
 
     pub(crate) fn committed(&self, url: &Url) {
@@ -94,15 +104,20 @@ impl UpdatePage {
         Ok(())
     }
 
-    fn release(&self) -> Result<Url, String> {
+    fn release(&self) -> Result<Parked, String> {
         let mut parked = self.parked.lock().map_err(|error| error.to_string())?;
-        Ok(parked.take().ok_or("Missing Bamboo update page")?.resume)
+        parked
+            .take()
+            .ok_or_else(|| "Missing Bamboo update page".into())
     }
 
     pub(crate) fn resume<R: Runtime>(&self, window: &WebviewWindow<R>) -> Result<(), String> {
-        window
-            .navigate(self.release()?)
-            .map_err(|error| error.to_string())
+        let page = self.release()?;
+        if let Err(error) = window.navigate(page.resume.clone()) {
+            *self.parked.lock().map_err(|error| error.to_string())? = Some(page);
+            return Err(error.to_string());
+        }
+        Ok(())
     }
 }
 
@@ -119,6 +134,7 @@ mod tests {
 
         let (first, _) = page.begin(session.clone()).unwrap();
         let (retry, mut committed) = page.begin(origin.clone()).unwrap();
+        assert!(page.needs_restore());
         assert!(page.allows_navigation(&retry));
         assert!(!page.allows_navigation(&session));
         assert!(!page.allows_navigation(&first));
@@ -132,7 +148,9 @@ mod tests {
         assert_eq!(committed.try_recv(), Ok(()));
         assert!(!page.allows_navigation(&origin));
 
-        assert_eq!(page.release().unwrap(), session);
+        assert_eq!(page.release().unwrap().resume, session);
+        assert!(!page.needs_restore());
         assert!(page.allows_navigation(&session));
+        assert!(!page.allows_navigation(&retry));
     }
 }
