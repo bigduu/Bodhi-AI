@@ -16,6 +16,7 @@ use tokio::time::sleep;
 pub mod app_settings;
 mod bamboo_profile;
 mod bamboo_update;
+mod bamboo_update_page;
 pub mod browser_runtime;
 #[cfg(test)]
 #[path = "../build_support.rs"]
@@ -189,6 +190,10 @@ fn ready_frontend_url(
     Ok(url)
 }
 
+fn uses_sidecar_frontend() -> bool {
+    !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok()
+}
+
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
     window_size::create_main_window(app)?;
 
@@ -206,7 +211,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     let port = web_service_port();
     if owns_frontend {
         if let Err(error) = sidecar::require_available_port(port) {
-            show_startup_failure(app.handle(), &error);
+            show_startup_failure(
+                app.handle(),
+                &format!("{error}\n\nRelaunch Bodhi with an available BODHI_BACKEND_PORT."),
+            );
             return Ok(());
         }
     }
@@ -248,6 +256,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 log::info!("Backend already running on port {port}; reusing it");
                 return Ok((None, None));
             }
+            let runtime = sidecar_app.state::<sidecar::SidecarState>();
             let writer = profile.writer()?;
             let selected = match &updates {
                 Some(updates) => updates.prepare_launch().await?,
@@ -256,14 +265,14 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                     None
                 }
             };
-            let status = sidecar::spawn(
+            let command = sidecar::command(
                 &sidecar_app,
                 port,
                 &profile.data,
                 frontend.static_dir.as_deref(),
                 selected.as_ref().map(|kernel| kernel.executable.as_path()),
-                writer,
             )?;
+            let status = runtime.start(command, writer, port)?;
             Ok::<_, String>((Some(status), selected))
         };
         let (owned, selected) = match launch.await {
@@ -286,18 +295,15 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
         .await
         {
             sidecar::kill(&sidecar_app);
-            show_startup_failure(&sidecar_app, &error);
+            show_startup_failure(
+                &sidecar_app,
+                &format!("{error}\n\nCheck the engine logs and restart Bodhi."),
+            );
             return;
         }
-        if let Some(updates) = updates {
-            let reported = sidecar::reported_version(port).await.and_then(|version| {
-                if owned.as_ref().is_some_and(sidecar::StartupStatus::is_ready) {
-                    Ok(version)
-                } else {
-                    Err("The managed Bamboo exited while checking its version.".into())
-                }
-            });
-            if let Some(kernel) = selected {
+        let reported = if let (Some(_), Some(status)) = (&updates, &owned) {
+            let reported = sidecar::owned_version(port, status).await;
+            if let Some(kernel) = &selected {
                 if reported.as_deref() != Ok(kernel.version.as_str()) {
                     sidecar::kill(&sidecar_app);
                     show_startup_failure(
@@ -310,16 +316,13 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                     return;
                 }
             }
-            if let (Ok(version), Some(status)) = (reported, owned) {
-                log::info!("Managed Bamboo {version} is ready on port {port}");
-                updates.mark_ready(version, status);
-            }
-        }
-        let use_sidecar_frontend =
-            !cfg!(debug_assertions) || std::env::var("BODHI_SIDECAR_FRONTEND").is_ok();
+            reported.ok()
+        } else {
+            None
+        };
         if let Some(win) = sidecar_app.get_webview_window("main") {
             let result = ready_frontend_url(
-                use_sidecar_frontend,
+                uses_sidecar_frontend(),
                 port,
                 development_url.as_ref(),
                 frontend.index_hash.as_deref(),
@@ -331,7 +334,12 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             if let Err(error) = result {
                 sidecar::kill(&sidecar_app);
                 show_startup_failure(&sidecar_app, &error);
+                return;
             }
+        }
+        if let (Some(updates), Some(version), Some(status)) = (updates, reported, owned) {
+            log::info!("Managed Bamboo {version} is ready on port {port}");
+            updates.mark_ready(version, status);
         }
     });
 
@@ -380,19 +388,32 @@ fn build_app_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    let apply_kernel = MenuItem::with_id(
+        handle,
+        bamboo_update::APPLY_MENU_ID,
+        bamboo_update::APPLY_MENU_LABEL,
+        true,
+        None::<&str>,
+    )?;
 
     let mut appended = false;
     if let Some(kind) = menu.get(HELP_SUBMENU_ID) {
         if let Some(help) = kind.as_submenu() {
             help.append(&install_item)?;
             help.append(&update_kernel)?;
+            help.append(&apply_kernel)?;
             appended = true;
         }
     }
     if !appended {
         // No Help submenu in this platform's default menu — add one so the
         // item is still reachable.
-        let help = Submenu::with_items(handle, "Help", true, &[&install_item, &update_kernel])?;
+        let help = Submenu::with_items(
+            handle,
+            "Help",
+            true,
+            &[&install_item, &update_kernel, &apply_kernel],
+        )?;
         menu.append(&help)?;
     }
 
@@ -429,6 +450,9 @@ pub fn run() {
     let mut last_window_size = None;
 
     tauri::Builder::default()
+        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |_, _| {
+            bamboo_update_page::response()
+        })
         .append_invoke_initialization_script(if frontend::uses_managed_frontend() {
             managed_backend_initialization(web_service_port())
         } else {
@@ -447,6 +471,9 @@ pub fn run() {
             }
             if event.id() == bamboo_update::MENU_ID {
                 bamboo_update::run_from_menu(app);
+            }
+            if event.id() == bamboo_update::APPLY_MENU_ID {
+                bamboo_update::apply_from_menu(app);
             }
             #[cfg(target_os = "macos")]
             if event.id() == webview_recovery::RELOAD_MENU_ID {

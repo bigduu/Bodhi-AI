@@ -5,8 +5,8 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::OnceLock;
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -14,10 +14,13 @@ use tauri_plugin_fs::FsExt;
 use tauri_plugin_shell::ShellExt;
 
 use crate::bamboo_profile::{create_directory, persist, Profile};
-use crate::sidecar::StartupStatus;
+use crate::bamboo_update_page::UpdatePage;
+use crate::sidecar::{self, SidecarState, StartupStatus};
 
 pub const MENU_ID: &str = "install-bamboo-update";
 pub const MENU_LABEL: &str = "安装 Bamboo 内核更新…";
+pub const APPLY_MENU_ID: &str = "apply-bamboo-update";
+pub const APPLY_MENU_LABEL: &str = "应用 Bamboo 内核更新…";
 const TITLE: &str = "Bamboo 内核更新";
 const RELEASES: &str = "https://github.com/bigduu/Bamboo-agent/releases/download";
 const BUNDLED_LOCK: &str = include_str!("../../scripts/bamboo-sidecar-lock.json");
@@ -26,7 +29,7 @@ const MAX_BINARY: u64 = 1024 * 1024 * 1024;
 const TARGET: &str = env!("BODHI_BUILD_TARGET");
 const MIN_BINARY: u64 = 65536;
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Upgrade {
     schema_version: u32,
@@ -48,7 +51,7 @@ struct Manifest {
     browser_host: BrowserHost,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Artifact {
     target: String,
@@ -71,16 +74,28 @@ struct HostFile {
     sha256: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 struct Selection {
     upgrade: Upgrade,
     artifact: Artifact,
+}
+
+impl Selection {
+    fn pins_release(&self, upgrade: &Upgrade) -> bool {
+        let pin = &self.upgrade;
+        pin.from_bamboo_version == upgrade.from_bamboo_version
+            && pin.bamboo_version == upgrade.bamboo_version
+            && pin.source_revision == upgrade.source_revision
+            && pin.manifest_sha256 == upgrade.manifest_sha256
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ProfileState {
     selection: Option<Selection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending: Option<Selection>,
     started_version: Option<String>,
 }
 
@@ -92,7 +107,7 @@ impl ProfileState {
             Err(error) => return Err(error.to_string()),
         };
         let state: Self = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-        if let Some(selection) = &state.selection {
+        for selection in state.selection.iter().chain(&state.pending) {
             upgrade_version(&selection.upgrade)?;
         }
         if state
@@ -148,7 +163,7 @@ pub struct Updates {
     lotus_manifest_sha256: String,
     bundled_version: String,
     bundled_binary: PathBuf,
-    running_version: OnceLock<(String, StartupStatus)>,
+    running_version: Mutex<Option<(String, StartupStatus)>>,
 }
 
 fn version(value: &str) -> Option<[u32; 3]> {
@@ -322,12 +337,28 @@ impl Updates {
             lotus_manifest_sha256,
             bundled_version: bundled_version.into(),
             bundled_binary: PathBuf::from(bundled.get_program()),
-            running_version: OnceLock::new(),
+            running_version: Mutex::new(None),
         })
     }
 
     pub fn mark_ready(&self, version: String, process: StartupStatus) {
-        let _ = self.running_version.set((version, process));
+        if let Ok(mut running) = self.running_version.lock() {
+            *running = Some((version, process));
+        }
+    }
+
+    fn running(&self) -> Result<Option<(String, StartupStatus)>, String> {
+        let running = self
+            .running_version
+            .lock()
+            .map_err(|error| error.to_string())?;
+        Ok(running.clone())
+    }
+
+    async fn verify_running(&self, port: u16, index_hash: Option<&str>) -> Result<String, String> {
+        let (version, owner) = self.running()?.ok_or("Bamboo 尚未就绪。")?;
+        verify_ready_kernel(port, 3, index_hash, &owner, &version).await?;
+        Ok(version)
     }
 
     fn selection<'a>(&self, state: &'a ProfileState) -> Option<&'a Selection> {
@@ -360,13 +391,7 @@ impl Updates {
         upgrade_version(upgrade)?;
         state.require_kernel(&upgrade.bamboo_version)?;
         let selected = self.selection(state);
-        if selected.is_some_and(|selection| {
-            let installed = &selection.upgrade;
-            installed.from_bamboo_version == upgrade.from_bamboo_version
-                && installed.bamboo_version == upgrade.bamboo_version
-                && installed.source_revision == upgrade.source_revision
-                && installed.manifest_sha256 == upgrade.manifest_sha256
-        }) {
+        if selected.is_some_and(|selection| selection.pins_release(upgrade)) {
             // A renewed approval can preserve the exact installed kernel when
             // the Bodhi assembly changes. The same rule permits repair.
             return Ok(());
@@ -380,13 +405,16 @@ impl Updates {
                 upgrade.from_bamboo_version, current
             ));
         }
-        if !self
-            .running_version
-            .get()
-            .is_some_and(|(version, process)| {
-                version == &upgrade.from_bamboo_version && process.is_ready()
-            })
+        if state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.pins_release(upgrade))
         {
+            return Ok(());
+        }
+        if !self.running()?.is_some_and(|(version, owner)| {
+            version == upgrade.from_bamboo_version && owner.is_ready()
+        }) {
             return Err(
                 "Start Bodhi with the required Bamboo version before installing this update."
                     .into(),
@@ -405,9 +433,12 @@ impl Updates {
     }
 
     fn selected_kernel(&self, state: &ProfileState) -> Result<Option<Kernel>, String> {
-        let Some(selection) = self.selection(state) else {
-            return Ok(None);
-        };
+        self.selection(state)
+            .map(|selection| self.verify_kernel(selection))
+            .transpose()
+    }
+
+    fn verify_kernel(&self, selection: &Selection) -> Result<Kernel, String> {
         self.check_pair(&selection.upgrade)?;
         check_artifact(&selection.artifact)?;
         directory(self.root.parent().expect("kernel store parent")).map_err(|e| e.to_string())?;
@@ -416,10 +447,10 @@ impl Updates {
         if !matches!(matches_binary(&executable, &selection.artifact), Ok(true)) {
             return Err(format!("Selected Bamboo {} is missing or damaged. Repair the selected kernel before opening this data directory.", selection.upgrade.bamboo_version));
         }
-        Ok(Some(Kernel {
+        Ok(Kernel {
             executable,
             version: selection.upgrade.bamboo_version.clone(),
-        }))
+        })
     }
 
     pub async fn prepare_launch(&self) -> Result<Option<Kernel>, String> {
@@ -445,7 +476,7 @@ impl Updates {
         Ok(selected)
     }
 
-    async fn stage(&self, upgrade: Upgrade) -> Result<(), String> {
+    async fn stage(&self, upgrade: Upgrade) -> Result<String, String> {
         let _lock = self.profile.update_lock()?;
         let mut state = ProfileState::read(&self.profile)?;
         self.check_transition_from(&state, &upgrade)?;
@@ -479,9 +510,113 @@ impl Updates {
             .await?;
         }
 
-        state.selection = Some(Selection { upgrade, artifact });
-        state.save(&self.profile)
+        let version = upgrade.bamboo_version.clone();
+        let selection = Selection { upgrade, artifact };
+        let message = if self
+            .selection(&state)
+            .is_some_and(|active| active.pins_release(&selection.upgrade))
+        {
+            state.selection = Some(selection);
+            match self.running()? {
+                None => {
+                    format!("Bamboo {version} 的内核文件已修复。请重新打开 Bodhi 以恢复初次启动。")
+                }
+                Some((_, owner)) if owner.is_ready() => {
+                    format!("正在使用的 Bamboo {version} 内核文件已校验。")
+                }
+                Some(_) => format!("Bamboo {version} 的内核文件已修复。可以从帮助菜单重试应用。"),
+            }
+        } else {
+            state.pending = Some(selection);
+            format!("Bamboo {version} 已下载并校验。确认所有任务结束后，从帮助菜单选择「应用 Bamboo 内核更新」。")
+        };
+        state.save(&self.profile)?;
+        Ok(message)
     }
+
+    fn activation_target<'a>(&self, state: &'a ProfileState) -> Result<&'a Selection, String> {
+        let (observed, owner) = self.running()?.ok_or("请先等待 Bodhi 完成内核启动。")?;
+        let selected = self.selection(state);
+        if let Some(pending) = &state.pending {
+            let current = selected.map_or(self.bundled_version.as_str(), |active| {
+                active.upgrade.bamboo_version.as_str()
+            });
+            if pending.upgrade.from_bamboo_version != current || observed != current {
+                return Err(
+                    "待应用的更新与当前 Bamboo 版本不匹配，请导入适用于当前版本的更新凭据。".into(),
+                );
+            }
+            return Ok(pending);
+        }
+        if !owner.is_ready() {
+            if let Some(selected) = selected {
+                return Ok(selected);
+            }
+        }
+        Err("当前没有待应用的 Bamboo 内核更新。".into())
+    }
+
+    async fn activate(
+        &self,
+        approved: &Selection,
+        runtime: &SidecarState,
+        port: u16,
+        index_hash: Option<&str>,
+        prepare: impl AsyncFnOnce(&Kernel) -> Result<Command, String>,
+        restore_page: impl FnOnce(&str) -> Result<(), String>,
+    ) -> Result<String, String> {
+        let _lock = self.profile.update_lock()?;
+        let mut state = ProfileState::read(&self.profile)?;
+        if self.activation_target(&state)? != approved {
+            return Err("待应用的内核已变化，请重新确认更新。".into());
+        }
+        state.require_kernel(&approved.upgrade.bamboo_version)?;
+        let kernel = self.verify_kernel(approved)?;
+        // Prepare the launch and move the desktop to its local page while the
+        // serving child still owns the loopback origin.
+        let command = prepare(&kernel).await?;
+        runtime.stop().await?;
+        // The update lock serializes Bodhi launches during the gap. Take a
+        // fresh writer so a surviving inherited lease blocks the switch.
+        let writer = self.profile.writer()?;
+        sidecar::require_available_port(port)
+            .map_err(|error| format!("{error}\n\n端口释放后，可从帮助菜单重试应用。"))?;
+
+        // One durable checkpoint authorizes this exact version before it can
+        // write the profile. A failed start can retry this version in-place.
+        state.selection = Some(approved.clone());
+        state.pending = None;
+        state.started_version = Some(kernel.version.clone());
+        state.save(&self.profile)?;
+
+        let startup = runtime.start(command, writer, port)?;
+        if let Err(error) =
+            verify_ready_kernel(port, 60, index_hash, &startup, &kernel.version).await
+        {
+            runtime.stop().await?;
+            return Err(format!(
+                "{error}\n\n请查看内核日志，然后从帮助菜单重试应用。"
+            ));
+        }
+        self.mark_ready(kernel.version.clone(), startup);
+        log::info!("Managed Bamboo {} is ready on port {port}", kernel.version);
+        restore_page(&kernel.version)?;
+        Ok(kernel.version)
+    }
+}
+
+async fn verify_ready_kernel(
+    port: u16,
+    timeout: u64,
+    index_hash: Option<&str>,
+    owner: &StartupStatus,
+    version: &str,
+) -> Result<(), String> {
+    sidecar::wait_for_health(port, timeout, Some(owner), index_hash).await?;
+    if sidecar::owned_version(port, owner).await? != version {
+        return Err("The managed Bamboo reported the wrong version.".into());
+    }
+    Ok(())
 }
 
 fn release_client() -> Result<reqwest::Client, String> {
@@ -648,7 +783,7 @@ fn confirm<R: Runtime>(app: &AppHandle<R>, upgrade: Upgrade) {
     let handle = app.clone();
     app.dialog()
         .message(format!(
-            "从 Bamboo 官方发布下载 {}？\n\nBodhi 会根据你选择的维护方凭据校验发布文件。下载完成后，退出并重新打开 Bodhi 即可使用新内核。",
+            "从 Bamboo 官方发布下载 {}？\n\nBodhi 会在后台校验发布文件。下载完成后，可以从帮助菜单应用更新。",
             upgrade.bamboo_version
         ))
         .title(TITLE)
@@ -669,12 +804,133 @@ fn confirm<R: Runtime>(app: &AppHandle<R>, upgrade: Upgrade) {
         });
 }
 
-fn report<R: Runtime>(app: &AppHandle<R>, result: Result<(), String>) {
+pub fn apply_from_menu<R: Runtime>(app: &AppHandle<R>) {
+    let Some(updates) = app.try_state::<Updates>() else {
+        report(app, Err("此 Bodhi 构建没有独立内核更新入口。".into()));
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let candidate = ProfileState::read(&updates.profile)
+        .and_then(|state| updates.activation_target(&state).cloned());
+    let candidate = match candidate {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            if app.state::<UpdatePage>().needs_restore()
+                && updates
+                    .running()
+                    .is_ok_and(|running| running.is_some_and(|(_, owner)| owner.is_ready()))
+            {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let result = recover_running_page(&handle).await;
+                    report(&handle, result);
+                });
+            } else {
+                report(app, Err(error));
+            }
+            return;
+        }
+    };
+    let handle = app.clone();
+    app.dialog()
+        .message(format!(
+            "在当前 Bodhi 窗口应用 Bamboo {}？\n\n请确认所有会话和后台任务已经结束，并暂停提交新任务。Bamboo 重启期间会暂时断开连接。",
+            candidate.upgrade.bamboo_version
+        ))
+        .title(TITLE)
+        .parent(&window)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "任务已结束，应用".into(),
+            "取消".into(),
+        ))
+        .show(move |accepted| {
+            if accepted {
+                tauri::async_runtime::spawn(async move {
+                    let result = apply_in_window(&handle, &candidate).await;
+                    report(&handle, result);
+                });
+            }
+        });
+}
+
+async fn apply_in_window<R: Runtime>(
+    app: &AppHandle<R>,
+    candidate: &Selection,
+) -> Result<String, String> {
+    let updates = app.state::<Updates>();
+    let runtime = app.state::<SidecarState>();
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Bodhi's main window is unavailable.")?;
+    let frontend = crate::frontend::resolve(app)?;
+    let port = crate::web_service_port();
+    let ready_url = crate::ready_frontend_url(
+        crate::uses_sidecar_frontend(),
+        port,
+        app.config().build.dev_url.as_ref(),
+        frontend.index_hash.as_deref(),
+    )?;
+    let page = app.state::<UpdatePage>();
+    let version = updates
+        .activate(
+            candidate,
+            &runtime,
+            port,
+            frontend.index_hash.as_deref(),
+            async |kernel| {
+                let command = sidecar::command(
+                    app,
+                    port,
+                    &updates.profile.data,
+                    frontend.static_dir.as_deref(),
+                    Some(&kernel.executable),
+                )?;
+                if let Err(error) = page.park(&window, &ready_url).await {
+                    // Failure before stopping Bamboo can restore the previous
+                    // page only while its owned server still verifies. Leave
+                    // the fence in place on a retry from a stopped kernel.
+                    if updates
+                        .verify_running(port, frontend.index_hash.as_deref())
+                        .await
+                        .is_ok()
+                    {
+                        if let Err(error) = page.resume(&window) {
+                            log::warn!("Cannot restore the previous Bodhi page: {error}");
+                        }
+                    }
+                    return Err(error);
+                }
+                Ok(command)
+            },
+            |version| {
+                page.resume(&window).map_err(|_| {
+                    format!("Bamboo {version} 已启用，当前页面刷新失败。请从帮助菜单重试。")
+                })
+            },
+        )
+        .await?;
+    Ok(format!("Bamboo {version} 已在当前窗口启用。"))
+}
+
+async fn recover_running_page<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+    let updates = app.state::<Updates>();
+    let _lock = updates.profile.update_lock()?;
+    let frontend = crate::frontend::resolve(app)?;
+    let version = updates
+        .verify_running(crate::web_service_port(), frontend.index_hash.as_deref())
+        .await?;
+    let window = app
+        .get_webview_window("main")
+        .ok_or("Bodhi's main window is unavailable.")?;
+    app.state::<UpdatePage>().resume(&window)?;
+    Ok(format!("已恢复连接到 Bamboo {version}。"))
+}
+
+fn report<R: Runtime>(app: &AppHandle<R>, result: Result<String, String>) {
     let (message, kind) = match result {
-        Ok(()) => (
-            "Bamboo 内核已下载并校验。退出并重新打开 Bodhi 后生效。".into(),
-            MessageDialogKind::Info,
-        ),
+        Ok(message) => (message, MessageDialogKind::Info),
         Err(error) => {
             log::warn!("Bamboo kernel update failed");
             (error, MessageDialogKind::Error)
@@ -712,7 +968,7 @@ mod tests {
             lotus_manifest_sha256: "a".repeat(64),
             bundled_version: "2026.11.18".into(),
             bundled_binary: PathBuf::new(),
-            running_version: OnceLock::new(),
+            running_version: Mutex::new(None),
         }
     }
 
@@ -776,9 +1032,15 @@ mod tests {
         assert!(selected(&baseline).unwrap().is_none());
         let binary = vec![0; MIN_BINARY as usize];
         write_selection(&baseline, receipt("2026.11.18", "2026.11.19"), &binary);
+        let mut state = ProfileState::read(&baseline.profile).unwrap();
+        state.pending = state.selection.take();
+        state.save(&baseline.profile).unwrap();
         let next = receipt("2026.11.19", "2026.11.20");
+        assert!(selected(&baseline).unwrap().is_none());
         assert!(baseline.check_transition(&next).is_err());
 
+        state.selection = state.pending.take();
+        state.save(&baseline.profile).unwrap();
         let restarted = updates(temp.path());
         let selected = selected(&restarted).unwrap().unwrap();
         assert_eq!(selected.version, "2026.11.19");
