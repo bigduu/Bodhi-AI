@@ -624,7 +624,13 @@ pub fn run_from_menu<R: Runtime>(app: &AppHandle<R>) {
             let upgrade = (|| {
                 let path = file.into_path().map_err(|e| e.to_string())?;
                 let bytes = read_json(&path).map_err(|e| e.to_string())?;
-                let upgrade = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                let upgrade = serde_json::from_slice(&bytes).map_err(|error| {
+                    format!(
+                        "更新凭据格式有误（第 {} 行，第 {} 列）。",
+                        error.line(),
+                        error.column()
+                    )
+                })?;
                 handle.state::<Updates>().check_transition(&upgrade)?;
                 Ok::<_, String>(upgrade)
             })();
@@ -670,7 +676,7 @@ fn report<R: Runtime>(app: &AppHandle<R>, result: Result<(), String>) {
             MessageDialogKind::Info,
         ),
         Err(error) => {
-            log::warn!("Bamboo kernel update failed: {error}");
+            log::warn!("Bamboo kernel update failed");
             (error, MessageDialogKind::Error)
         }
     };
