@@ -148,11 +148,21 @@ test("rpm extraction accepts an rpm-rs payload and a spaced installer path", {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, "Bodhi AI-2026.11.19-1.aarch64.rpm");
   fs.copyFileSync(path.join(__dirname, "tests/fixtures/rpm-rs-no-longarchivesize.rpm"), file);
-  const failed = path.join(root, "pipefail");
-  fs.mkdirSync(failed);
-  assert.throws(() => execFileSync("bash", ["-o", "pipefail", "-c",
-    'rpm2cpio "$1" | cpio -id --no-absolute-filenames --quiet', "bodhi-rpm-payload", file],
-    { cwd: failed, stdio: ["ignore", "ignore", "pipe"] }));
+  // rpm 4.18 exits 1 when LONGARCHIVESIZE is absent. Newer rpm2cpio may exit 0.
+  // The release image is Ubuntu 22.04, so keep that failure mode when it applies.
+  let rpmStatus = 0;
+  try {
+    execFileSync("rpm2cpio", [file], { stdio: ["ignore", "ignore", "pipe"] });
+  } catch (error) {
+    rpmStatus = error.status;
+  }
+  if (rpmStatus !== 0) {
+    const failed = path.join(root, "pipefail");
+    fs.mkdirSync(failed);
+    assert.throws(() => execFileSync("bash", ["-o", "pipefail", "-c",
+      'rpm2cpio "$1" | cpio -id --no-absolute-filenames --quiet', "bodhi-rpm-payload", file],
+      { cwd: failed, stdio: ["ignore", "ignore", "pipe"] }));
+  }
   const directory = path.join(root, "extracted");
   fs.mkdirSync(directory);
   const run = (program, args, options) => execFileSync(program, args, {
