@@ -180,6 +180,16 @@ test("Linux ARM64 validates package metadata using each format's architecture", 
   const rpm = ["rpm", "-qp", "--queryformat", "%{VERSION}|%{RELEASE}|%{ARCH}", "installer.rpm"];
   out.verifyLinuxPackage(command(deb, "Version: 2026.10.30\nArchitecture: arm64"), "deb", "installer.deb", ctx.version, ARM_LINUX);
   out.verifyLinuxPackage(command(rpm, "2026.10.30|1|aarch64"), "rpm", "installer.rpm", ctx.version, ARM_LINUX);
+  const spacedRpm = "bundle/rpm/Bodhi AI-2026.11.19-1.aarch64.rpm";
+  const spacedDeb = "bundle/deb/Bodhi AI_2026.11.19_arm64.deb";
+  out.verifyLinuxPackage(command(["rpm", "-qp", "--queryformat", "%{VERSION}|%{RELEASE}|%{ARCH}", spacedRpm], "2026.10.30|1|aarch64"), "rpm", spacedRpm, ctx.version, ARM_LINUX);
+  out.verifyLinuxPackage(command(["dpkg-deb", "-f", spacedDeb, "Version", "Architecture"], "Version: 2026.10.30\nArchitecture: arm64"), "deb", spacedDeb, ctx.version, ARM_LINUX);
+  assert.equal(out.installerMatch(["Bodhi AI_2026.11.19_aarch64.AppImage"], "Bodhi.AI_2026.11.19_aarch64.AppImage"), "Bodhi AI_2026.11.19_aarch64.AppImage");
+  assert.equal(out.installerMatch(["Bodhi AI_2026.11.19_arm64.deb"], "Bodhi.AI_2026.11.19_arm64.deb"), "Bodhi AI_2026.11.19_arm64.deb");
+  assert.equal(out.installerMatch(["Bodhi AI-2026.11.19-1.aarch64.rpm"], "Bodhi.AI-2026.11.19-1.aarch64.rpm"), "Bodhi AI-2026.11.19-1.aarch64.rpm");
+  assert.equal(out.installerMatch(["Bodhi.AI_2026.11.19_amd64.AppImage"], "Bodhi.AI_2026.11.19_amd64.AppImage"), "Bodhi.AI_2026.11.19_amd64.AppImage");
+  assert.throws(() => out.installerMatch(["Bodhi AI_2026.11.19_aarch64.AppImage", "Bodhi.AI_2026.11.19_aarch64.AppImage"], "Bodhi.AI_2026.11.19_aarch64.AppImage"));
+  assert.throws(() => out.installerMatch(["notes.txt"], "Bodhi.AI-2026.11.19-1.aarch64.rpm"));
   assert.throws(() => out.verifyLinuxPackage(command(deb, "Version: 2026.10.30\nArchitecture: amd64"), "deb", "installer.deb", ctx.version, ARM_LINUX));
   assert.throws(() => out.verifyLinuxPackage(command(rpm, "2026.10.30|1|arm64"), "rpm", "installer.rpm", ctx.version, ARM_LINUX));
 });

@@ -175,6 +175,11 @@ function linuxPackageArchitectures(target) {
   assert.equal(target, ARM_LINUX, "Unsupported Linux packaging target");
   return { appimage: "aarch64", deb: "arm64", rpm: "aarch64" };
 }
+function installerMatch(found, expected) {
+  const matches = found.filter(name => name.replaceAll(" ", ".") === expected);
+  assert.equal(matches.length, 1, `Missing original installer: ${expected}`);
+  return matches[0];
+}
 function names(version, target) {
   assert.ok(V3_CONTRACT.targets.includes(target), "Unsupported installer target");
   if (target === "aarch64-apple-darwin") return [`Bodhi.AI_${version}_aarch64.dmg`, "Bodhi.AI_aarch64.app.tar.gz"];
@@ -453,9 +458,7 @@ function staticOutputs(root, ctx, target, output) {
   for (let index = 0; index < directories.length; index++) {
     const format = directories[index];
     const directory = path.join(bundle, format);
-    const matches = fs.readdirSync(directory).filter(name => name.replaceAll(" ", ".") === expected[index]);
-    assert.equal(matches.length, 1, `Missing original installer: ${expected[index]}`);
-    const file = path.join(directory, matches[0]); hashFile(file);
+    const file = path.join(directory, installerMatch(fs.readdirSync(directory), expected[index])); hashFile(file);
     if (format === "deb" || format === "rpm") verifyLinuxPackage(command, format, file, ctx.version, target);
     if (contract.schemaVersion === 3 && !target.includes("darwin")) {
       const appDir = format === "appimage" ? path.join(directory, "Bodhi AI.AppDir") : undefined;
@@ -513,7 +516,7 @@ function main() {
 }
 module.exports = { ROOT, REPOSITORY, NATIVE_TARGETS, BUILD, CAPTURE, RETAIN, PREFLIGHT, RESERVATION, MANIFEST, SHA, DIGEST, bytes, sha256,
   ORIGINAL_RELEASE_WORKFLOW_BLOB, V2_RELEASE_WORKFLOW_BLOB, ARM64_RELEASE_WORKFLOW_BLOB,
-  childEnv, api, pages, context, controller, workflow, originalContext, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, names, artifactName, artifact, download, hashFile,
+  childEnv, api, pages, context, controller, workflow, originalContext, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, installerMatch, names, artifactName, artifact, download, hashFile,
   releaseContract, releaseContext, releaseMatrix, verifyReservation, releaseReservation, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks,
   stamped, stamp, verifyLinuxPackage, staticOutputs, captureTarget, outputs };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Original Bodhi output: ${error.message}`); process.exitCode = 1; } }

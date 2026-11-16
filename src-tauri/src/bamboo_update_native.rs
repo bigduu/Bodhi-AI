@@ -9,6 +9,44 @@ const CANDIDATE: &str = "2026.11.22";
 const CANDIDATE_SOURCE: &str = "13336567999504a8c7deb89fba94f7907b04c3ee";
 const CANDIDATE_MANIFEST_SHA: &str =
     "b50c37033e436a020fcf89f6a21361e0c55892e7bf1b14215a4529c6f88a6a78";
+const ARM_CANDIDATE: &str = "2026.11.23";
+const ARM_CANDIDATE_SOURCE: &str = "4aee88a853260de306e82d56cd7008a4bc660c9b";
+const ARM_CANDIDATE_MANIFEST_SHA: &str =
+    "3e6505847466c23429f9e401e5dbb0ee58cf8eb2a1e6f156c0582e86a9b772ab";
+
+struct PublishedTransition {
+    baseline: &'static str,
+    baseline_manifest_sha: &'static str,
+    baseline_schema: u32,
+    candidate: &'static str,
+    candidate_source: &'static str,
+    candidate_manifest_sha: &'static str,
+}
+
+fn published_transition() -> PublishedTransition {
+    if matches!(
+        TARGET,
+        "aarch64-unknown-linux-gnu" | "aarch64-pc-windows-msvc"
+    ) {
+        PublishedTransition {
+            baseline: CANDIDATE,
+            baseline_manifest_sha: CANDIDATE_MANIFEST_SHA,
+            baseline_schema: 3,
+            candidate: ARM_CANDIDATE,
+            candidate_source: ARM_CANDIDATE_SOURCE,
+            candidate_manifest_sha: ARM_CANDIDATE_MANIFEST_SHA,
+        }
+    } else {
+        PublishedTransition {
+            baseline: BASELINE,
+            baseline_manifest_sha: BASELINE_MANIFEST_SHA,
+            baseline_schema: 2,
+            candidate: CANDIDATE,
+            candidate_source: CANDIDATE_SOURCE,
+            candidate_manifest_sha: CANDIDATE_MANIFEST_SHA,
+        }
+    }
+}
 
 struct DesktopRuntime(SidecarState);
 
@@ -73,6 +111,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     if !native_assembly {
         return;
     }
+    let transition = published_transition();
 
     let scratch = tempfile::tempdir().unwrap();
     let profile = scratch.path().join("bamboo-data");
@@ -85,14 +124,14 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     let index = crate::frontend::hash_bytes(&fs::read(frontend.join("index.html")).unwrap());
 
     let client = release_client().unwrap();
-    let base = format!("{RELEASES}/v{BASELINE}");
-    let (schema, manifest) = download_manifest(&client, &base, BASELINE_MANIFEST_SHA)
+    let base = format!("{RELEASES}/v{}", transition.baseline);
+    let (schema, manifest) = download_manifest(&client, &base, transition.baseline_manifest_sha)
         .await
         .unwrap();
-    assert_eq!(schema, 2);
+    assert_eq!(schema, transition.baseline_schema);
     let manifest: Manifest = serde_json::from_slice(&manifest).unwrap();
     assert_eq!(manifest.schema_version, schema);
-    assert_eq!(manifest.version, BASELINE);
+    assert_eq!(manifest.version, transition.baseline);
     let mut artifacts = manifest
         .artifacts
         .into_iter()
@@ -101,7 +140,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     assert!(artifacts.next().is_none());
     check_artifact(&artifact).unwrap();
     let baseline = scratch.path().join(binary_asset());
-    install_binary(&client, &base, &baseline, &artifact, BASELINE)
+    install_binary(&client, &base, &baseline, &artifact, transition.baseline)
         .await
         .unwrap();
 
@@ -125,7 +164,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .await
         .unwrap();
     let old_version = sidecar::owned_version(port, &old_status).await.unwrap();
-    assert_eq!(old_version, BASELINE);
+    assert_eq!(old_version, transition.baseline);
     assert!(
         Profile::open(&profile.data).unwrap().writer().is_err(),
         "a running child must own the profile even with a different port"
@@ -164,9 +203,9 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         schema_version: 1,
         bodhi_version: "0.0.0".into(),
         lotus_manifest_sha256: lotus.into(),
-        from_bamboo_version: BASELINE.into(),
-        bamboo_version: CANDIDATE.into(),
-        source_revision: CANDIDATE_SOURCE.into(),
+        from_bamboo_version: transition.baseline.into(),
+        bamboo_version: transition.candidate.into(),
+        source_revision: transition.candidate_source.into(),
         manifest_sha256: "a".repeat(64),
     };
     assert!(updates
@@ -175,7 +214,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .unwrap_err()
         .contains("SHA-256"));
     assert!(ProfileState::read(&profile).unwrap().pending.is_none());
-    upgrade.manifest_sha256 = CANDIDATE_MANIFEST_SHA.into();
+    upgrade.manifest_sha256 = transition.candidate_manifest_sha.into();
     updates.stage(upgrade).await.unwrap();
     let staged = ProfileState::read(&profile).unwrap();
     assert!(staged.selection.is_none() && staged.started_version.is_none());
@@ -209,10 +248,13 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .await
         .unwrap_err();
     assert_eq!(unable_to_park, "update page did not commit");
-    assert_eq!(sidecar::reported_version(port).await.unwrap(), BASELINE);
+    assert_eq!(
+        sidecar::reported_version(port).await.unwrap(),
+        transition.baseline
+    );
     assert_eq!(
         updates.verify_running(port, Some(&index)).await.unwrap(),
-        BASELINE
+        transition.baseline
     );
 
     let command = |kernel: &Kernel| {
@@ -254,7 +296,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
             Some(&index),
             async |kernel| command(kernel),
             |version| {
-                assert_eq!(version, CANDIDATE);
+                assert_eq!(version, transition.candidate);
                 let (observed, owner) = updates.running()?.unwrap();
                 assert_eq!(observed, version);
                 assert!(owner.is_ready());
@@ -263,7 +305,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         )
         .await
         .unwrap();
-    assert_eq!(active, CANDIDATE);
+    assert_eq!(active, transition.candidate);
     assert_eq!(sidecar::reported_version(port).await.unwrap(), active);
     let state = ProfileState::read(&profile).unwrap();
     assert!(state.pending.is_none());
