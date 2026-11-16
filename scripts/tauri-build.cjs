@@ -38,7 +38,12 @@ function appImageTarget(args, env = process.env, platform = process.platform) {
 module.exports = { appImageTarget };
 
 if (require.main === module) {
-  if (appImageTarget(process.argv.slice(3))) {
+  // Tauri's native build changes the working directory to src-tauri.
+  const productRoot = process.cwd();
+  const args = process.argv.slice(3);
+  const target = process.env.BAMBOO_SIDECAR_TARGET;
+  const releaseTarget = process.env.BAMBOO_SIDECAR_SOURCE === "release" && TARGETS.has(target) ? target : undefined;
+  if (appImageTarget(args)) {
     const patchelf = path.join(__dirname, "appimage-patchelf.sh");
     fs.accessSync("/usr/bin/patchelf", fs.constants.X_OK);
     fs.accessSync(patchelf, fs.constants.X_OK);
@@ -55,7 +60,7 @@ if (require.main === module) {
     if (stamped || code) return code || 0;
     stamped = true;
     try {
-      require("./rpm-longarchivesize.cjs").rewriteBuiltRpms(process.cwd(), process.argv.slice(3));
+      require("./rpm-longarchivesize.cjs").rewriteBuiltRpms(productRoot, args, releaseTarget);
       return 0;
     } catch (error) {
       console.error(`RPM longarchivesize: ${error.message}`);
