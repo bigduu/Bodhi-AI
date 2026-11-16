@@ -140,9 +140,11 @@ Bodhi instances separate `BAMBOO_DATA_DIR` values and ports. A standalone CLI
 that opens the same profile needs a compatible kernel version. Use a separate
 profile for standalone writers that run concurrently or use an older kernel.
 
-The existing native feature jobs use the published Bamboo 2026.11.19 V2 manifest
-and upgrade that kernel to the published 2026.11.22 V3 binary with the staged
-Lotus package. The test uses the same managed process, profile lease and update
+The macOS ARM64, Linux x64 and Windows x64 feature jobs use the published Bamboo
+2026.11.19 V2 manifest and upgrade that kernel to the published 2026.11.22 V3
+binary with the staged Lotus package. The Linux ARM64 and Windows ARM64 jobs
+upgrade the published 2026.11.22 V3 binary to the published 2026.11.23 V3 binary.
+The test uses the same managed process, profile lease and update
 code as the desktop shell. It rejects an incorrect manifest digest and a stale
 confirmation, keeps the first process open during staging and a failed page
 transition, and blocks the switch while an
