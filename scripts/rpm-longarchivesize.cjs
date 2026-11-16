@@ -237,9 +237,10 @@ function bundleLayout(args) {
       if (token.value) bundles.push(...token.value.split(",").filter(Boolean));
     }
   }
-  if (sawBundles && !bundles.includes("rpm")) return null;
+  const rpmRequested = bundles.includes("rpm");
+  if (sawBundles && !rpmRequested) return null;
   const targets = (values.target || []).map((target) => target.trim()).filter(Boolean);
-  return { targets: targets.length ? targets : [undefined], profile: values.debug ? "debug" : "release" };
+  return { targets: targets.length ? targets : [undefined], profile: values.debug ? "debug" : "release", rpmRequested };
 }
 
 function isDirectory(directory) {
@@ -277,11 +278,16 @@ function findBuiltRpms(root, layout) {
   return [...new Set(files)];
 }
 
-function rewriteBuiltRpms(root, args) {
+function rewriteBuiltRpms(root, args, releaseTarget) {
   const layout = bundleLayout(args);
   if (!layout) return [];
+  const files = findBuiltRpms(root, layout);
+  if (releaseTarget && layout.rpmRequested && layout.profile === "release" && layout.targets.includes(releaseTarget)) {
+    const directory = path.join(root, "target", releaseTarget, "release", "bundle", "rpm");
+    if (!files.some((file) => path.dirname(file) === directory)) fail(`Missing required Linux release RPM in ${directory}`);
+  }
   const changed = [];
-  for (const file of findBuiltRpms(root, layout)) {
+  for (const file of files) {
     const result = rewriteRpmFile(file);
     if (result.changed) {
       console.log(`RPM longarchivesize: recorded ${result.size} uncompressed payload bytes in ${result.file}`);

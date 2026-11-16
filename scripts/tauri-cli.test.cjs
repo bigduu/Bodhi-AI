@@ -136,7 +136,7 @@ test("the Linux AppImage release entrypoint supplies the wrapper to the locally 
   const wrapper = path.join(f.root, "scripts/appimage-patchelf.sh");
   fs.copyFileSync(path.join(__dirname, "appimage-patchelf.sh"), wrapper);
   fs.chmodSync(wrapper, 0o755);
-  const args = ["--target", linuxArm, "--bundles", "appimage,deb,rpm", "--verbose"];
+  const args = ["--target", linuxArm, "--bundles", "appimage,deb", "--verbose"];
   const { result, observed } = invoke(f, [process.env.npm_execpath, "run", "--silent", "tauri:build", "--", ...args], releaseEnvironment(linuxArm));
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(observed, { entry: "official-cli", args: ["build", ...args] });
@@ -202,10 +202,12 @@ test("tauri:build records LONGARCHIVESIZE only after the linux rpm bundle succee
   assert.ok(fs.readFileSync(failedOther).equals(failedOtherBytes));
 
   const succeeded = fixture(t);
+  fs.mkdirSync(path.join(succeeded.root, "src-tauri"));
+  fs.appendFileSync(path.join(succeeded.root, "node_modules/@tauri-apps/cli/tauri.js"), '\nprocess.chdir("src-tauri");\n');
   const rpm = place(succeeded, linuxX64);
   const other = place(succeeded, linuxArm);
   const otherBytes = fs.readFileSync(other);
-  const success = invoke(succeeded, ["scripts/tauri-build.cjs", "build", "--target", linuxX64, "--bundles", "appimage,deb,rpm"]);
+  const success = invoke(succeeded, ["scripts/tauri-build.cjs", "build", "--target", linuxX64, "--bundles", "deb,rpm"], releaseEnvironment(linuxX64));
   assert.equal(success.result.status, 0, success.result.stderr);
   assert.ok(fs.readFileSync(rpm).equals(addLongArchiveSize(source)));
   assert.ok(fs.readFileSync(other).equals(otherBytes));
@@ -217,4 +219,17 @@ test("tauri:build records LONGARCHIVESIZE only after the linux rpm bundle succee
   const explicitRun = invoke(explicit, ["scripts/tauri-build.cjs", "build", "--target", linuxArm, "--bundles", "rpm"]);
   assert.equal(explicitRun.result.status, 0, explicitRun.result.stderr);
   assert.ok(fs.readFileSync(explicitRpm).equals(addLongArchiveSize(source)));
+});
+
+test("tauri:build requires the requested Linux release RPM in the workspace output", (t) => {
+  const f = fixture(t);
+  const nested = path.join(f.root, "src-tauri", "target", linuxArm, "release", "bundle", "rpm");
+  fs.mkdirSync(nested, { recursive: true });
+  const misplaced = path.join(nested, "Bodhi AI-0.0.0-1.aarch64.rpm");
+  const original = fs.readFileSync(path.join(__dirname, "tests/fixtures/rpm-rs-no-longarchivesize.rpm"));
+  fs.writeFileSync(misplaced, original);
+  const { result } = invoke(f, ["scripts/tauri-build.cjs", "build", "--target", linuxArm, "--bundles", "rpm"], releaseEnvironment(linuxArm));
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Missing required Linux release RPM/);
+  assert.deepEqual(fs.readFileSync(misplaced), original);
 });
