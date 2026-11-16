@@ -83,10 +83,14 @@ jobs:
         include:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
           - platform: macos-latest
             target: aarch64-apple-darwin
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
+          - platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
     env:
@@ -139,6 +143,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: lts/*
+          architecture: ${{ startsWith(matrix.target, 'aarch64-') && 'arm64' || 'x64' }}
           cache: npm
           cache-dependency-path: package-lock.json
 
@@ -154,7 +159,22 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.99.1-${{ matrix.target }}
           targets: ${{ matrix.target }}
+
+      - name: Verify native runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const assert = require("node:assert/strict");
+          const { execFileSync } = require("node:child_process");
+          const target = process.env.TAURI_ENV_TARGET_TRIPLE;
+          const [arch, , os] = target.split("-");
+          assert.equal(process.arch, arch === "aarch64" ? "arm64" : "x64");
+          assert.equal(process.platform, { darwin: "darwin", linux: "linux", windows: "win32" }[os]);
+          assert.equal(execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (\S+)\s*$/m)?.[1], target);
+          NODE
 
       - name: Cache exact published Bamboo assets
         uses: actions/cache@v5
