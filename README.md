@@ -26,6 +26,19 @@ Next interface.
 
 ## Install
 
+### Install from the terminal
+
+On Apple Silicon Macs with macOS 13.5 or later and x64 Linux distributions that use APT, run:
+
+```sh
+curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://bigduu.github.io/Pavilion/install.sh | sh
+```
+
+- **macOS** installation places Bodhi in `~/Applications`. If macOS blocks the first launch, go to **System Settings → Privacy & Security → Open Anyway**.
+- **Linux** needs Python 3 or `jq`. Follow the `sudo` and APT prompts to install the official `.deb` and its dependencies.
+
+[Bodhi download page](https://bigduu.github.io/Pavilion/download?lang=en#terminal-install)
+
 | Platform | How |
 |---|---|
 | macOS Apple Silicon (recommended) | `brew tap bigduu/tap && brew trust bigduu/tap && brew install --cask bigduu/tap/bodhi` |

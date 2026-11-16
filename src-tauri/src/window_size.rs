@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 use tauri::utils::config::WindowConfig;
+use tauri::webview::PageLoadEvent;
 use tauri::{App, AppHandle, LogicalSize, Manager, Runtime, WebviewWindowBuilder};
+
+use crate::bamboo_update_page::UpdatePage;
 
 const FILE_NAME: &str = "main-window-size.json";
 
@@ -73,7 +76,18 @@ pub(crate) fn create_main_window<R: Runtime>(app: &App<R>) -> tauri::Result<()> 
         }
     }
     // Apply the size before the first visible frame, using the configured centering.
-    WebviewWindowBuilder::from_config(app, &config)?.build()?;
+    app.manage(UpdatePage::new(config.use_https_scheme));
+    let handle = app.handle().clone();
+    WebviewWindowBuilder::from_config(app, &config)?
+        .on_navigation(move |url| handle.state::<UpdatePage>().allows_navigation(url))
+        .on_page_load(|window, payload| {
+            // Wry emits Started at WKWebView/WebKitGTK commit and at
+            // WebView2 ContentLoading, after the old document is replaced.
+            if payload.event() == PageLoadEvent::Started {
+                window.state::<UpdatePage>().committed(payload.url());
+            }
+        })
+        .build()?;
     Ok(())
 }
 

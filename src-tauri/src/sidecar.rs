@@ -4,7 +4,7 @@
 //! spawns the standalone `bamboo serve` binary as a Tauri sidecar and owns its
 //! lifecycle. Two guarantees keep the backend from outliving the app:
 //!
-//! 1. **Graceful** — the spawned [`CommandChild`] is held in [`SidecarState`]
+//! 1. **Graceful** — the spawned [`SharedChild`] is held in [`SidecarState`]
 //!    and killed on `RunEvent::Exit` / `ExitRequested`.
 //! 2. **Crash-safe** — `bamboo serve --parent-pid <this-pid>` runs an orphan
 //!    guard: a dedicated thread that exits the backend when this process goes
@@ -14,25 +14,112 @@
 //!    is the half a naive sidecar misses — the reason a backend can outlive a
 //!    force-quit.
 
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use shared_child::SharedChild;
 use tauri::{AppHandle, Manager, Runtime};
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
-/// Holds the running sidecar child so the app-exit handler can kill it.
-/// `None` until the child is spawned (or if an external backend was reused).
+/// Owns the managed child and distinguishes a kernel switch from app exit.
 #[derive(Default)]
 pub struct SidecarState {
-    child: Mutex<Option<CommandChild>>,
+    child: Mutex<Option<ManagedChild>>,
     exiting: AtomicBool,
+}
+
+#[derive(Clone)]
+struct ManagedChild {
+    process: Arc<SharedChild>,
+    startup: StartupStatus,
+}
+
+impl SidecarState {
+    pub(crate) fn start(
+        &self,
+        command: Command,
+        writer: File,
+        port: u16,
+    ) -> Result<StartupStatus, String> {
+        let mut recorded = self.child.lock().map_err(|e| e.to_string())?;
+        if self.exiting.load(Ordering::SeqCst) {
+            return Err("Bodhi is exiting".into());
+        }
+        if let Some(child) = &*recorded {
+            if child
+                .process
+                .try_wait()
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                return Err("The previous managed Bamboo is still running.".into());
+            }
+        }
+        let (child, status) =
+            spawn_owned(command, writer, port).map_err(|e| format!("spawn bamboo sidecar: {e}"))?;
+        log::info!("Managed bamboo pid={} port={port}", child.id());
+        *recorded = Some(ManagedChild {
+            process: child,
+            startup: status.clone(),
+        });
+        Ok(status)
+    }
+
+    pub(crate) async fn stop(&self) -> Result<(), String> {
+        if self.exiting.load(Ordering::SeqCst) {
+            return Err("Bodhi is exiting".into());
+        }
+        let ManagedChild { process, startup } = self
+            .child
+            .lock()
+            .map_err(|e| e.to_string())?
+            .clone()
+            .ok_or("Bodhi does not own a Bamboo process.")?;
+        process
+            .kill()
+            .map_err(|e| format!("stop managed Bamboo: {e}"))?;
+        let exited =
+            tokio::task::spawn_blocking(move || process.wait_timeout(Duration::from_secs(10)))
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| format!("reap managed Bamboo: {e}"))?;
+        if exited.is_none() {
+            return Err("The managed Bamboo process did not exit. Try applying the update again after it stops.".into());
+        }
+        startup.0.store(2, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub(crate) fn exit(&self) {
+        self.exiting.store(true, Ordering::SeqCst);
+        if let Ok(mut recorded) = self.child.lock() {
+            if let Some(child) = recorded.take() {
+                log::info!("Killing bamboo sidecar on app exit");
+                let _ = child.process.kill();
+            }
+        }
+    }
 }
 
 /// 0 = starting, 1 = this child bound its HTTP listener, 2 = exited/error.
 #[derive(Clone, Default)]
 pub struct StartupStatus(Arc<AtomicU8>);
+
+impl StartupStatus {
+    pub(crate) fn is_ready(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == 1
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ready_for_test() -> Self {
+        Self(Arc::new(AtomicU8::new(1)))
+    }
+}
 
 pub fn require_available_port(port: u16) -> Result<(), String> {
     if port == 0 {
@@ -40,7 +127,7 @@ pub fn require_available_port(port: u16) -> Result<(), String> {
     }
     std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .map(drop)
-        .map_err(|_| format!("Port {port} is unavailable. Another local service may be using it. Launch Bodhi with a different BODHI_BACKEND_PORT; the existing service was left untouched."))
+        .map_err(|_| format!("Port {port} is unavailable. Another local service may be using it."))
 }
 
 fn local_log_filter(existing: &str) -> String {
@@ -112,7 +199,7 @@ pub async fn wait_for_health(
                 .map(|status| status.0.load(Ordering::SeqCst))
                 .unwrap_or(1);
             if state == 2 {
-                return Err("The managed Bamboo process exited before startup completed. Check the engine logs and restart Bodhi.".into());
+                return Err("The managed Bamboo process exited before startup completed.".into());
             }
             if state == 1 {
                 if let Ok(resp) = client.get(&url).send().await {
@@ -141,54 +228,81 @@ pub async fn wait_for_health(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     };
-    tokio::time::timeout(Duration::from_secs(max_secs), poll).await
-        .map_err(|_| format!("The local engine did not become ready on port {port} within {max_secs}s. Check its logs and restart Bodhi."))?
+    tokio::time::timeout(Duration::from_secs(max_secs), poll)
+        .await
+        .map_err(|_| {
+            format!("The local engine did not become ready on port {port} within {max_secs}s.")
+        })?
 }
 
-/// Spawn `bamboo serve`, record its child handle, and return its startup state.
-///
-/// IMPORTANT: [`CommandChild`] is held in [`SidecarState`] for app-exit cleanup.
-/// The `--parent-pid` orphan guard
-/// (wired below) is the crash-safe backstop for unclean exits where that kill
-/// never runs.
-pub fn spawn<R: Runtime>(
+pub(crate) async fn reported_version(port: u16) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    struct Ready {
+        status: String,
+        version: String,
+    }
+
+    let ready = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(format!("http://127.0.0.1:{port}/readyz"))
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| e.to_string())?
+        .json::<Ready>()
+        .await
+        .map_err(|e| e.to_string())?;
+    if ready.status != "ok" {
+        return Err("Bamboo did not report a ready runtime.".into());
+    }
+    Ok(ready.version)
+}
+
+pub(crate) async fn owned_version(port: u16, owner: &StartupStatus) -> Result<String, String> {
+    let version = reported_version(port).await?;
+    if !owner.is_ready() {
+        return Err("The managed Bamboo exited while checking its version.".into());
+    }
+    Ok(version)
+}
+
+/// Prepare the same owned Bamboo command for initial startup and kernel switches.
+pub(crate) fn command<R: Runtime>(
     app: &AppHandle<R>,
     port: u16,
-    data_dir: &std::path::Path,
-    static_dir: Option<&std::path::Path>,
-) -> Result<StartupStatus, String> {
-    let state = app
-        .try_state::<SidecarState>()
-        .ok_or("missing sidecar state")?;
-    let mut recorded = state.child.lock().map_err(|e| e.to_string())?;
-    if state.exiting.load(Ordering::SeqCst) {
-        return Err("Bodhi is exiting".into());
-    }
-    let mut args = vec![
-        "serve".to_string(),
-        "--parent-pid".to_string(),
-        std::process::id().to_string(),
-        "--port".to_string(),
-        port.to_string(),
-        "--bind".to_string(),
-        "127.0.0.1".to_string(),
-        "--data-dir".to_string(),
-        data_dir.to_string_lossy().into_owned(),
-    ];
+    data_dir: &Path,
+    static_dir: Option<&Path>,
+    kernel: Option<&Path>,
+) -> Result<Command, String> {
+    let command = match kernel {
+        Some(path) => app.shell().command(path),
+        None => app
+            .shell()
+            .sidecar("bamboo")
+            .map_err(|e| format!("resolve bamboo sidecar: {e}"))?,
+    };
+    let mut command: Command = command.into();
+    command
+        .args([
+            "serve",
+            "--parent-pid",
+            &std::process::id().to_string(),
+            "--port",
+            &port.to_string(),
+            "--bind",
+            "127.0.0.1",
+            "--data-dir",
+        ])
+        .arg(data_dir);
     if let Some(dir) = static_dir {
-        args.extend([
-            "--static-dir".to_string(),
-            dir.to_string_lossy().into_owned(),
-        ]);
+        command.arg("--static-dir").arg(dir);
     }
-    let mut command = app
-        .shell()
-        .sidecar("bamboo")
-        .map_err(|e| format!("resolve bamboo sidecar: {e}"))?
-        .args(args)
-        .set_raw_out(true);
     if static_dir.is_some() {
-        command = command.env(
+        command.env(
             "RUST_LOG",
             local_log_filter(&std::env::var("RUST_LOG").unwrap_or_default()),
         );
@@ -197,61 +311,68 @@ pub fn spawn<R: Runtime>(
     let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
     let [node, host, browser] = crate::browser_runtime::resolve(&resources)?;
     log::info!("Managed browser runtime: {}", host.display());
-    command = command
+    command
         .env("BAMBOO_BROWSER_NODE", node)
         .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
         .env("BAMBOO_BROWSER_EXECUTABLE", browser);
 
-    let (mut rx, child) = command
-        .spawn()
-        .map_err(|e| format!("spawn bamboo sidecar: {e}"))?;
-    log::info!("Managed bamboo pid={} port={port}", child.pid());
-    *recorded = Some(child);
-    drop(recorded);
-    let status = StartupStatus::default();
-    let reader_status = status.clone();
+    Ok(command)
+}
 
-    // Drain the event stream so the child's stdout/stderr pipe never fills and
-    // blocks the backend, and surface its logs under our logger.
-    tauri::async_runtime::spawn(async move {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => {
-                    consume_output(&mut stdout, &bytes, port, &reader_status)
-                }
-                CommandEvent::Stderr(bytes) => {
-                    consume_output(&mut stderr, &bytes, port, &reader_status)
-                }
-                CommandEvent::Error(err) => {
-                    reader_status.0.store(2, Ordering::SeqCst);
-                    log::warn!("[bamboo] sidecar error: {err}");
-                }
-                CommandEvent::Terminated(payload) => {
-                    reader_status.0.store(2, Ordering::SeqCst);
-                    log::warn!("[bamboo] sidecar terminated: {payload:?}");
+fn spawn_owned(
+    mut command: Command,
+    writer: File,
+    port: u16,
+) -> io::Result<(Arc<SharedChild>, StartupStatus)> {
+    // Bamboo serve holds the profile lease via stdin until its process exits,
+    // including if the shell is force-quit while the child is still alive.
+    command
+        .stdin(Stdio::from(writer))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = Arc::new(SharedChild::spawn(&mut command)?);
+    let status = StartupStatus::default();
+    drain(
+        child.take_stdout().expect("piped Bamboo stdout"),
+        port,
+        status.clone(),
+    );
+    drain(
+        child.take_stderr().expect("piped Bamboo stderr"),
+        port,
+        status.clone(),
+    );
+    let (process, exited) = (child.clone(), status.clone());
+    std::thread::spawn(move || {
+        let result = process.wait();
+        exited.0.store(2, Ordering::SeqCst);
+        log::info!("[bamboo] managed process exited: {result:?}");
+    });
+    Ok((child, status))
+}
+
+fn drain(mut pipe: impl Read + Send + 'static, port: u16, status: StartupStatus) {
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let mut bytes = [0; 4096];
+        loop {
+            match pipe.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(length) => consume_output(&mut buffer, &bytes[..length], port, &status),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    log::warn!("[bamboo] cannot read process output: {error}");
                     break;
                 }
-                _ => {}
             }
         }
-        reader_status.0.store(2, Ordering::SeqCst);
     });
-
-    Ok(status)
 }
 
 /// Kill the recorded sidecar, if any. Idempotent; safe to call on app exit.
 pub fn kill<R: Runtime>(app: &AppHandle<R>) {
     if let Some(state) = app.try_state::<SidecarState>() {
-        state.exiting.store(true, Ordering::SeqCst);
-        if let Ok(mut guard) = state.child.lock() {
-            if let Some(child) = guard.take() {
-                log::info!("Killing bamboo sidecar on app exit");
-                let _ = child.kill();
-            }
-        }
+        state.exit();
     }
 }
 
@@ -265,7 +386,7 @@ mod tests {
         let port = foreign.local_addr().unwrap().port();
         assert!(require_available_port(port)
             .unwrap_err()
-            .contains("BODHI_BACKEND_PORT"));
+            .contains(&format!("Port {port} is unavailable")));
         assert!(std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).is_ok());
         drop(foreign);
         assert!(require_available_port(port).is_ok());

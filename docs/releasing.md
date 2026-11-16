@@ -84,6 +84,73 @@ Chrome for Testing x64 Headless Shell under Windows x64 emulation. The runtime
 checks Node as ARM64 and Chromium as x64 on that target. The archive digests and
 the final file inventory are bound in the ARM64 browser runtime receipts.
 
+## Bamboo-only updates
+
+In a Bodhi build with the published Lotus Next package, open **Help → 安装 Bamboo
+内核更新…** and select the JSON compatibility receipt supplied by the maintainer.
+Bodhi downloads and verifies the published binary in the background. The update
+stays pending until you open **Help → 应用 Bamboo 内核更新…** and confirm all
+interactive and background tasks have finished and new submissions are paused.
+Bodhi moves the existing window to a bundled transition page, waits for the old
+Bamboo process to exit and acquires a fresh profile lease before starting the
+new one on the same port. Bodhi returns to the previous page once the new
+process serves the verified frontend. If opening the transition page fails and
+the old kernel still verifies, Bodhi restores the original page. After a
+failed handoff, the transition page remains available in the same window for a
+retry. A pending download also stays pending across a Bodhi relaunch.
+
+Import the same receipt again to repair a damaged copy of that version. If a
+confirmed switch fails after the old process has stopped, retry the approved
+version from the same menu. Bodhi retains the minimum version with the profile.
+For a repair during an initial startup failure, reopen Bodhi after reimporting
+the receipt.
+
+The receipt approves a specific transition from the currently running Bamboo for
+one Bodhi release and one Lotus manifest. Before distributing it, validate that
+exact transition with the published target binary, the existing browser runtime,
+and a populated copy of the Bamboo data directory. Cover opening existing sessions
+and Work records, serving Lotus and launching the bundled browser host. Keep the
+acceptance evidence with the receipt. If the candidate needs different browser
+host files or an incompatible change to the shell or data, deliver it through the
+normal Bodhi feature and release process.
+
+```json
+{
+  "schemaVersion": 1,
+  "bodhiVersion": "<Bodhi version>",
+  "lotusManifestSha256": "<manifestSha256 from that Bodhi release's frontend-package-lock.json>",
+  "fromBambooVersion": "<currently running Bamboo version>",
+  "bambooVersion": "<approved newer Bamboo version>",
+  "sourceRevision": "<sourceRevision from the selected official sidecar manifest>",
+  "manifestSha256": "<SHA-256 of that official sidecar manifest>"
+}
+```
+
+Distribute the receipt from a trusted project source. It supplies the compatibility
+decision and a digest that selects the exact published `bamboo-sidecars-v2.json`
+or `bamboo-sidecars-v3.json` asset. The manifest's schema must match its filename.
+Both use the same receipt format. Bodhi verifies the selected binary's size and
+hash, checks its version, and verifies the managed process and Lotus index on
+startup. A failed download leaves the current selection in place. Bodhi keeps
+the selection and minimum started Bamboo version with the data profile. Keep
+its `.bodhi-kernel` directory when moving or restoring a profile. If the
+selected artifact is missing, import the same receipt to repair it, or use a
+Bodhi build carrying a compatible newer kernel. Give concurrent
+Bodhi instances separate `BAMBOO_DATA_DIR` values and ports. A standalone CLI
+that opens the same profile needs a compatible kernel version. Use a separate
+profile for standalone writers that run concurrently or use an older kernel.
+
+The existing native feature jobs use the published Bamboo 2026.11.19 V2 manifest
+and upgrade that kernel to the published 2026.11.22 V3 binary with the staged
+Lotus package. The test uses the same managed process, profile lease and update
+code as the desktop shell. It rejects an incorrect manifest digest and a stale
+confirmation, keeps the first process open during staging and a failed page
+transition, and blocks the switch while an
+inherited profile lease remains. After that lease is released, it switches on the
+same port and reads back the session created before the upgrade. For the same
+local check, run the native commands above with `LOTUS_SOURCE=package` and
+`BAMBOO_SIDECAR_SOURCE=release`.
+
 ## Delivery policy and cutover
 
 The shared target flow is feature Unit/E2E → accepted `dev` → frozen
