@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -119,6 +120,72 @@ for (const [format, program] of [["deb", "dpkg-deb"], ["rpm", "bash"], ["nsis", 
     assert.equal(calls[0].program, program);
   });
 }
+
+test("rpm extraction passes the installer path as one argument", t => {
+  const installer = fixture(t, "rpm");
+  const { calls, verify } = verifier(t, installer);
+  verify();
+  const expectedArgs = [
+    "-c", 'rpm2cpio "$1" | cpio -id --no-absolute-filenames --quiet',
+    "bodhi-rpm-payload", installer.input.file,
+  ];
+  assert.deepEqual([...calls[0].args], expectedArgs);
+  assert.equal(calls[0].args.join(" ").includes("pipefail"), false);
+});
+
+function toolAvailable(name) {
+  try {
+    execFileSync("bash", ["-c", 'command -v "$1"', "tool", name], { stdio: "ignore" });
+    return true;
+  } catch { return false; }
+}
+
+test("rpm extraction accepts an rpm-rs payload and a spaced installer path", {
+  skip: !toolAvailable("bash") || !toolAvailable("cpio") || !toolAvailable("rpm2cpio"),
+}, t => {
+  const { extract } = require("./installer-payload.cjs");
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "bodhi-rpm-extract-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, "Bodhi AI-2026.11.19-1.aarch64.rpm");
+  fs.copyFileSync(path.join(__dirname, "tests/fixtures/rpm-rs-no-longarchivesize.rpm"), file);
+  const failed = path.join(root, "pipefail");
+  fs.mkdirSync(failed);
+  assert.throws(() => execFileSync("bash", ["-o", "pipefail", "-c",
+    'rpm2cpio "$1" | cpio -id --no-absolute-filenames --quiet', "bodhi-rpm-payload", file],
+    { cwd: failed, stdio: ["ignore", "ignore", "pipe"] }));
+  const directory = path.join(root, "extracted");
+  fs.mkdirSync(directory);
+  const run = (program, args, options) => execFileSync(program, args, {
+    ...options, stdio: ["ignore", "ignore", "pipe"], timeout: 30_000,
+  });
+  extract("rpm", file, directory, run);
+  assert.equal(fs.readFileSync(path.join(directory, "usr/lib/Bodhi AI/host.cjs"), "utf8"), "console.log('hello')\n");
+  const missing = path.join(root, "missing");
+  fs.mkdirSync(missing);
+  assert.throws(() => extract("rpm", path.join(root, "Bodhi AI-missing.rpm"), missing, run));
+});
+
+test("rpm extraction still fails when rpm2cpio writes no payload", {
+  skip: !toolAvailable("bash") || !toolAvailable("cpio"),
+}, t => {
+  const { extract } = require("./installer-payload.cjs");
+  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "bodhi-rpm-empty-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "rpm2cpio"), "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$EMPTY_SEEN\"\nexit 1\n", { mode: 0o755 });
+  const seen = path.join(root, "seen");
+  const directory = path.join(root, "extracted");
+  fs.mkdirSync(directory);
+  const file = path.join(root, "Bodhi AI-empty.rpm");
+  fs.writeFileSync(file, "not an rpm");
+  const run = (program, args, options) => execFileSync(program, args, {
+    ...options, env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, EMPTY_SEEN: seen },
+    stdio: ["ignore", "ignore", "pipe"], timeout: 30_000,
+  });
+  assert.throws(() => extract("rpm", file, directory, run));
+  assert.equal(fs.readFileSync(seen, "utf8"), `${file}\n`);
+});
 
 test("NSIS rejects a foreign machine and a same-machine sidecar with different bytes", t => {
   const installer = fixture(t, "nsis");

@@ -50,8 +50,13 @@ function extract(format, file, directory, run) {
   } else if (format === "deb") {
     run("dpkg-deb", ["--extract", file, directory], { cwd: directory });
   } else if (format === "rpm") {
-    // Shell owns the stream, while paths stay arguments rather than script text.
-    run("bash", ["-o", "pipefail", "-c", 'rpm2cpio "$1" | cpio -id --no-absolute-filenames --quiet',
+    // Tauri CLI 2.5 builds RPMs with rpm-rs 0.16, which omits RPMTAG_LONGARCHIVESIZE.
+    // rpm2cpio 4.18 still writes the whole cpio payload, then exits 1 with an empty
+    // message because the copied length is not 0. pipefail turns that into a capture
+    // failure after AppImage and deb have already verified. The installer path is
+    // "$1", never spliced into the script, so a space in the product name cannot
+    // split it. cpio's status is the result; a missing or truncated payload fails.
+    run("bash", ["-c", 'rpm2cpio "$1" | cpio -id --no-absolute-filenames --quiet',
       "bodhi-rpm-payload", file], { cwd: directory });
   } else {
     run("7z", ["x", "-y", "-bb0", "-bso0", `-o${directory}`, "--", file], { cwd: directory });
@@ -137,4 +142,4 @@ function verifyInstallerPayload({ format, file, target, shell, sidecar, browserR
   }
 }
 
-module.exports = { verifyInstallerPayload };
+module.exports = { extract, verifyInstallerPayload };
