@@ -45,6 +45,32 @@ if (require.main === module) {
     process.env.NO_STRIP = "1";
     process.env.PATCHELF = patchelf;
   }
+  // Tauri CLI 2.5 resolves on success and calls process.exit only on failure.
+  // Stamp RPMs after the bundle exists: beforeExit covers the success path,
+  // and process.exit covers an explicit successful exit. The current main
+  // controller still captures with pipefail, so the product RPM has to carry
+  // RPMTAG_LONGARCHIVESIZE before that capture runs.
+  let stamped = false;
+  const stampRpms = (code) => {
+    if (stamped || code) return code || 0;
+    stamped = true;
+    try {
+      require("./rpm-longarchivesize.cjs").rewriteBuiltRpms(process.cwd(), process.argv.slice(3));
+      return 0;
+    } catch (error) {
+      console.error(`RPM longarchivesize: ${error.message}`);
+      return 1;
+    }
+  };
+  process.on("beforeExit", (code) => {
+    const status = stampRpms(code);
+    if (status) process.exitCode = status;
+  });
+  const exit = process.exit;
+  process.exit = (code = process.exitCode || 0) => {
+    const requested = Number(code) || 0;
+    exit(requested === 0 ? stampRpms(0) : requested);
+  };
   // Use the same locally locked CLI as npm's tauri executable. Loading it in
   // this process preserves its arguments, stdio, signals and exit status.
   require("@tauri-apps/cli/tauri.js");

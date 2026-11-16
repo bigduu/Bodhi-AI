@@ -17,6 +17,7 @@ function fixture(t) {
   fs.copyFileSync(path.join(__dirname, "../package.json"), path.join(root, "package.json"));
   fs.copyFileSync(path.join(__dirname, "tauri.cjs"), path.join(root, "scripts/tauri.cjs"));
   fs.copyFileSync(path.join(__dirname, "tauri-build.cjs"), path.join(root, "scripts/tauri-build.cjs"));
+  fs.copyFileSync(path.join(__dirname, "rpm-longarchivesize.cjs"), path.join(root, "scripts/rpm-longarchivesize.cjs"));
   const observed = path.join(root, "observed.json");
   const record = (entry, args) => `require('node:fs').writeFileSync(${JSON.stringify(observed)}, JSON.stringify({entry:${JSON.stringify(entry)},args:${args}})); process.exitCode=Number(process.env.BODHI_TEST_EXIT_CODE || 0);`;
   fs.writeFileSync(path.join(root, "scripts/tauri-dev.cjs"), `exports.runDevCommand=(args)=>{${record("owned-development", "args")}};`);
@@ -179,4 +180,41 @@ test("patchelf preserves only the exact staged sidecar and browser runtime paths
   }
   assert.equal(patch(["--remove-rpath", locked]).status, 1);
   assert.ok(fs.readFileSync(locked).equals(input));
+});
+
+test("tauri:build records LONGARCHIVESIZE only after the linux rpm bundle succeeds", (t) => {
+  const { addLongArchiveSize } = require("./rpm-longarchivesize.cjs");
+  const source = fs.readFileSync(path.join(__dirname, "tests/fixtures/rpm-rs-no-longarchivesize.rpm"));
+  const place = (f, target) => {
+    const file = path.join(f.root, "target", target, "release", "bundle", "rpm", "Bodhi AI-0.0.0-1.rpm");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.copyFileSync(path.join(__dirname, "tests/fixtures/rpm-rs-no-longarchivesize.rpm"), file);
+    return file;
+  };
+  const failed = fixture(t);
+  const failedRpm = place(failed, linuxX64);
+  const failedOther = place(failed, linuxArm);
+  const failedBytes = fs.readFileSync(failedRpm);
+  const failedOtherBytes = fs.readFileSync(failedOther);
+  const failure = invoke(failed, ["scripts/tauri-build.cjs", "build", "--target", linuxX64, "--bundles", "appimage,deb,rpm"], { BODHI_TEST_EXIT_CODE: "4" });
+  assert.equal(failure.result.status, 4, failure.result.stderr);
+  assert.ok(fs.readFileSync(failedRpm).equals(failedBytes));
+  assert.ok(fs.readFileSync(failedOther).equals(failedOtherBytes));
+
+  const succeeded = fixture(t);
+  const rpm = place(succeeded, linuxX64);
+  const other = place(succeeded, linuxArm);
+  const otherBytes = fs.readFileSync(other);
+  const success = invoke(succeeded, ["scripts/tauri-build.cjs", "build", "--target", linuxX64, "--bundles", "appimage,deb,rpm"]);
+  assert.equal(success.result.status, 0, success.result.stderr);
+  assert.ok(fs.readFileSync(rpm).equals(addLongArchiveSize(source)));
+  assert.ok(fs.readFileSync(other).equals(otherBytes));
+  assert.match(success.result.stdout, /RPM longarchivesize: recorded 568 uncompressed payload bytes/);
+
+  const explicit = fixture(t);
+  fs.appendFileSync(path.join(explicit.root, "node_modules/@tauri-apps/cli/tauri.js"), "\nprocess.exit(0);\n");
+  const explicitRpm = place(explicit, linuxArm);
+  const explicitRun = invoke(explicit, ["scripts/tauri-build.cjs", "build", "--target", linuxArm, "--bundles", "rpm"]);
+  assert.equal(explicitRun.result.status, 0, explicitRun.result.stderr);
+  assert.ok(fs.readFileSync(explicitRpm).equals(addLongArchiveSize(source)));
 });
