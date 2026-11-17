@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "repository": "bigduu/Bamboo-agent",
-  "version": "2026.11.25",
-  "sourceRevision": "ce5eb3bb275f37358927a151bfa623ab2f2d46c2",
+  "version": "2026.11.26",
+  "sourceRevision": "074190aa010879a7f422ed2b8a5596c30bfa3356",
   "buildMode": "embedded",
   "embeddedFrontend": true,
   "manifestAssetName": "bamboo-sidecars-v3.json",
-  "manifestSha256": "30ccb8500c7fff513efe0c00d55d8e3ebf865742ae7b420b50dd171bfa8bf11b",
+  "manifestSha256": "7da8e7702a9c21a35001dfb4e594abdb9b5babe3674181a97a2a86da84cea797",
   "targets": [
     "aarch64-apple-darwin",
     "aarch64-pc-windows-msvc",
