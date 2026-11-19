@@ -9,7 +9,7 @@ const { execFileSync } = require("node:child_process");
 const legacy = require("./release-finalizer.cjs");
 const source = require("./release-source.cjs");
 const out = require("./release-output.cjs");
-const { REPOSITORY, releaseContract, api, pages, bytes, sha256, readJson, write } = out;
+const { REPOSITORY, SHA, releaseContract, api, pages, bytes, sha256, readJson, write } = out;
 const ASSEMBLE = "Verify original target receipts and upload assets";
 const EVIDENCE = "Retain original publication evidence";
 const PUBLISH = "Publish the original draft";
@@ -195,10 +195,64 @@ function retainAsset(releaseId, file, name, ctx, request = api, send = upload) {
   assert.equal(asset.size, size, `Conflicting original asset: ${name}`); assert.equal(asset.digest, digest, `Conflicting original asset: ${name}`);
   return assetIdentity(asset);
 }
+function publicationNotes(ctx, releaseId, reservation, request) {
+  const limit = 100;
+  const prior = pages("releases", undefined, request).filter(release => release.id !== releaseId &&
+    release.draft === false && release.prerelease === false && SHA.test(release.target_commitish) &&
+    /^app-v\d+\.\d+\.\d+$/.test(release.tag_name) && Number.isFinite(Date.parse(release.published_at)));
+  prior.sort((left, right) => Date.parse(right.published_at) - Date.parse(left.published_at));
+
+  const url = "https://github.com/" + REPOSITORY;
+  let history = url + "/commits/" + ctx.source;
+  let comparison;
+  for (const previous of prior) {
+    const base = previous.target_commitish;
+    const result = request("compare/" + base + "..." + ctx.source + "?per_page=" + limit);
+    if (result?.behind_by === 0 && result.merge_base_commit?.sha === base) {
+      comparison = result;
+      history = url + "/compare/" + base + "..." + ctx.source;
+      break;
+    }
+  }
+  const commits = comparison ? comparison.commits : request("commits?sha=" + ctx.source + "&per_page=" + limit);
+  assert.ok(Array.isArray(commits) && commits.length <= limit, "Invalid GitHub commit history for release notes");
+
+  const lines = ["## 改了什么 / What changed", ""];
+  for (const { sha, commit, parents } of commits) {
+    assert.match(sha, SHA);
+    assert.ok(Array.isArray(parents) && typeof commit?.message === "string", "Invalid release note commit");
+    if (parents.length > 1) continue;
+    const subject = commit.message.split(/\r?\n/, 1)[0].slice(0, 300) || "Untitled commit";
+    const text = subject.replace(/[&<>@]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "@": "&#64;" }[char]))
+      .replace(/[\\`*_[\]]/g, "\\$&");
+    lines.push("- [`" + sha.slice(0, 8) + "`](" + url + "/commit/" + sha + ") " + text);
+  }
+  if (comparison?.total_commits === 0) lines.push("本次发布沿用同一源码。 / This release uses the same source.");
+  if (comparison ? comparison.total_commits > commits.length : commits.length === limit) {
+    lines.push("", "更多提交见完整记录。 / See the full history for additional commits.");
+  }
+  lines.push("", "[完整 Git 提交记录 / Full Git history](" + history + ")");
+
+  const lock = "scripts/bamboo-sidecar-lock.json";
+  const response = request("contents/" + lock + "?ref=" + ctx.source);
+  assert.equal(response?.encoding, "base64");
+  const data = Buffer.from(response.content, "base64");
+  assert.equal(sha256(data), reservation.lockHashes[lock], "Bamboo release notes input differs from the accepted lock");
+  const bamboo = JSON.parse(data);
+  const lotusVersion = reservation.frontend.packageVersion;
+  for (const version of [bamboo.version, lotusVersion]) assert.match(version, /^\d+\.\d+\.\d+$/);
+  lines.push("", "## 内置版本 / Bundled versions", "",
+    "- [Bamboo " + bamboo.version + "](https://github.com/bigduu/Bamboo-agent/releases/tag/v" + bamboo.version + ")",
+    "- [Lotus Next " + lotusVersion + "](https://www.npmjs.com/package/@bigduu/lotus-next/v/" + lotusVersion + ")");
+  return lines.join("\n");
+}
+
 function assemble(ctx, output, request = api, restore = out.download, send = upload, read = readManifest) {
   const contract = releaseContract(ctx);
   const original = out.loadReservation(ctx, request, restore), { reservation } = original;
   available(ctx, request, original.release);
+  const releaseNotes = contract.schemaVersion === 3 && original.release.draft
+    ? publicationNotes(ctx, original.release.id, reservation, request) : undefined;
   const targets = contract.targets.map(target => {
     const selected = out.selectTarget(ctx, reservation, target, request, restore, true);
     assert.ok(selected, `Missing original target: ${target}`); return selected;
@@ -234,7 +288,7 @@ function assemble(ctx, output, request = api, restore = out.download, send = upl
   verifyManifest(manifest, { ...ctx, attempt: manifest.finalizer.attempt }, release);
   assert.deepEqual(assetIdentity(manifestAsset(release, ctx, manifest)), retainedManifest);
   const evidence = { schemaVersion: contract.schemaVersion, finalizerAttempt: ctx.attempt, manifest, manifestSha256: sha256(bytes(manifest)),
-    manifestAsset: retainedManifest, assets: identities(release) };
+    manifestAsset: retainedManifest, assets: identities(release), ...(releaseNotes === undefined ? {} : { releaseNotes }) };
   write(output, evidence); return evidence;
 }
 function verifyEvidence(ctx, evidence, release) {
@@ -265,11 +319,14 @@ function publish(ctx, evidence, request = api) {
     // Last read immediately before the one mutation; no delete/overwrite or rebuild fallback.
     release = request(`releases/${releaseId}`); verifyEvidence(ctx, evidence, release); available(ctx, request, release);
     refreshSource(ctx, evidence.manifest.reservation, request);
+    const body = evidence.releaseNotes === undefined ? undefined : out.releaseBodyWithNotes(release.body, evidence.releaseNotes);
     let failure;
     try { request(`releases/${releaseId}`, "PATCH", { tag_name: ctx.finalTag, target_commitish: ctx.source,
-      name: `App v${ctx.version}`, draft: false, prerelease: false, make_latest: "true" }); } catch (error) { failure = error; }
+      name: `App v${ctx.version}`, draft: false, prerelease: false, make_latest: "true", ...(body === undefined ? {} : { body }) });
+    } catch (error) { failure = error; }
     release = request(`releases/${releaseId}`);
     if (release.draft) throw failure || new Error("Publication did not complete; retain originals and recover");
+    if (body !== undefined) assert.equal(release.body, body, "Published release notes differ from the original");
   }
   assert.equal(release.draft, false); assert.equal(release.tag_name, ctx.finalTag); assert.equal(release.target_commitish, ctx.source);
   verifyEvidence(ctx, evidence, release); available(ctx, request, release);

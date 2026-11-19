@@ -35,6 +35,7 @@ const RELEASE_MATRIX = {
 };
 const SHA = /^[0-9a-f]{40}$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
+const RESERVATION_BLOCK = "\n\n<!-- bodhi-release-reservation/v1\n";
 const sha256 = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 const bytes = value => Buffer.from(JSON.stringify(value, null, 2) + "\n");
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", env: childEnv() }).trimEnd();
@@ -275,12 +276,26 @@ function verifyReservation(value, ctx) {
   for (const hash of Object.values(value.lockHashes)) assert.match(hash, /^[0-9a-f]{64}$/);
   return value;
 }
+function releaseBodyWithNotes(receipt, notes) {
+  assert.ok(typeof notes === "string" && notes.trim() && !notes.includes(RESERVATION_BLOCK), "Invalid release notes");
+  const body = notes + RESERVATION_BLOCK + receipt + "\n-->";
+  assert.ok(Buffer.byteLength(body) <= 128 * 1024, "Release notes exceed the body limit");
+  return body;
+}
+function reservationFromBody(body, draft) {
+  if (draft || body.trimStart().startsWith("{")) return JSON.parse(body);
+  const text = body.trimEnd();
+  const start = text.indexOf(RESERVATION_BLOCK);
+  assert.ok(start > 0 && start === text.lastIndexOf(RESERVATION_BLOCK) && text.endsWith("\n-->"),
+    "Release body requires one reservation block");
+  return JSON.parse(text.slice(start + RESERVATION_BLOCK.length, -4));
+}
 function releaseReservation(release, ctx) {
   id(release.id); assert.equal(release.target_commitish, ctx.source); assert.equal(release.prerelease, false);
   assert.equal(release.url, `https://api.github.com/repos/${REPOSITORY}/releases/${release.id}`);
   assert.equal(typeof release.draft, "boolean"); assert.equal(release.tag_name, release.draft ? ctx.draftTag : ctx.finalTag);
   assert.ok(typeof release.body === "string" && Buffer.byteLength(release.body) <= 128 * 1024);
-  return verifyReservation(JSON.parse(release.body), ctx);
+  return verifyReservation(reservationFromBody(release.body, release.draft), ctx);
 }
 function loadReservation(ctx, request = api, restore = download, options) {
   const matching = pages("releases", undefined, request).filter(release => release.tag_name === ctx.draftTag || release.tag_name === ctx.finalTag);
@@ -517,6 +532,6 @@ function main() {
 module.exports = { ROOT, REPOSITORY, NATIVE_TARGETS, BUILD, CAPTURE, RETAIN, PREFLIGHT, RESERVATION, MANIFEST, SHA, DIGEST, bytes, sha256,
   ORIGINAL_RELEASE_WORKFLOW_BLOB, V2_RELEASE_WORKFLOW_BLOB, ARM64_RELEASE_WORKFLOW_BLOB,
   childEnv, api, pages, context, controller, workflow, originalContext, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, installerMatch, names, artifactName, artifact, download, hashFile,
-  releaseContract, releaseContext, releaseMatrix, verifyReservation, releaseReservation, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks,
+  releaseContract, releaseContext, releaseMatrix, verifyReservation, releaseReservation, releaseBodyWithNotes, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks,
   stamped, stamp, verifyLinuxPackage, staticOutputs, captureTarget, outputs };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Original Bodhi output: ${error.message}`); process.exitCode = 1; } }
