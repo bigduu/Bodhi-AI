@@ -376,6 +376,18 @@ blindly retry a write. Finalization and recovery run no Cargo, Tauri or Vite
 commands. Retention is 90 days, subject to repository limits; expired original
 outputs are a hard stop.
 
+### GitHub Release notes
+
+The v3 finalizer generates Markdown with change subjects, linked Git commits,
+the complete source comparison and the exact bundled upstream versions. It
+retains the generated text with the publication evidence so recovery uses the
+original notes. The versioned reservation block at the end of the body keeps
+the original JSON receipt available to Main admission.
+
+The format becomes active when the controller that reads it reaches Main
+through the normal promotion. Published releases from JSON-only controllers
+can carry additional notes in their Release-associated Discussion.
+
 ## Rerun or recover without replacing successful outputs
 
 For a failed job, first classify the failure. A product defect requires a new

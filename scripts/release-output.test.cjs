@@ -30,13 +30,15 @@ function directory(t) {
 }
 function fixture(ctx = out.context(env)) {
   const contract = out.releaseContract(ctx);
+  const bambooLock = fs.readFileSync(path.join(__dirname, "bamboo-sidecar-lock.json"));
   const proof = { schemaVersion: ADMISSION_SCHEMA, kind: ADMISSION_KIND, repository: out.REPOSITORY, source: S, tree: T, base: "d".repeat(40), head: "e".repeat(40), snapshot: "f".repeat(40),
     observedDev: S, currentDev: S, pullRequest: 17, runId: 20, attempt: 1, workflowBlob: ctx.v3FeatureWorkflowBlob ?? FEATURE_WORKFLOW_BLOB,
     jobs: ["Unit Tests (Node)", ...contract.targets.map(target => `Unit and E2E (${target})`), "Unit Tests", "E2E Tests"]
       .map((name, index) => ({ id: index + 500, name, attempt: 1, logical: { id: index + 500, attempt: 1 } })) };
   const reservation = { schemaVersion: contract.schemaVersion, kind: "bodhi-original-release", repository: out.REPOSITORY, source: S, tree: T,
     controller: C, version: ctx.version, runId: ctx.runId, preflight: { jobId: 10, attempt: 1 }, admission: proof,
-    lockHashes: { "scripts/bamboo-sidecar-lock.json": "1".repeat(64), "scripts/frontend-package-lock.json": "2".repeat(64) },
+    lockHashes: { "scripts/bamboo-sidecar-lock.json": contract.schemaVersion === 3 ? out.sha256(bambooLock) : "1".repeat(64),
+      "scripts/frontend-package-lock.json": "2".repeat(64) },
     frontend: JSON.parse(fs.readFileSync(path.join(__dirname, "frontend-package-lock.json"))) };
   const job = (id, name, attempt, gates, active = false) => ({ id, name, run_id: ctx.runId, head_sha: C, run_attempt: attempt,
     status: active ? "in_progress" : "completed", conclusion: active ? null : "success", started_at: "2026-10-27T00:00:00Z",
@@ -47,7 +49,7 @@ function fixture(ctx = out.context(env)) {
     ...contract.targets.map((target, index) => job(index + 11, `Build original (${target})`, index === 1 ? 2 : 1,
       ["Select retained target output", "Verify source and stamp reserved version", out.BUILD, out.CAPTURE, out.RETAIN])),
     job(11 + contract.targets.length, "Publish original release", 2, [], true)];
-  const f = { ctx, reservation, job, jobs, run: { id: ctx.runId, run_attempt: ctx.attempt, repository: { full_name: out.REPOSITORY },
+  const f = { ctx, reservation, bambooLock, job, jobs, run: { id: ctx.runId, run_attempt: ctx.attempt, repository: { full_name: out.REPOSITORY },
     path: `${out.REPOSITORY}/.github/workflows/release.yml@refs/heads/main`, event: "workflow_dispatch", head_sha: C, head_branch: "main",
     display_title: `Bodhi v${contract.schemaVersion} v${ctx.version} @ ${S}`, status: "in_progress", conclusion: null }, calls: [], artifacts: [], files: {}, manifestBytes: {}, uploads: [], tag: null };
   f.release = { id: 99, url: `https://api.github.com/repos/${out.REPOSITORY}/releases/99`, html_url: `https://github.com/${out.REPOSITORY}/releases/tag/${ctx.draftTag}`,
@@ -93,6 +95,8 @@ function adapters(f) {
     if (endpoint === `git/ref/tags/${ctx.finalTag}`) return clone(f.tag);
     if (endpoint === `git/ref/heads/release/${S}`) return f.frozen === null ? null : { object: { sha: f.frozen || S } };
     if (endpoint === `git/commits/${S}`) return f.tree === null ? null : { tree: { sha: f.tree || T } };
+    if (endpoint === `contents/scripts/bamboo-sidecar-lock.json?ref=${S}`) return { encoding: "base64", content: f.bambooLock.toString("base64") };
+    if (endpoint === `commits?sha=${S}&per_page=100`) return [{ sha: S, parents: [], commit: { message: "feat: improve startup" } }];
     if (endpoint === "branches/dev") return clone(f.branch || { protected: true, commit: { sha: f.dev || S }, protection: { required_status_checks: {
       enforcement_level: "everyone", contexts: ["Unit Tests", "E2E Tests"], checks: ["Unit Tests", "E2E Tests"].map(context => ({ context, app_id: 15368 })) } } });
     if (endpoint.startsWith("compare/")) {
@@ -195,6 +199,13 @@ test("Linux ARM64 validates package metadata using each format's architecture", 
 });
 test("v3 assembles five exact original targets and verifies all eleven retained release assets", t => {
   const f = fixture(v3Context), a = adapters(f);
+  const previous = "1".repeat(40), commit = "2".repeat(40), originalBody = f.release.body;
+  f.extraReleases.push(
+    { id: 89, draft: false, prerelease: false, tag_name: "app-v2026.10.29", target_commitish: previous, published_at: "2026-10-26T00:00:00Z" },
+    { id: 90, draft: true, prerelease: false, tag_name: "app-v2026.10.28", target_commitish: T, published_at: "2026-10-26T02:00:00Z" },
+  );
+  f.comparisons = { [`compare/${previous}...${S}?per_page=100`]: { behind_by: 0, merge_base_commit: { sha: previous },
+    total_commits: 1, commits: [{ sha: commit, parents: [{}], commit: { message: "feat: search by session ID @maintainer" } }] } };
   assert.equal(out.runIdentity(v3Context, f.run), f.run);
   assert.throws(() => out.runIdentity(ctx, f.run));
   const evidence = assemble(t, f);
@@ -208,8 +219,28 @@ test("v3 assembles five exact original targets and verifies all eleven retained 
   assert.equal(evidence.assets.length, 11);
   assert.equal(f.uploads.at(-1), "bodhi-release-v3.json");
   assert.equal(f.uploads.length, 11);
+  assert.match(evidence.releaseNotes, /search by session ID &#64;maintainer/);
+  assert.ok(evidence.releaseNotes.includes(`/commit/${commit}`));
+  assert.ok(evidence.releaseNotes.includes(`/compare/${previous}...${S}`));
+  assert.ok(evidence.releaseNotes.includes(`Bamboo ${JSON.parse(f.bambooLock).version}`));
+  assert.ok(evidence.releaseNotes.includes(`Lotus Next ${f.reservation.frontend.packageVersion}`));
+  assert.equal(f.release.body, originalBody);
+  f.lostPatch = true;
   const published = finalizer.publish(v3Context, evidence, a.request);
+  assert.equal(published.body, out.releaseBodyWithNotes(originalBody, evidence.releaseNotes));
+  assert.deepEqual(out.releaseReservation(published, v3Context), f.reservation);
   assert.equal(finalizer.verifyPublished(v3Context, published, evidence.manifest), evidence.manifest);
+  const edited = { ...published, body: out.releaseBodyWithNotes(originalBody, "## Amended notes") };
+  assert.equal(finalizer.verifyPublished(v3Context, edited, evidence.manifest), evidence.manifest);
+  const changedReceipt = JSON.parse(originalBody);
+  changedReceipt.frontend.packageVersion = "2026.10.1";
+  assert.throws(() => finalizer.verifyPublished(v3Context, { ...published,
+    body: out.releaseBodyWithNotes(JSON.stringify(changedReceipt), "## Amended notes") }, evidence.manifest), /Release reservation changed/);
+  assert.throws(() => finalizer.verifyPublished(v3Context, { ...published, body: published.body + published.body }, evidence.manifest),
+    /one reservation block/);
+  f.release.body = edited.body;
+  finalizer.publish(v3Context, evidence, a.request);
+  assert.equal(f.calls.filter(call => call.method === "PATCH").length, 1);
   assert.throws(() => finalizer.verifyPublished(ctx, published, evidence.manifest));
   const missing = { ...published, assets: published.assets.filter(asset => asset.name !== "Bodhi.AI_2026.10.30_arm64-setup.exe") };
   assert.throws(() => finalizer.verifyPublished(v3Context, missing, evidence.manifest));
