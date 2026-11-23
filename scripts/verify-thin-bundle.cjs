@@ -1,7 +1,8 @@
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
-const { verifyArchitecture } = require("./browser-runtime.cjs");
+const { sha256File, verifyArchitecture } = require("./browser-runtime.cjs");
 
 function requireShellOnly(root) {
   const metadata = fs.lstatSync(root);
@@ -27,6 +28,25 @@ function verifyMacos(appPath, version) {
   return { version: actual, target: "aarch64-apple-darwin", shellBytes: fs.statSync(shell).size };
 }
 
+function verifyMacosDmg(image, stagedApp, version, env) {
+  const mount = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "bodhi-thin-image-"));
+  const run = (args) => execFileSync("hdiutil", args, { env, stdio: "pipe", timeout: 120_000 });
+  let attached = false;
+  try {
+    run(["attach", image, "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mount]);
+    attached = true;
+    const app = path.join(mount, "Bodhi AI.app");
+    verifyMacos(app, version);
+    const shell = "Contents/MacOS/bodhi";
+    if (sha256File(path.join(app, shell)) !== sha256File(path.join(stagedApp, shell))) {
+      throw new Error("The DMG shell differs from the verified app");
+    }
+  } finally {
+    if (attached) run(["detach", mount]);
+    fs.rmdirSync(mount);
+  }
+}
+
 if (require.main === module) {
   try {
     const [appPath, version] = process.argv.slice(2);
@@ -38,4 +58,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { requireShellOnly, verifyMacos };
+module.exports = { requireShellOnly, verifyMacos, verifyMacosDmg };

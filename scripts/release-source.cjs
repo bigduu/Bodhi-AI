@@ -75,12 +75,13 @@ function requireController(env = process.env, root = ROOT, executeGit = git) {
   assert.equal(executeGit(root, "status", "--porcelain", "--untracked-files=all"), "", "Controller must be clean");
   return controller;
 }
-function requireProduct(source, root, env = process.env, executeGit = git) {
+function requireProduct(source, root, env = process.env, executeGit = git, thin = false) {
   sha(source, "product source");
   assert.ok(path.isAbsolute(root) && fs.lstatSync(root).isDirectory() && !fs.lstatSync(root).isSymbolicLink(), "Explicit product checkout required");
   assert.notEqual(fs.realpathSync(root), fs.realpathSync(ROOT), "Product must use a separate checkout from the controller");
   assert.equal(executeGit(root, "rev-parse", "HEAD"), source, "Product checkout differs");
   assert.equal(executeGit(root, "status", "--porcelain", "--untracked-files=all"), "", "Product must be clean before stamping");
+  if (thin) return require("./thin-release-inputs.cjs").read(root);
   const bamboo = readLock(root, { ...env, BAMBOO_SIDECAR_SOURCE: "release" });
   const frontend = readArtifactLock(path.join(root, "scripts/frontend-package-lock.json"));
   const hashes = Object.fromEntries(["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"].map((file) =>

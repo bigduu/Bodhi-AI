@@ -23,9 +23,11 @@ const ARM_WINDOWS = "aarch64-pc-windows-msvc";
 const V2_CONTRACT = Object.freeze({ schemaVersion: 2, manifest: MANIFEST, targets: Object.freeze([...NATIVE_TARGETS]) });
 const V3_CONTRACT = Object.freeze({ schemaVersion: 3, manifest: "bodhi-release-v3.json",
   targets: Object.freeze([...NATIVE_TARGETS, ARM_LINUX, ARM_WINDOWS]) });
+const V4_CONTRACT = Object.freeze({ schemaVersion: 4, manifest: "bodhi-release-v4.json", targets: V3_CONTRACT.targets });
 const ORIGINAL_RELEASE_WORKFLOW_BLOB = "ff91ec4ca4c3047d6c23c5dc06d575f15fe190e3";
 const V2_RELEASE_WORKFLOW_BLOB = "7b666dc5f0f8f2f79e9b2064acdfe8cc4fa881ca";
 const ARM64_RELEASE_WORKFLOW_BLOB = "a73ce504ce9ed1ad6ee62f09921a27f63c0e5412";
+const THIN_RELEASE_WORKFLOW_BLOB = "17f11efa764cd086e7216f229cbfc9184508e04d";
 const RELEASE_MATRIX = {
   "aarch64-apple-darwin": { platform: "macos-latest", bundles: "app,dmg" },
   "x86_64-unknown-linux-gnu": { platform: "ubuntu-22.04", bundles: "appimage,deb,rpm" },
@@ -69,6 +71,10 @@ function pages(endpoint, key, request = api) {
   }
 }
 function releaseContract(ctx) {
+  if (ctx.thin === true) {
+    assert.equal(ctx.producer, THIN_RELEASE_WORKFLOW_BLOB);
+    return V4_CONTRACT;
+  }
   if (ctx.v3FeatureWorkflowBlob === undefined) return V2_CONTRACT;
   assert.equal(ctx.v3FeatureWorkflowBlob, admission.ARM64_FEATURE_WORKFLOW_BLOB, "Require the reviewed v3 feature workflow blob");
   return V3_CONTRACT;
@@ -104,13 +110,15 @@ function originalContext(ctx, commit, request = api) {
   assert.match(commit || "", SHA, "Invalid original controller");
   const producer = request(`contents/.github/workflows/release.yml?ref=${commit}`)?.sha;
   if ([ORIGINAL_RELEASE_WORKFLOW_BLOB, V2_RELEASE_WORKFLOW_BLOB].includes(producer)) {
-    return releaseContext({ ...ctx, controller: commit, producer, v3FeatureWorkflowBlob: undefined });
+    return releaseContext({ ...ctx, controller: commit, producer, v3FeatureWorkflowBlob: undefined, thin: false });
   }
-  assert.equal(producer, ARM64_RELEASE_WORKFLOW_BLOB, "Unreviewed original workflow producer");
+  assert.ok([ARM64_RELEASE_WORKFLOW_BLOB, THIN_RELEASE_WORKFLOW_BLOB].includes(producer), "Unreviewed original workflow producer");
   const featureBlob = request(`contents/.github/workflows/ci.yml?ref=${ctx.source}`)?.sha;
   const targets = admission.featureTargets(featureBlob);
   const v3FeatureWorkflowBlob = targets.length === V3_CONTRACT.targets.length ? featureBlob : undefined;
-  return releaseContext({ ...ctx, controller: commit, producer, v3FeatureWorkflowBlob });
+  const thin = producer === THIN_RELEASE_WORKFLOW_BLOB && Boolean(request(`contents/src-tauri/component-bootstrap.json?ref=${ctx.source}`));
+  if (thin) assert.equal(v3FeatureWorkflowBlob, admission.ARM64_FEATURE_WORKFLOW_BLOB, "Thin publication requires all five native tests");
+  return releaseContext({ ...ctx, controller: commit, producer, v3FeatureWorkflowBlob, thin });
 }
 function runIdentity(ctx, value) {
   assert.equal(value?.id, ctx.runId); assert.equal(value.repository.full_name, REPOSITORY);
@@ -118,7 +126,7 @@ function runIdentity(ctx, value) {
   assert.equal(value.event, "workflow_dispatch"); assert.equal(workflow(value.path), ".github/workflows/release.yml");
   assert.equal(value.head_branch, "main"); assert.match(value.head_sha || "", SHA);
   if (ctx.controller) assert.equal(value.head_sha, ctx.controller, "Original controller differs");
-  const label = ctx.producer === ARM64_RELEASE_WORKFLOW_BLOB ? "original" : `v${releaseContract(ctx).schemaVersion}`;
+  const label = [ARM64_RELEASE_WORKFLOW_BLOB, THIN_RELEASE_WORKFLOW_BLOB].includes(ctx.producer) ? "original" : `v${releaseContract(ctx).schemaVersion}`;
   assert.equal(value.display_title, `Bodhi ${label} v${ctx.version} @ ${ctx.source}`);
   return value;
 }
@@ -271,8 +279,13 @@ function verifyReservation(value, ctx) {
     assert.equal(job.id === job.logical.id, job.attempt === job.logical.attempt, "Feature physical/logical identity differs within one attempt");
   }
   id(value.preflight.jobId); assert.ok(id(value.preflight.attempt) <= ctx.attempt);
-  assert.equal(value.frontend.packageName, "@bigduu/lotus-next");
-  assert.deepEqual(Object.keys(value.lockHashes).sort(), ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"]);
+  if (contract === V4_CONTRACT) {
+    assert.equal(value.frontend, null);
+    require("./thin-release-inputs.cjs").verifyBootstrap(value.bootstrap, value.lockHashes);
+  } else {
+    assert.equal(value.frontend.packageName, "@bigduu/lotus-next");
+    assert.deepEqual(Object.keys(value.lockHashes).sort(), ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"]);
+  }
   for (const hash of Object.values(value.lockHashes)) assert.match(hash, /^[0-9a-f]{64}$/);
   return value;
 }
@@ -402,6 +415,8 @@ function selectTarget(ctx, reservation, target, request = api, restore = downloa
   return { receipt, artifact: { id: original.id, name: original.name, digest: original.digest }, directory };
 }
 function checks(target, schemaVersion = 2) {
+  if (schemaVersion === 4) return ["component-bootstrap", "shell-architecture", "package-version",
+    "shell-only-payload", ...(target.includes("darwin") ? ["macos-signature"] : [])];
   const values = ["locked-upstreams", "shell-architecture", "package-version", target.includes("darwin") ? "macos-signature" : "staged-runtime"];
   if (schemaVersion === 3 && !target.includes("darwin")) values.push("installer-payload");
   return values;
@@ -449,21 +464,26 @@ function staticOutputs(root, ctx, target, output) {
   const contract = releaseContract(ctx);
   assert.ok(contract.targets.includes(target), "Target is outside the selected release contract");
   const lotus = require("./lotus-dist.cjs"), assembly = require("./verify-assembly.cjs"), browser = require("./browser-runtime.cjs");
-  const source = lotus.resolveSource({ LOTUS_SOURCE: "package", LOTUS_PACKAGE_NAME: "@bigduu/lotus-next" }, root);
-  const receipt = lotus.verifyStaged(source, root);
-  const sidecar = require("./bamboo-sidecar.cjs").installedRelease(root, target, { BAMBOO_SIDECAR_SOURCE: "release", BAMBOO_SIDECAR_TARGET: target });
-  // Read immutable product data with controller code, never require a module from S.
-  const runtimeLock = JSON.parse(execFileSync("git", ["show", `${ctx.source}:scripts/browser-runtime.lock.json`],
-    { cwd: root, env: childEnv(), encoding: "utf8", maxBuffer: 128 * 1024 }));
-  const browserRoot = path.join(root, "src-tauri/browser-runtime");
-  browser.verifyRuntime(browserRoot, target, path.join(sidecar.hostDirectory, "browser-runtime"), runtimeLock);
+  let receipt, sidecar, runtimeLock, browserRoot;
+  if (!ctx.thin) {
+    const source = lotus.resolveSource({ LOTUS_SOURCE: "package", LOTUS_PACKAGE_NAME: "@bigduu/lotus-next" }, root);
+    receipt = lotus.verifyStaged(source, root);
+    sidecar = require("./bamboo-sidecar.cjs").installedRelease(root, target, { BAMBOO_SIDECAR_SOURCE: "release", BAMBOO_SIDECAR_TARGET: target });
+    // Read immutable product data with controller code, never require a module from S.
+    runtimeLock = JSON.parse(execFileSync("git", ["show", `${ctx.source}:scripts/browser-runtime.lock.json`],
+      { cwd: root, env: childEnv(), encoding: "utf8", maxBuffer: 128 * 1024 }));
+    browserRoot = path.join(root, "src-tauri/browser-runtime");
+    browser.verifyRuntime(browserRoot, target, path.join(sidecar.hostDirectory, "browser-runtime"), runtimeLock);
+  }
   const base = path.join(root, "target", target, "release"), bundle = path.join(base, "bundle");
   const shell = path.join(base, target.includes("windows") ? "bodhi.exe" : "bodhi");
+  const macApp = path.join(bundle, "macos/Bodhi AI.app");
   browser.verifyArchitecture(shell, target);
   const command = (name, args) => execFileSync(name, args, { env: childEnv(), encoding: "utf8" }).trim();
   if (target.includes("darwin")) {
-    assembly.verifyMacosBundle(root, target, receipt, undefined, runtimeLock);
-    const app = path.join(bundle, "macos/Bodhi AI.app");
+    const app = macApp;
+    if (ctx.thin) require("./verify-thin-bundle.cjs").verifyMacos(app, ctx.version);
+    else assembly.verifyMacosBundle(root, target, receipt, undefined, runtimeLock);
     assert.equal(command("plutil", ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", path.join(app, "Contents/Info.plist")]), ctx.version);
     command("tar", ["-czf", path.join(bundle, "macos/Bodhi.AI_aarch64.app.tar.gz"), "-C", path.dirname(app), path.basename(app)]);
   }
@@ -475,10 +495,11 @@ function staticOutputs(root, ctx, target, output) {
     const directory = path.join(bundle, format);
     const file = path.join(directory, installerMatch(fs.readdirSync(directory), expected[index])); hashFile(file);
     if (format === "deb" || format === "rpm") verifyLinuxPackage(command, format, file, ctx.version, target);
-    if (contract.schemaVersion === 3 && !target.includes("darwin")) {
+    if (ctx.thin && format === "dmg") require("./verify-thin-bundle.cjs").verifyMacosDmg(file, macApp, ctx.version, childEnv());
+    if (contract.schemaVersion >= 3 && !target.includes("darwin")) {
       const appDir = format === "appimage" ? path.join(directory, "Bodhi AI.AppDir") : undefined;
-      require("./installer-payload.cjs").verifyInstallerPayload({ format, file, target, shell, sidecar: sidecar.binary,
-        browserRoot, browserLock: runtimeLock, frontendReceipt: receipt, appDir }, childEnv());
+      require("./installer-payload.cjs").verifyInstallerPayload({ format, file, target, shell, sidecar: sidecar?.binary,
+        browserRoot, browserLock: runtimeLock, frontendReceipt: receipt, appDir, thin: ctx.thin === true }, childEnv());
     }
     files.push([file, expected[index]]);
   }
@@ -523,14 +544,15 @@ function main() {
   }
   const root = process.env.SOURCE_ROOT;
   if (command === "prepare") {
-    const product = admission.requireProduct(ctx.source, root); assert.deepEqual(product.lockHashes, reservation.lockHashes);
+    const product = admission.requireProduct(ctx.source, root, process.env, git, ctx.thin);
+    assert.deepEqual(product.lockHashes, reservation.lockHashes);
     stamp(root, ctx.version); return;
   }
   assert.equal(command, "capture");
   captureTarget(root, ctx, reservation, target, process.env.TARGET_OUTPUT);
 }
 module.exports = { ROOT, REPOSITORY, NATIVE_TARGETS, BUILD, CAPTURE, RETAIN, PREFLIGHT, RESERVATION, MANIFEST, SHA, DIGEST, bytes, sha256,
-  ORIGINAL_RELEASE_WORKFLOW_BLOB, V2_RELEASE_WORKFLOW_BLOB, ARM64_RELEASE_WORKFLOW_BLOB,
+  ORIGINAL_RELEASE_WORKFLOW_BLOB, V2_RELEASE_WORKFLOW_BLOB, ARM64_RELEASE_WORKFLOW_BLOB, THIN_RELEASE_WORKFLOW_BLOB,
   childEnv, api, pages, context, controller, workflow, originalContext, runIdentity, run, jobs, gate, passed, currentJob, readJson, write, installerMatch, names, artifactName, artifact, download, hashFile,
   releaseContract, releaseContext, releaseMatrix, verifyReservation, releaseReservation, releaseBodyWithNotes, loadReservation, loadBuildReservation, selectTarget, verifyReceipt, checks,
   stamped, stamp, verifyLinuxPackage, staticOutputs, captureTarget, outputs };
