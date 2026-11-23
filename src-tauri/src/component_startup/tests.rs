@@ -89,7 +89,7 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
     manager.finish(&pair, Ok(())).unwrap();
     assert_eq!(manager.choose().await.unwrap(), pair);
     let evidence = format!(
-        "Bodhi component bootstrap: {} {} {} {} {}\n",
+        "\nBodhi component bootstrap: {} {} {} {} {}\n",
         lock.root_sha256,
         lock.sequence,
         lock.bamboo_manifest_sha256,
