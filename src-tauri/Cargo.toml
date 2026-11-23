@@ -102,3 +102,6 @@ default = []
 # Enable the Tauri Web Inspector (devtools). Intended for development/debug
 # builds only; keep it out of `default` so release builds ship without it.
 dev = ["tauri/devtools"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

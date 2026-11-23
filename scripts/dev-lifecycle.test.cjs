@@ -177,6 +177,14 @@ test("startup route contains only the splash and rejects a stale run without SPA
   assert(!/SPA modules/.test(await stale.text()));
   const identity = await fetch(`${origin}/__bodhi_dev_identity?run=this-run`);
   assert.deepEqual(await identity.json(), { runId: "this-run", pid: 123 });
+  for (const [name, contentType] of [["component-updates.html", "text/html"],
+    ["component-updates.js", "text/javascript"], ["component-bootstrap.js", "text/javascript"]]) {
+    const asset = await fetch(`${origin}/${name}`);
+    assert.equal(asset.status, 200);
+    assert.equal(asset.headers.get("content-type"), contentType);
+    assert.equal(await asset.text(), fs.readFileSync(path.join(__dirname, "..", "bodhi-splash", name), "utf8"));
+  }
+  assert.equal(await (await fetch(`${origin}/nested/component-updates.html`)).text(), "SPA modules must not run");
 });
 
 test("production frontend API keeps the selected checkout cwd, strict port, and startup identity", async (t) => {

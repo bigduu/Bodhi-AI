@@ -1,5 +1,6 @@
 //! Plan and record startup of an authenticated component combination.
 mod journal;
+pub(crate) mod updates;
 
 use crate::bamboo_profile::{create_directory, Profile};
 use crate::bamboo_update::{check_component_floor, record_component_launch};
@@ -8,6 +9,7 @@ use crate::component_kernel::{self, DownloadSource, VerifiedKernel};
 use crate::frontend::VerifiedFrontend;
 use journal::Journal;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tauri::{AppHandle, Manager as _, Runtime};
 use tokio::sync::watch;
@@ -21,6 +23,7 @@ pub(crate) fn enabled() -> bool {
 pub(crate) struct Manager {
     profile: Profile,
     sources: watch::Sender<DownloadSource>,
+    updates: updates::Updates,
 }
 
 struct Prepared {
@@ -30,9 +33,13 @@ struct Prepared {
 }
 
 impl Manager {
-    pub(crate) fn new(profile: Profile) -> Self {
-        let (sources, _) = watch::channel(DownloadSource::default());
-        Self { profile, sources }
+    pub(crate) fn new(profile: Profile) -> Result<Self, String> {
+        let (sources, _) = watch::channel(Journal::read(&profile)?.source);
+        Ok(Self {
+            profile,
+            sources,
+            updates: updates::Updates::default(),
+        })
     }
 
     async fn channel(&self) -> Result<VerifiedChannel, String> {
@@ -65,16 +72,34 @@ impl Manager {
             &self.profile.data,
             &candidate,
             self.sources.subscribe(),
-            |_, _, _| {},
+            |source, received, total| {
+                self.updates.progress(
+                    &candidate.artifact.asset_name,
+                    Some(source),
+                    received,
+                    Some(total),
+                )
+            },
         )
         .await?;
+        let lotus_archive = format!("lotus-next-{}.tgz", pair.lotus.version);
         let frontend =
-            crate::frontend::prepare_release(&self.profile.data, &pair.lotus, |_, _| {}).await?;
+            crate::frontend::prepare_release(&self.profile.data, &pair.lotus, |received, total| {
+                self.updates.progress(&lotus_archive, None, received, total)
+            })
+            .await?;
         let browser = crate::component_browser::prepare_runtime(
             &self.profile.data,
             &candidate,
             self.sources.subscribe(),
-            |_, _, _| {},
+            |source, received, total| {
+                self.updates.progress(
+                    "Bamboo Browser Runtime",
+                    Some(source),
+                    received,
+                    Some(total),
+                )
+            },
         )
         .await?;
         Ok(Prepared {
@@ -112,11 +137,28 @@ impl Manager {
         outcome
     }
 
-    pub(crate) async fn launch<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
+    pub(crate) async fn launch<R: Runtime>(&self, app: &AppHandle<R>) -> Result<bool, String> {
+        let Ok(_boot) = self.updates.boot.try_lock() else {
+            return Ok(false);
+        };
+        if self.updates.ready.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        let result = self.launch_once(app).await;
+        if let Err(error) = &result {
+            self.updates.status("组件启动失败", Some(error.clone()));
+        } else {
+            self.updates.ready.store(true, Ordering::Release);
+        }
+        result.map(|()| true)
+    }
+
+    async fn launch_once<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
         let port = crate::web_service_port();
         crate::sidecar::require_available_port(port)?;
         let pair = self.choose().await?;
         let prepared = self.prepare(&pair).await?;
+        self.updates.status("正在启动组件", None);
         let writer = self.profile.writer()?;
         let command = crate::sidecar::command(
             app,
@@ -157,7 +199,11 @@ impl Manager {
         .await;
         let result = self.finish(&pair, outcome);
         if result.is_err() {
-            runtime.exit();
+            if let Err(error) = runtime.stop().await {
+                log::warn!("Cannot stop Bamboo after a failed component launch: {error}");
+            }
+        } else {
+            self.updates.status("组件已就绪", None);
         }
         result
     }

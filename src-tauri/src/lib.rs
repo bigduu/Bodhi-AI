@@ -218,11 +218,14 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     // `--parent-pid` orphan guard on `bamboo serve`.
     app.manage(sidecar::SidecarState::default());
     if component_startup::enabled() {
-        let manager = component_startup::Manager::new(profile);
+        app.manage(component_startup::Manager::new(profile)?);
         let handle = app.handle().clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(error) = manager.launch(&handle).await {
-                show_startup_failure(&handle, &error);
+            let manager = handle.state::<component_startup::Manager>();
+            match manager.launch(&handle).await {
+                Ok(true) => manager.poll(&handle).await,
+                Ok(false) => (),
+                Err(error) => show_startup_failure(&handle, &error),
             }
         });
         return Ok(());
@@ -409,13 +412,25 @@ fn build_app_menu<R: Runtime>(
         true,
         None::<&str>,
     )?;
+    let updates = MenuItem::with_id(
+        handle,
+        component_startup::updates::MENU_ID,
+        "版本与更新",
+        true,
+        None::<&str>,
+    )?;
+    let items = if component_startup::enabled() {
+        vec![&install_item, &updates]
+    } else {
+        vec![&install_item, &update_kernel, &apply_kernel]
+    };
 
     let mut appended = false;
     if let Some(kind) = menu.get(HELP_SUBMENU_ID) {
         if let Some(help) = kind.as_submenu() {
-            help.append(&install_item)?;
-            help.append(&update_kernel)?;
-            help.append(&apply_kernel)?;
+            for item in &items {
+                help.append(*item)?;
+            }
             appended = true;
         }
     }
@@ -426,7 +441,10 @@ fn build_app_menu<R: Runtime>(
             handle,
             "Help",
             true,
-            &[&install_item, &update_kernel, &apply_kernel],
+            &items
+                .iter()
+                .map(|item| *item as &dyn tauri::menu::IsMenuItem<R>)
+                .collect::<Vec<_>>(),
         )?;
         menu.append(&help)?;
     }
@@ -491,6 +509,15 @@ pub fn run() {
             if event.id() == bamboo_update::APPLY_MENU_ID {
                 bamboo_update::apply_from_menu(app);
             }
+            if event.id() == component_startup::updates::MENU_ID {
+                if let Err(error) = component_startup::updates::open(app) {
+                    app.dialog()
+                        .message(error)
+                        .title("版本与更新")
+                        .kind(MessageDialogKind::Error)
+                        .show(|_| {});
+                }
+            }
             #[cfg(target_os = "macos")]
             if event.id() == webview_recovery::RELOAD_MENU_ID {
                 webview_recovery::reload(app);
@@ -522,6 +549,9 @@ pub fn run() {
             set_window_theme,
             show_desktop_notification,
             is_main_window_focused,
+            component_startup::updates::component_snapshot,
+            component_startup::updates::check_components,
+            component_startup::updates::set_component_source,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
