@@ -8,6 +8,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime};
 
+#[path = "frontend_download.rs"]
+mod download;
+
 const COMPILED_RECEIPT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend-receipt.json"));
 
 #[derive(Deserialize)]
@@ -46,6 +49,51 @@ pub(crate) fn resolve<R: Runtime>(
         .map_err(|e| format!("Frontend resources are unavailable or damaged: {e}. Rebuild this app with npm run tauri:build."))
 }
 
+pub(crate) async fn prepare<R: Runtime>(
+    app: &AppHandle<R>,
+    profile: &Profile,
+) -> Result<VerifiedFrontend, String> {
+    let resources = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    resolve_or_download(&resources, COMPILED_RECEIPT, profile).await
+}
+
+pub(crate) async fn resolve_or_download(
+    resources: &Path,
+    expected: &[u8],
+    profile: &Profile,
+) -> Result<VerifiedFrontend, String> {
+    let original = match resolve_profile(resources, expected, profile) {
+        Ok(frontend) => return Ok(frontend),
+        Err(error) => error,
+    };
+    let receipt: Receipt = serde_json::from_slice(expected).map_err(|error| error.to_string())?;
+    if !receipt.published() {
+        return Err(original);
+    }
+    log::info!(
+        "Restoring published Lotus Next {} from npm",
+        receipt.version
+    );
+    download::acquire(profile, expected, &receipt)
+        .await
+        .map_err(|error| format!("Cannot restore Lotus Next {}: {error}", receipt.version))
+}
+
+impl Receipt {
+    fn published(&self) -> bool {
+        self.mode == "package" && self.package_name == "@bigduu/lotus-next"
+    }
+}
+
+fn cache_slot(profile: &Profile, expected: &[u8]) -> PathBuf {
+    profile
+        .state_dir
+        .join(format!("lotus-{}", hash_bytes(expected)))
+}
+
 pub(crate) fn resolve_profile(
     resources: &Path,
     expected: &[u8],
@@ -53,13 +101,11 @@ pub(crate) fn resolve_profile(
 ) -> Result<VerifiedFrontend, String> {
     let receipt: Receipt = serde_json::from_slice(expected).map_err(|error| error.to_string())?;
     let bundled = resources.join("frontend");
-    if receipt.mode != "package" || receipt.package_name != "@bigduu/lotus-next" {
+    if !receipt.published() {
         return verify_resource(&bundled, expected);
     }
 
-    let slot = profile
-        .state_dir
-        .join(format!("lotus-{}", hash_bytes(expected)));
+    let slot = cache_slot(profile, expected);
     if let Ok(frontend) = verify_resource(&slot, expected) {
         return Ok(frontend);
     }
@@ -341,7 +387,7 @@ mod tests {
         (temp, receipt)
     }
 
-    fn package_fixture() -> (tempfile::TempDir, Vec<u8>) {
+    pub(super) fn package_fixture() -> (tempfile::TempDir, Vec<u8>) {
         let (temp, receipt) = fixture();
         let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
         value["mode"] = "package".into();

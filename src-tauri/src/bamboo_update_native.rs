@@ -121,7 +121,13 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     let executable = std::env::current_exe().unwrap();
     let assembly = executable.parent().unwrap().parent().unwrap();
     let receipt = fs::read(assembly.join("frontend/receipt.json")).unwrap();
-    let cached = crate::frontend::resolve_profile(assembly, &receipt, &profile).unwrap();
+    let empty_bundle = scratch.path().join("without-bundled-frontend");
+    let cached = crate::frontend::resolve_or_download(&empty_bundle, &receipt, &profile)
+        .await
+        .unwrap();
+    let reused = crate::frontend::resolve_profile(&empty_bundle, &receipt, &profile).unwrap();
+    assert_eq!(reused.static_dir, cached.static_dir);
+    assert_eq!(reused.index_hash, cached.index_hash);
     let frontend = cached.static_dir.unwrap();
     let index = cached.index_hash.unwrap();
     let lotus = cached.manifest_sha256.unwrap();
