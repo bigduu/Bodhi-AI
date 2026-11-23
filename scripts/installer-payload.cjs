@@ -7,6 +7,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { sha256File, verifyArchitecture } = require("./browser-runtime.cjs");
 const { verifyBundledRuntime, verifyFrontendDirectory } = require("./verify-assembly.cjs");
+const { requireShellOnly } = require("./verify-thin-bundle.cjs");
 
 // Tauri's Linux packages share usr/bin and usr/lib/<product>. NSIS extracts
 // the installed files directly into its output directory.
@@ -98,7 +99,7 @@ function readTextSection(file, directory, role, run) {
   return output;
 }
 
-function verifyInstallerPayload({ format, file, target, shell, sidecar, browserRoot, browserLock, frontendReceipt, appDir }, env) {
+function verifyInstallerPayload({ format, file, target, shell, sidecar, browserRoot, browserLock, frontendReceipt, appDir, thin = false }, env) {
   const layout = payloadLayout(format);
   assert.equal(target.includes("windows"), layout.extension === ".exe", "Installer format differs from the selected target");
   const { PATH, HOME, USERPROFILE, SystemRoot, TEMP, TMP, TMPDIR, LANG, LC_ALL } = env;
@@ -114,8 +115,16 @@ function verifyInstallerPayload({ format, file, target, shell, sidecar, browserR
   });
   try {
     extract(format, file, directory, run);
-    const payload = extractedPaths(directory, format);
-    for (const [name, original] of [["bodhi", shell], ["bamboo", sidecar]]) {
+    let payload;
+    if (thin) {
+      const root = ownedPath(directory, [layout.root], true);
+      requireShellOnly(root);
+      payload = { bodhi: ownedPath(root, [...layout.bin.split("/"), `bodhi${layout.extension}`]) };
+    } else {
+      payload = extractedPaths(directory, format);
+    }
+    const expected = thin ? [["bodhi", shell]] : [["bodhi", shell], ["bamboo", sidecar]];
+    for (const [name, original] of expected) {
       verifyArchitecture(payload[name], target);
       if (layout.extension === "" && process.platform !== "win32") {
         assert.ok(fs.statSync(payload[name]).mode & 0o111, `Installed ${name} is not executable`);
@@ -135,8 +144,10 @@ function verifyInstallerPayload({ format, file, target, shell, sidecar, browserR
         assert.equal(installed, staged, `Installed ${name} differs from the verified input`);
       }
     }
-    verifyBundledRuntime(payload.browser, browserRoot, target, browserLock);
-    verifyFrontendDirectory(payload.frontend, frontendReceipt);
+    if (!thin) {
+      verifyBundledRuntime(payload.browser, browserRoot, target, browserLock);
+      verifyFrontendDirectory(payload.frontend, frontendReceipt);
+    }
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

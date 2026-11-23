@@ -8,7 +8,20 @@ fn main() {
         "cargo:rustc-env=BODHI_BUILD_TARGET={}",
         std::env::var("TARGET").unwrap()
     );
-    pin_component_root(&out_dir);
+    let root_present = pin_component_root(&out_dir);
+    if thin_build() {
+        assert!(
+            root_present,
+            "A thin Bodhi installer requires src-tauri/component-update-root.json"
+        );
+        // Keep the historical launcher compilable while excluding its
+        // resources from this assembly profile.
+        for name in ["frontend-receipt.json", "browser-receipt.json"] {
+            std::fs::write(out_dir.join(name), b"null").expect("write unused bundled receipt");
+        }
+        tauri_build::build();
+        return;
+    }
     ensure_sidecar_placeholder();
     pin_frontend_receipt();
     build_support::reset_browser_destination(&out_dir)
@@ -50,7 +63,30 @@ fn main() {
     .expect("stage frontend, browser runtime and sidecar beside the final executable");
 }
 
-fn pin_component_root(out_dir: &std::path::Path) {
+fn thin_build() -> bool {
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    let feature = std::env::var_os("CARGO_FEATURE_THIN_SHELL").is_some();
+    let overlay: serde_json::Value = std::env::var("TAURI_CONFIG")
+        .ok()
+        .map(|json| serde_json::from_str(&json).expect("invalid TAURI_CONFIG"))
+        .unwrap_or_default();
+    let without_components = ["externalBin", "resources"]
+        .into_iter()
+        .all(|key| overlay["bundle"][key].as_array().is_some_and(Vec::is_empty));
+    assert_eq!(
+        feature, without_components,
+        "Use both --features thin-shell and --config src-tauri/tauri.thin.conf.json"
+    );
+    if feature {
+        assert!(
+            overlay["build"]["beforeBuildCommand"].is_null(),
+            "Thin Bodhi cannot run the bundled component staging hook"
+        );
+    }
+    feature
+}
+
+fn pin_component_root(out_dir: &std::path::Path) -> bool {
     let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let path = manifest.join("component-update-root.json");
     println!("cargo:rerun-if-changed={}", path.display());
@@ -60,13 +96,24 @@ fn pin_component_root(out_dir: &std::path::Path) {
                 bytes.len() <= 128 * 1024 && !bytes.is_empty(),
                 "Invalid component update root size"
             );
+            let root: serde_json::Value =
+                serde_json::from_slice(&bytes).expect("invalid component trust root JSON");
+            assert_eq!(
+                root["signed"]["_type"], "root",
+                "expected TUF root metadata"
+            );
+            assert_eq!(
+                root["signed"]["consistent_snapshot"], true,
+                "component updates require consistent snapshots"
+            );
             bytes
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(error) => panic!("Cannot read the published component update root: {error}"),
     };
-    std::fs::write(out_dir.join("component-update-root.json"), bytes)
+    std::fs::write(out_dir.join("component-update-root.json"), &bytes)
         .expect("pin component update root");
+    !bytes.is_empty()
 }
 
 /// Pin the selected assembly in the executable so a missing or changed resource
