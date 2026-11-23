@@ -16,6 +16,12 @@ pub(crate) async fn fixture_channel() -> VerifiedChannel {
     TestRepository::new().load().await.unwrap()
 }
 
+pub(crate) async fn initial_combination() -> Combination {
+    let test = TestRepository::new();
+    test.timestamp(include_bytes!("fixture/timestamp-1.json"));
+    test.load().await.unwrap().0.combinations.remove(0)
+}
+
 impl TestRepository {
     fn new() -> Self {
         let storage = tempfile::tempdir().unwrap();

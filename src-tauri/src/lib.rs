@@ -26,6 +26,7 @@ pub mod command;
 pub mod component_browser;
 pub mod component_channel;
 pub mod component_kernel;
+mod component_startup;
 pub mod frontend;
 pub mod sidecar;
 #[cfg(target_os = "macos")]
@@ -216,6 +217,16 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     // self-exits if this process dies uncleanly — see `sidecar` and the
     // `--parent-pid` orphan guard on `bamboo serve`.
     app.manage(sidecar::SidecarState::default());
+    if component_startup::enabled() {
+        let manager = component_startup::Manager::new(profile);
+        let handle = app.handle().clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = manager.launch(&handle).await {
+                show_startup_failure(&handle, &error);
+            }
+        });
+        return Ok(());
+    }
     let sidecar_app = app.handle().clone();
     let development_url = app.config().build.dev_url.clone();
     tauri::async_runtime::spawn(async move {
@@ -456,11 +467,13 @@ pub fn run() {
         .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |_, _| {
             bamboo_update_page::response()
         })
-        .append_invoke_initialization_script(if frontend::uses_managed_frontend() {
-            managed_backend_initialization(web_service_port())
-        } else {
-            String::new()
-        })
+        .append_invoke_initialization_script(
+            if component_startup::enabled() || frontend::uses_managed_frontend() {
+                managed_backend_initialization(web_service_port())
+            } else {
+                String::new()
+            },
+        )
         .plugin(fs_plugin)
         .plugin(dialog_plugin)
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

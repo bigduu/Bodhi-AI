@@ -8,6 +8,7 @@ fn main() {
         "cargo:rustc-env=BODHI_BUILD_TARGET={}",
         std::env::var("TARGET").unwrap()
     );
+    pin_component_root(&out_dir);
     ensure_sidecar_placeholder();
     pin_frontend_receipt();
     build_support::reset_browser_destination(&out_dir)
@@ -47,6 +48,25 @@ fn main() {
         &std::env::var("TARGET").unwrap(),
     )
     .expect("stage frontend, browser runtime and sidecar beside the final executable");
+}
+
+fn pin_component_root(out_dir: &std::path::Path) {
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let path = manifest.join("component-update-root.json");
+    println!("cargo:rerun-if-changed={}", path.display());
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => {
+            assert!(
+                bytes.len() <= 128 * 1024 && !bytes.is_empty(),
+                "Invalid component update root size"
+            );
+            bytes
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("Cannot read the published component update root: {error}"),
+    };
+    std::fs::write(out_dir.join("component-update-root.json"), bytes)
+        .expect("pin component update root");
 }
 
 /// Pin the selected assembly in the executable so a missing or changed resource

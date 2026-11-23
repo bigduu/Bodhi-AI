@@ -151,6 +151,22 @@ pub(crate) fn check_unmanaged_profile(profile: &Profile) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn check_component_floor(profile: &Profile, candidate: &str) -> Result<(), String> {
+    version(candidate).ok_or("Invalid Bamboo component version")?;
+    ProfileState::read(profile)?.require_kernel(candidate)
+}
+
+/// The caller owns the profile writer and update lock through this checkpoint.
+pub(crate) fn record_component_launch(profile: &Profile, candidate: &str) -> Result<(), String> {
+    let mut state = ProfileState::read(profile)?;
+    state.require_kernel(candidate)?;
+    if state.started_version.as_deref() != Some(candidate) {
+        state.started_version = Some(candidate.to_owned());
+        state.save(profile)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct Kernel {
     pub executable: PathBuf,

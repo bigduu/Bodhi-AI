@@ -84,7 +84,7 @@ pub async fn prepare_kernel(
     profile_data: &Path,
     candidate: &Candidate<'_>,
     mut sources: watch::Receiver<DownloadSource>,
-    mut progress: impl FnMut(DownloadSource, u64, u64),
+    mut progress: impl FnMut(DownloadSource, u64, u64) + Send,
 ) -> Result<VerifiedKernel, String> {
     let artifact = candidate.artifact;
     validate_artifact(artifact)?;
@@ -148,29 +148,27 @@ pub(crate) async fn acquire_asset(
     official: &str,
     expected: &Asset,
     sources: &mut watch::Receiver<DownloadSource>,
-    progress: &mut impl FnMut(DownloadSource, u64, u64),
+    progress: &mut (impl FnMut(DownloadSource, u64, u64) + Send),
 ) -> Result<tempfile::NamedTempFile, String> {
-    follow_source(sources, async |source| {
-        download(root, official, source, expected, progress).await
-    })
-    .await
-}
-
-async fn follow_source<T>(
-    sources: &mut watch::Receiver<DownloadSource>,
-    mut start: impl AsyncFnMut(DownloadSource) -> T,
-) -> T {
     loop {
         let source = *sources.borrow_and_update();
-        let work = start(source);
-        tokio::pin!(work);
-        tokio::select! {
-            output = &mut work => return output,
-            changed = async { sources.wait_for(|selected| *selected != source).await.is_ok() } => {
-                if !changed {
-                    return work.await;
-                }
-            }
+        let work = download(root, official, source, expected, progress);
+        if let Some(result) = while_source_selected(sources, source, work).await {
+            return result;
+        }
+    }
+}
+
+async fn while_source_selected<T>(
+    sources: &mut watch::Receiver<DownloadSource>,
+    selected: DownloadSource,
+    work: impl std::future::Future<Output = T> + Send,
+) -> Option<T> {
+    tokio::pin!(work);
+    tokio::select! {
+        output = &mut work => Some(output),
+        changed = async { sources.wait_for(|source| *source != selected).await.is_ok() } => {
+            if changed { None } else { Some(work.await) }
         }
     }
 }
@@ -197,7 +195,7 @@ async fn download(
     official: &str,
     source: DownloadSource,
     expected: &Asset,
-    progress: &mut impl FnMut(DownloadSource, u64, u64),
+    progress: &mut (impl FnMut(DownloadSource, u64, u64) + Send),
 ) -> Result<tempfile::NamedTempFile, String> {
     progress(source, 0, expected.size_bytes);
     let mut response = source
@@ -282,18 +280,15 @@ mod tests {
     #[tokio::test]
     async fn changing_the_source_cancels_the_in_flight_work() {
         let (source, mut receiver) = watch::channel(DownloadSource::GitHub);
-        let mut attempts = Vec::new();
-        let result = follow_source(&mut receiver, async |selected| {
-            attempts.push(selected);
-            if selected == DownloadSource::GitHub {
-                source.send(DownloadSource::GhProxy).unwrap();
-                std::future::pending::<()>().await;
-            }
-            selected
+        let result = while_source_selected(&mut receiver, DownloadSource::GitHub, async {
+            source.send(DownloadSource::GhProxy).unwrap();
+            std::future::pending::<()>().await;
         })
         .await;
-        assert_eq!(result, DownloadSource::GhProxy);
-        assert_eq!(attempts, [DownloadSource::GitHub, DownloadSource::GhProxy]);
+        assert!(result.is_none());
+        let selected = *receiver.borrow_and_update();
+        let result = while_source_selected(&mut receiver, selected, async { selected }).await;
+        assert_eq!(result, Some(DownloadSource::GhProxy));
     }
 
     #[test]
