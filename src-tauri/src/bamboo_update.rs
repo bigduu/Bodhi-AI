@@ -897,7 +897,7 @@ async fn apply_in_window<R: Runtime>(
     let window = app
         .get_webview_window("main")
         .ok_or("Bodhi's main window is unavailable.")?;
-    let frontend = crate::frontend::resolve(app)?;
+    let frontend = crate::frontend::resolve(app, &updates.profile)?;
     let port = crate::web_service_port();
     let ready_url = crate::ready_frontend_url(
         crate::uses_sidecar_frontend(),
@@ -950,7 +950,7 @@ async fn apply_in_window<R: Runtime>(
 async fn recover_running_page<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
     let updates = app.state::<Updates>();
     let _lock = updates.profile.update_lock()?;
-    let frontend = crate::frontend::resolve(app)?;
+    let frontend = crate::frontend::resolve(app, &updates.profile)?;
     let version = updates
         .verify_running(crate::web_service_port(), frontend.index_hash.as_deref())
         .await?;

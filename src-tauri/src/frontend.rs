@@ -1,7 +1,10 @@
-//! Verified frontend resources, owned by the installed application.
+//! Verified frontend resources, resolved from the profile or the application.
+use crate::bamboo_profile::{is_link, Profile};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -34,10 +37,82 @@ pub fn uses_managed_frontend() -> bool {
         .unwrap_or(false)
 }
 
-pub fn resolve<R: Runtime>(app: &AppHandle<R>) -> Result<VerifiedFrontend, String> {
+pub(crate) fn resolve<R: Runtime>(
+    app: &AppHandle<R>,
+    profile: &Profile,
+) -> Result<VerifiedFrontend, String> {
     let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
-    verify_resource(&resources, COMPILED_RECEIPT)
+    resolve_profile(&resources, COMPILED_RECEIPT, profile)
         .map_err(|e| format!("Frontend resources are unavailable or damaged: {e}. Rebuild this app with npm run tauri:build."))
+}
+
+pub(crate) fn resolve_profile(
+    resources: &Path,
+    expected: &[u8],
+    profile: &Profile,
+) -> Result<VerifiedFrontend, String> {
+    let receipt: Receipt = serde_json::from_slice(expected).map_err(|error| error.to_string())?;
+    let bundled = resources.join("frontend");
+    if receipt.mode != "package" || receipt.package_name != "@bigduu/lotus-next" {
+        return verify_resource(&bundled, expected);
+    }
+
+    let slot = profile
+        .state_dir
+        .join(format!("lotus-{}", hash_bytes(expected)));
+    if let Ok(frontend) = verify_resource(&slot, expected) {
+        return Ok(frontend);
+    }
+
+    let frontend = verify_resource(&bundled, expected)?;
+    // Publish a complete immutable directory. An existing slot can be in use
+    // by an owned child, so use the verified bundle if that slot is damaged.
+    if matches!(fs::symlink_metadata(&slot), Err(error) if error.kind() == io::ErrorKind::NotFound)
+    {
+        if let Ok(_lock) = profile.update_lock() {
+            match seed_cache(&slot, &frontend, expected, &receipt) {
+                Ok(cached) => return Ok(cached),
+                Err(error) => log::warn!("Cannot cache Lotus Next {}: {error}", receipt.version),
+            }
+        }
+    }
+    Ok(frontend)
+}
+
+fn seed_cache(
+    slot: &Path,
+    verified: &VerifiedFrontend,
+    expected: &[u8],
+    receipt: &Receipt,
+) -> Result<VerifiedFrontend, String> {
+    // Another instance may have seeded the cache before we acquired the lock.
+    match fs::symlink_metadata(slot) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Ok(_) => return verify_resource(slot, expected),
+        Err(error) => return Err(error.to_string()),
+    }
+    let source = verified
+        .static_dir
+        .as_ref()
+        .ok_or("missing Lotus Next dist")?;
+    let parent = slot.parent().ok_or("missing profile state directory")?;
+    let staging = tempfile::tempdir_in(parent).map_err(|error| error.to_string())?;
+    let pending = staging.path().join("frontend");
+    for path in receipt.files.keys() {
+        // Every path was matched against an inventory of regular files in
+        // verify_resource. The copy is verified again before publication.
+        let destination = pending.join("dist").join(path);
+        let directory = destination
+            .parent()
+            .ok_or("missing Lotus Next path parent")?;
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        fs::copy(source.join(path), destination).map_err(|error| error.to_string())?;
+    }
+    fs::write(pending.join("receipt.json"), expected).map_err(|error| error.to_string())?;
+    let mut cached = verify_resource(&pending, expected)?;
+    fs::rename(pending, slot).map_err(|error| error.to_string())?;
+    cached.static_dir = Some(owned_directory(&slot.join("dist"))?);
+    Ok(cached)
 }
 
 pub fn hash_bytes(bytes: &[u8]) -> String {
@@ -62,13 +137,13 @@ fn file_inventory(
     for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let target = entry.path();
-        let kind = entry.file_type().map_err(|e| e.to_string())?;
-        if kind.is_symlink() {
-            return Err(format!("frontend symlink {}", target.display()));
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        if is_link(&metadata) {
+            return Err(format!("frontend link {}", target.display()));
         }
-        if kind.is_dir() {
+        if metadata.is_dir() {
             file_inventory(root, &target, files)?;
-        } else if kind.is_file() {
+        } else if metadata.is_file() {
             let name = target
                 .strip_prefix(root)
                 .map_err(|e| e.to_string())?
@@ -78,10 +153,13 @@ fn file_inventory(
             if !safe_relative(&name) {
                 return Err(format!("unsafe frontend path {name}"));
             }
-            files.insert(
-                name,
-                hash_bytes(&std::fs::read(target).map_err(|e| e.to_string())?),
-            );
+            let mut digest = Sha256::new();
+            io::copy(
+                &mut fs::File::open(target).map_err(|e| e.to_string())?,
+                &mut digest,
+            )
+            .map_err(|e| e.to_string())?;
+            files.insert(name, format!("{:x}", digest.finalize()));
         } else {
             return Err("frontend resource is not a regular file".into());
         }
@@ -117,7 +195,7 @@ fn valid_revision(value: &str) -> bool {
 fn owned_directory(path: &Path) -> Result<PathBuf, String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if !metadata.is_dir() || metadata.is_symlink() {
+    if !metadata.is_dir() || is_link(&metadata) {
         return Err(format!(
             "not an owned frontend directory: {}",
             path.display()
@@ -126,14 +204,12 @@ fn owned_directory(path: &Path) -> Result<PathBuf, String> {
     path.canonicalize().map_err(|e| e.to_string())
 }
 
-fn verify_resource(resources: &Path, expected: &[u8]) -> Result<VerifiedFrontend, String> {
-    let root = owned_directory(&resources.join("frontend"))?;
+fn verify_resource(frontend_root: &Path, expected: &[u8]) -> Result<VerifiedFrontend, String> {
+    let root = owned_directory(frontend_root)?;
     let receipt_path = root.join("receipt.json");
-    if std::fs::symlink_metadata(&receipt_path)
-        .map_err(|e| e.to_string())?
-        .is_symlink()
-    {
-        return Err("frontend receipt is a symlink".into());
+    let metadata = fs::symlink_metadata(&receipt_path).map_err(|e| e.to_string())?;
+    if !metadata.is_file() || is_link(&metadata) || metadata.len() != expected.len() as u64 {
+        return Err("invalid frontend receipt file".into());
     }
     let bytes = std::fs::read(receipt_path).map_err(|e| e.to_string())?;
     if bytes != expected {
@@ -265,6 +341,59 @@ mod tests {
         (temp, receipt)
     }
 
+    fn package_fixture() -> (tempfile::TempDir, Vec<u8>) {
+        let (temp, receipt) = fixture();
+        let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
+        value["mode"] = "package".into();
+        value["version"] = "2026.9.22".into();
+        value["artifactManifestSha256"] = hash_bytes(b"{}\n").into();
+        value["artifactResourcesSha256"] = "a".repeat(64).into();
+        let package = serde_json::to_vec(&value).unwrap();
+        fs::write(temp.path().join("frontend/receipt.json"), &package).unwrap();
+        (temp, package)
+    }
+
+    #[test]
+    fn seeds_published_frontend_and_reuses_it_without_bundle_resources() {
+        let (bundle, receipt) = package_fixture();
+        let data = tempfile::tempdir().unwrap();
+        let profile = Profile::open(data.path()).unwrap();
+        let first = resolve_profile(bundle.path(), &receipt, &profile).unwrap();
+        let first_dir = first.static_dir.unwrap();
+        assert!(first_dir.starts_with(&profile.state_dir));
+        assert_eq!(
+            first.manifest_sha256.as_deref(),
+            Some(hash_bytes(b"{}\n").as_str())
+        );
+        let bundle_path = bundle.path().to_owned();
+        drop(bundle);
+        let next = resolve_profile(&bundle_path, &receipt, &profile).unwrap();
+        assert_eq!(next.static_dir.unwrap(), first_dir);
+        assert_eq!(next.index_hash, first.index_hash);
+    }
+
+    #[test]
+    fn damaged_or_unavailable_profile_cache_uses_only_the_verified_bundle() {
+        let (bundle, receipt) = package_fixture();
+        let data = tempfile::tempdir().unwrap();
+        let profile = Profile::open(data.path()).unwrap();
+        let bundled = bundle.path().join("frontend/dist").canonicalize().unwrap();
+        let lock = profile.update_lock().unwrap();
+        let fallback = resolve_profile(bundle.path(), &receipt, &profile).unwrap();
+        assert_eq!(fallback.static_dir.unwrap(), bundled);
+        drop(lock);
+
+        let cached = resolve_profile(bundle.path(), &receipt, &profile)
+            .unwrap()
+            .static_dir
+            .unwrap();
+        fs::write(cached.join("assets/app.js"), b"altered").unwrap();
+        let fallback = resolve_profile(bundle.path(), &receipt, &profile).unwrap();
+        assert_eq!(fallback.static_dir.unwrap(), bundled);
+        fs::write(bundled.join("assets/app.js"), b"altered").unwrap();
+        assert!(resolve_profile(bundle.path(), &receipt, &profile).is_err());
+    }
+
     #[test]
     fn resolves_resources_after_bundle_is_moved() {
         let (original, receipt) = fixture();
@@ -274,7 +403,7 @@ mod tests {
             moved.path().join("frontend"),
         )
         .unwrap();
-        let verified = verify_resource(moved.path(), &receipt).unwrap();
+        let verified = verify_resource(&moved.path().join("frontend"), &receipt).unwrap();
         assert_eq!(
             verified.static_dir.unwrap(),
             moved.path().join("frontend/dist").canonicalize().unwrap()
@@ -292,7 +421,7 @@ mod tests {
                 _ => std::fs::write(temp.path().join("frontend/dist/unexpected.js"), "extra")
                     .unwrap(),
             }
-            assert!(verify_resource(temp.path(), &receipt).is_err());
+            assert!(verify_resource(&temp.path().join("frontend"), &receipt).is_err());
         }
     }
 
@@ -301,22 +430,14 @@ mod tests {
         let (temp, receipt) = fixture();
         let file = temp.path().join("frontend/receipt.json");
         std::fs::write(&file, "{\"mode\":\"package\"}").unwrap();
-        assert!(verify_resource(temp.path(), &receipt).is_err());
+        assert!(verify_resource(&temp.path().join("frontend"), &receipt).is_err());
         std::fs::remove_file(file).unwrap();
-        assert!(verify_resource(temp.path(), &receipt).is_err());
+        assert!(verify_resource(&temp.path().join("frontend"), &receipt).is_err());
     }
 
     #[test]
     fn exact_published_package_resources_remain_valid_after_a_move() {
-        let (original, receipt) = fixture();
-        let mut value: serde_json::Value = serde_json::from_slice(&receipt).unwrap();
-        value["mode"] = "package".into();
-        value["version"] = "2026.9.22".into();
-        value["sourceDirty"] = false.into();
-        value["artifactManifestSha256"] = hash_bytes(b"{}\n").into();
-        value["artifactResourcesSha256"] = "a".repeat(64).into();
-        let package = serde_json::to_vec(&value).unwrap();
-        std::fs::write(original.path().join("frontend/receipt.json"), &package).unwrap();
+        let (original, package) = package_fixture();
         let moved = tempfile::tempdir().unwrap();
         std::fs::rename(
             original.path().join("frontend"),
@@ -324,7 +445,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            verify_resource(moved.path(), &package)
+            verify_resource(&moved.path().join("frontend"), &package)
                 .unwrap()
                 .static_dir
                 .unwrap(),
@@ -342,7 +463,7 @@ mod tests {
         value["artifactResourcesSha256"] = "a".repeat(64).into();
         let package = serde_json::to_vec(&value).unwrap();
         std::fs::write(temp.path().join("frontend/receipt.json"), &package).unwrap();
-        assert!(verify_resource(temp.path(), &package).is_err());
+        assert!(verify_resource(&temp.path().join("frontend"), &package).is_err());
     }
 
     #[test]
@@ -355,11 +476,11 @@ mod tests {
         let package = serde_json::to_vec(&value).unwrap();
         std::fs::write(temp.path().join("frontend/receipt.json"), &package).unwrap();
         std::fs::remove_dir_all(temp.path().join("frontend/dist")).unwrap();
-        assert!(verify_resource(temp.path(), &package)
+        assert!(verify_resource(&temp.path().join("frontend"), &package)
             .unwrap()
             .static_dir
             .is_none());
-        assert!(verify_resource(temp.path(), &receipt).is_err());
+        assert!(verify_resource(&temp.path().join("frontend"), &receipt).is_err());
     }
 
     #[cfg(unix)]
@@ -376,6 +497,6 @@ mod tests {
             temp.path().join("frontend/dist"),
         )
         .unwrap();
-        assert!(verify_resource(temp.path(), &receipt).is_err());
+        assert!(verify_resource(&temp.path().join("frontend"), &receipt).is_err());
     }
 }
