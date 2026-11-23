@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { browserArtifacts } = require("./prepare-component-candidate.cjs");
+const { browserArtifacts, changeNotes, releaseChanges } = require("./prepare-component-candidate.cjs");
 
 function fixture() {
   const version = "2026.11.39", sourceRevision = "a".repeat(40), manifestSha256 = "b".repeat(64);
@@ -31,4 +31,32 @@ test("desktop browser inputs belong to the exact Bamboo release and all five tar
   const changed = structuredClone(release);
   changed.assets[1].digest = changed.assets[0].digest;
   assert.throws(() => browserArtifacts(manifest, expected, changed));
+});
+
+test("change history reads all comparison pages and gives bounded notes a full-history link", () => {
+  const previous = { sourceRevision: "a".repeat(40) };
+  const items = Array.from({ length: 70 }, (_, index) => ({ sha: index.toString(16).padStart(40, "0"),
+    commit: { message: `Change ${index}\nCommit body` } }));
+  const selected = { sourceRevision: items.at(-1).sha };
+  const requested = [];
+  function request(endpoint) {
+    const page = Number(new URL(`https://api.github.com/${endpoint}`).searchParams.get("page"));
+    requested.push(page);
+    return { merge_base_commit: { sha: previous.sourceRevision }, status: "ahead", behind_by: 0, total_commits: items.length,
+      commits: items.slice((page - 1) * 64, page * 64) };
+  }
+  const history = releaseChanges("bigduu/Bamboo-agent", previous, selected, request);
+  assert.deepEqual(requested, [1, 2]);
+  assert.equal(history.commits.length, 70);
+  assert.deepEqual(history.commits.at(-1), { sha: selected.sourceRevision, subject: "Change 69" });
+  const notes = changeNotes(history);
+  assert.equal(notes.length, 64);
+  assert.equal(notes.at(-2), "Change 69");
+  assert.ok(notes.at(-1).endsWith(history.compare));
+
+  assert.throws(() => releaseChanges("bigduu/Bamboo-agent", previous, selected, (endpoint) => {
+    const result = request(endpoint);
+    if (requested.at(-1) === 2) result.commits.pop();
+    return result;
+  }), /Incomplete component comparison page/);
 });

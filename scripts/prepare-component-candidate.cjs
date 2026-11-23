@@ -159,24 +159,54 @@ async function lotusRelease(version) {
   }
 }
 
-function releaseChanges(repo, previous, selected) {
-  if (!previous || previous.sourceRevision === selected.sourceRevision) return [];
+function releaseChanges(repo, previous, selected, request = api) {
+  if (!previous || previous.sourceRevision === selected.sourceRevision) return { compare: null, commits: [] };
   assert.match(previous.sourceRevision, SHA);
-  const compare = api(`repos/${repo}/compare/${previous.sourceRevision}...${selected.sourceRevision}?per_page=64`);
-  assert.equal(compare.merge_base_commit.sha, previous.sourceRevision, "Component source versions have diverged");
-  assert.ok(compare.status === "ahead" && compare.behind_by === 0);
-  return compare.commits.map((item) => item.commit.message.split(/\r?\n/, 1)[0].trim().slice(0, 300)).filter(Boolean);
+  assert.match(selected.sourceRevision, SHA);
+  const range = `${previous.sourceRevision}...${selected.sourceRevision}`;
+  const perPage = 64;
+  const commits = [];
+  const seen = new Set();
+  let total;
+  for (let page = 1; total === undefined || commits.length < total; page += 1) {
+    const compare = request(`repos/${repo}/compare/${range}?per_page=${perPage}&page=${page}`);
+    assert.equal(compare.merge_base_commit.sha, previous.sourceRevision, "Component source versions have diverged");
+    assert.ok(compare.status === "ahead" && compare.behind_by === 0);
+    total ??= compare.total_commits;
+    assert.ok(Number.isSafeInteger(total) && total > 0);
+    assert.equal(compare.total_commits, total, "The component comparison changed between pages");
+    assert.equal(compare.commits.length, Math.min(perPage, total - commits.length), "Incomplete component comparison page");
+    for (const item of compare.commits) {
+      assert.match(item.sha, SHA);
+      assert.ok(!seen.has(item.sha), "Duplicate commit in component comparison");
+      seen.add(item.sha);
+      commits.push({ sha: item.sha, subject: item.commit.message.split(/\r?\n/, 1)[0].trim() });
+    }
+  }
+  assert.ok(seen.has(selected.sourceRevision), "The component comparison did not reach the selected source");
+  return { compare: `https://github.com/${repo}/compare/${range}`, commits };
+}
+
+function changeNotes(history) {
+  const subjects = history.commits.map(commit => Array.from(commit.subject).slice(0, 300).join("")).filter(Boolean);
+  if (subjects.length <= 64) return subjects;
+  return [...subjects.slice(-63), `另有 ${subjects.length - 63} 条提交，完整记录 ${history.compare}`];
 }
 
 async function prepare(bamboo, lotus, previous) {
   assert.match(bamboo, VERSION);
   assert.match(lotus, VERSION);
   const [engine, frontend] = await Promise.all([bambooRelease(bamboo), lotusRelease(lotus)]);
+  const changeHistory = {
+    bamboo: releaseChanges(BAMBOO, previous?.bamboo, engine),
+    lotus: releaseChanges(LOTUS, previous?.lotus, frontend),
+  };
   return {
     kind: "bodhi-component-candidate/v1",
     missingBrowserRuntime: engine.artifacts.filter((item) => !item.browserRuntime).map((item) => item.target),
+    changeHistory,
     combination: { bamboo: engine, lotus: frontend, changes: {
-      bamboo: releaseChanges(BAMBOO, previous?.bamboo, engine), lotus: releaseChanges(LOTUS, previous?.lotus, frontend),
+      bamboo: changeNotes(changeHistory.bamboo), lotus: changeNotes(changeHistory.lotus),
     } },
   };
 }
@@ -196,4 +226,4 @@ if (require.main === module) {
     .catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { browserArtifacts, prepare };
+module.exports = { browserArtifacts, changeNotes, prepare, releaseChanges };
