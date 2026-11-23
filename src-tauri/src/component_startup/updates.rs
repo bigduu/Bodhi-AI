@@ -310,17 +310,33 @@ pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 fn authorize<R: Runtime>(window: &WebviewWindow<R>, allow_splash: bool) -> Result<(), String> {
     let url = window.url().map_err(|error| error.to_string())?;
-    let local = matches!(
-        (url.scheme(), url.host_str()),
-        ("tauri", Some("localhost")) | ("http" | "https", Some("tauri.localhost"))
-    );
-    let updates = window.label() == MENU_ID && url.path() == "/component-updates.html";
-    let splash =
-        allow_splash && window.label() == "main" && matches!(url.path(), "/" | "/index.html");
-    if local && (updates || splash) {
+    let dev = if tauri::is_dev() {
+        window.config().build.dev_url.as_ref()
+    } else {
+        None
+    };
+    if can_access(window.label(), &url, dev, allow_splash) {
         return Ok(());
     }
     Err("This window cannot access the component updater".into())
+}
+
+fn can_access(label: &str, url: &tauri::Url, dev: Option<&tauri::Url>, allow_splash: bool) -> bool {
+    let bundled = url.port().is_none()
+        && matches!(
+            (url.scheme(), url.host_str()),
+            ("tauri", Some("localhost")) | ("http" | "https", Some("tauri.localhost"))
+        );
+    let owned_dev = dev.filter(|expected| {
+        expected.scheme() == "http"
+            && expected.host_str() == Some("127.0.0.1")
+            && expected.origin() == url.origin()
+    });
+    let updates = label == MENU_ID && url.path() == "/component-updates.html";
+    let splash = allow_splash && label == "main";
+    (updates && (bundled || owned_dev.is_some()))
+        || (splash && bundled && matches!(url.path(), "/" | "/index.html"))
+        || (splash && url.path() == "/__bodhi_startup" && owned_dev == Some(url))
 }
 
 #[tauri::command]
@@ -381,6 +397,24 @@ mod tests {
                 .is_err()
         );
         assert_eq!(interval.tick().await, start + Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn update_commands_only_accept_the_bundled_or_owned_development_page() {
+        let parse = |url| tauri::Url::parse(url).unwrap();
+        let dev = parse("http://127.0.0.1:1420/__bodhi_startup?run=owned");
+        let update = parse("http://127.0.0.1:1420/component-updates.html");
+        let bundled = parse("tauri://localhost/component-updates.html");
+        assert!(can_access(MENU_ID, &bundled, None, false));
+        assert!(!can_access(MENU_ID, &update, None, false));
+        assert!(can_access(MENU_ID, &update, Some(&dev), false));
+        assert!(!can_access("main", &update, Some(&dev), true));
+        let other = parse("http://127.0.0.1:8000/component-updates.html");
+        assert!(!can_access(MENU_ID, &other, Some(&dev), false));
+        assert!(can_access("main", &dev, Some(&dev), true));
+        assert!(!can_access("main", &dev, Some(&dev), false));
+        let stale = parse("http://127.0.0.1:1420/__bodhi_startup?run=old");
+        assert!(!can_access("main", &stale, Some(&dev), true));
     }
 
     #[test]
