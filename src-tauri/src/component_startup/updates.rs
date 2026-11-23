@@ -331,7 +331,10 @@ pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn authorize<R: Runtime>(window: &WebviewWindow<R>, allow_splash: bool) -> Result<(), String> {
+pub(crate) fn authorize<R: Runtime>(
+    window: &WebviewWindow<R>,
+    allow_splash: bool,
+) -> Result<(), String> {
     let url = window.url().map_err(|error| error.to_string())?;
     let dev = if tauri::is_dev() {
         window.config().build.dev_url.as_ref()
@@ -358,7 +361,7 @@ fn can_access(label: &str, url: &tauri::Url, dev: Option<&tauri::Url>, allow_spl
     let updates = label == MENU_ID && url.path() == "/component-updates.html";
     let splash = allow_splash && label == "main";
     (updates && (bundled || owned_dev.is_some()))
-        || (splash && bundled && matches!(url.path(), "/" | "/index.html"))
+        || (splash && bundled && matches!(url.path(), "" | "/" | "/index.html"))
         || (splash && url.path() == "/__bodhi_startup" && owned_dev == Some(url))
 }
 
@@ -448,6 +451,10 @@ mod tests {
         let update = parse("http://127.0.0.1:1420/component-updates.html");
         let bundled = parse("tauri://localhost/component-updates.html");
         assert!(can_access(MENU_ID, &bundled, None, false));
+        let splash = parse("tauri://localhost");
+        assert!(can_access("main", &splash, None, true));
+        assert!(!can_access("main", &splash, None, false));
+        assert!(!can_access("main", &parse("tauri://foreign"), None, true));
         assert!(!can_access(MENU_ID, &update, None, false));
         assert!(can_access(MENU_ID, &update, Some(&dev), false));
         assert!(!can_access("main", &update, Some(&dev), true));

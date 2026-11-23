@@ -1,6 +1,7 @@
 (() => {
   let locale = "en-US";
   let messages;
+  let pending = Promise.resolve();
   const mirrors = { "gh-proxy": "gh-proxy.com", "gh-fast": "ghfast.top" };
 
   function text(key, values = {}) {
@@ -9,7 +10,12 @@
     );
   }
 
-  async function sync(expectedLocale) {
+  function sync(expectedLocale) {
+    pending = pending.then(() => refresh(expectedLocale));
+    return pending;
+  }
+
+  async function refresh(expectedLocale) {
     if ((messages && (!expectedLocale || expectedLocale === locale)) || !window.__TAURI_INTERNALS__) return;
     try {
       ({ locale, messages } = await window.__TAURI_INTERNALS__.invoke("shell_translations"));

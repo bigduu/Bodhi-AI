@@ -150,9 +150,17 @@ fn show_startup_failure<R: Runtime>(app: &tauri::AppHandle<R>, message: &str) {
     let locale = i18n::active(app);
     let title = locale.text("startup.failed");
     if let Some(window) = app.get_webview_window("main") {
-        let encoded = serde_json::to_string(&format!("{title}\n\n{message}")).unwrap_or_default();
+        let encoded_title = serde_json::to_string(title).unwrap_or_default();
+        let encoded_detail = serde_json::to_string(&format!("\n\n{message}")).unwrap_or_default();
         let _ = window.eval(format!(
-            "document.documentElement.lang = '{}'; document.body.textContent = {encoded}; document.body.style.cssText = 'white-space:pre-wrap;padding:32px;font:15px system-ui;color:#e0918a;background:#121416';",
+            r#"(() => {{
+                document.documentElement.lang = '{}';
+                const title = document.createElement('strong');
+                title.dataset.i18n = 'startup.failed';
+                title.textContent = {encoded_title};
+                document.body.replaceChildren(title, {encoded_detail});
+                document.body.style.cssText = 'display:block;white-space:pre-wrap;padding:32px;font:15px system-ui;color:#e0918a;background:#121416';
+            }})();"#,
             locale.tag()
         ));
     }
@@ -207,6 +215,13 @@ fn uses_sidecar_frontend() -> bool {
 }
 
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Tauri's path resolver is available by setup, after its menu builder runs.
+    let language = Language::load(app.handle());
+    let preference = language.preference();
+    let menu = build_app_menu(app.handle(), language.resolve(preference), preference)?;
+    app.manage(language);
+    app.set_menu(menu)?;
+
     window_size::create_main_window(app)?;
 
     #[cfg(target_os = "macos")]
@@ -497,6 +512,13 @@ fn change_language<R: Runtime>(
     if let Some(window) = handle.get_webview_window(component_startup::updates::MENU_ID) {
         window.set_title(locale.text("updates.title"))?;
     }
+    // Notify the startup page even when the component manager is unavailable.
+    if let Some(window) = handle
+        .get_webview_window("main")
+        .filter(|window| component_startup::updates::authorize(window, true).is_ok())
+    {
+        let _ = window.eval(format!("void window.bodhiI18n?.sync('{}');", locale.tag()));
+    }
     Ok(())
 }
 
@@ -530,6 +552,7 @@ pub fn run() {
     let mut last_window_size = None;
 
     tauri::Builder::default()
+        .enable_macos_default_menu(false)
         .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |context, _| {
             bamboo_update_page::response(i18n::active(context.app_handle()))
         })
@@ -546,13 +569,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .menu(|handle| {
-            let language = Language::load(handle);
-            let preference = language.preference();
-            let locale = language.resolve(preference);
-            handle.manage(language);
-            build_app_menu(handle, locale, preference)
-        })
         .on_menu_event(|app, event| {
             if let Some(preference) = Locale::from_menu_id(event.id().as_ref()) {
                 if let Err(error) = change_language(app, preference) {
