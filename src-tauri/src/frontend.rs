@@ -10,6 +10,9 @@ use tauri::{AppHandle, Manager, Runtime};
 
 #[path = "frontend_download.rs"]
 mod download;
+#[path = "frontend_release.rs"]
+mod release;
+pub use release::prepare_release;
 
 const COMPILED_RECEIPT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend-receipt.json"));
 
@@ -169,10 +172,35 @@ fn safe_relative(file: &str) -> bool {
     !file.is_empty()
         && !file
             .chars()
-            .any(|c| c == '\\' || c == ':' || c.is_ascii_control())
-        && file
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+            .any(|c| matches!(c, '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*') || c.is_control())
+        && file.split('/').all(portable_component)
+}
+
+fn portable_component(part: &str) -> bool {
+    if part.is_empty() || part.ends_with(['.', ' ']) {
+        return false;
+    }
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return false;
+    }
+    !stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+        .is_some_and(|number| {
+            matches!(
+                number,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
 }
 
 fn file_inventory(

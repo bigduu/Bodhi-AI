@@ -50,6 +50,14 @@ impl TestRepository {
     }
 }
 
+pub(crate) async fn lotus_fixtures() -> [LotusRelease; 2] {
+    let channel = TestRepository::new().load().await.unwrap();
+    [
+        channel.0.combinations[0].lotus.clone(),
+        channel.0.combinations[1].lotus.clone(),
+    ]
+}
+
 #[tokio::test]
 async fn selects_exact_native_asset_and_only_an_approved_transition() {
     let channel = TestRepository::new().load().await.unwrap();
