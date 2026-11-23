@@ -2,13 +2,14 @@ use crate::command::copy::copy_to_clipboard;
 use crate::command::image::read_local_image;
 use crate::command::notification::show_desktop_notification;
 use crate::command::window::{is_main_window_focused, set_window_theme};
+use crate::i18n::{Language, Locale};
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use tauri::menu::WINDOW_SUBMENU_ID;
-use tauri::menu::{Menu, MenuItem, Submenu, HELP_SUBMENU_ID};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, Submenu, HELP_SUBMENU_ID};
 use tauri::Manager;
 use tauri::{App, Runtime};
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_fs::FsExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 use tokio::time::sleep;
@@ -28,6 +29,7 @@ pub mod component_channel;
 pub mod component_kernel;
 mod component_startup;
 pub mod frontend;
+mod i18n;
 pub mod sidecar;
 #[cfg(target_os = "macos")]
 mod webview_recovery;
@@ -145,17 +147,31 @@ fn schedule_webview_diag<R: Runtime>(app: &App<R>) {
 
 fn show_startup_failure<R: Runtime>(app: &tauri::AppHandle<R>, message: &str) {
     log::error!("Bodhi failed to start: {message}");
+    let locale = i18n::active(app);
+    let title = locale.text("startup.failed");
     if let Some(window) = app.get_webview_window("main") {
-        let encoded = serde_json::to_string(message).unwrap_or_default();
+        let encoded_title = serde_json::to_string(title).unwrap_or_default();
+        let encoded_detail = serde_json::to_string(&format!("\n\n{message}")).unwrap_or_default();
         let _ = window.eval(format!(
-            "document.body.textContent = 'Bodhi failed to start\\n\\n' + {encoded}; document.body.style.cssText = 'white-space:pre-wrap;padding:32px;font:15px system-ui;color:#e0918a;background:#121416';"
+            r#"(() => {{
+                document.documentElement.lang = '{}';
+                const title = document.createElement('strong');
+                title.dataset.i18n = 'startup.failed';
+                title.textContent = {encoded_title};
+                document.body.replaceChildren(title, {encoded_detail});
+                document.body.style.cssText = 'display:block;white-space:pre-wrap;padding:32px;font:15px system-ui;color:#e0918a;background:#121416';
+            }})();"#,
+            locale.tag()
         ));
     }
     // This also remains visible if the splash hasn't finished loading yet.
     app.dialog()
         .message(message)
-        .title("Bodhi failed to start")
+        .title(title)
         .kind(MessageDialogKind::Error)
+        .buttons(MessageDialogButtons::OkCustom(
+            locale.text("dialog.ok").into(),
+        ))
         .show(|_| {});
 }
 
@@ -199,6 +215,13 @@ fn uses_sidecar_frontend() -> bool {
 }
 
 fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    // Tauri's path resolver is available by setup, after its menu builder runs.
+    let language = Language::load(app.handle());
+    let preference = language.preference();
+    let menu = build_app_menu(app.handle(), language.resolve(preference), preference)?;
+    app.manage(language);
+    app.set_menu(menu)?;
+
     window_size::create_main_window(app)?;
 
     #[cfg(target_os = "macos")]
@@ -246,7 +269,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             if let Err(error) = sidecar::require_available_port(port) {
                 show_startup_failure(
                     &sidecar_app,
-                    &format!("{error}\n\nRelaunch Bodhi with an available BODHI_BACKEND_PORT."),
+                    &format!(
+                        "{error}\n\n{}",
+                        i18n::active(&sidecar_app).text("startup.portHint")
+                    ),
                 );
                 return;
             }
@@ -314,7 +340,10 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             sidecar::kill(&sidecar_app);
             show_startup_failure(
                 &sidecar_app,
-                &format!("{error}\n\nCheck the engine logs and restart Bodhi."),
+                &format!(
+                    "{error}\n\n{}",
+                    i18n::active(&sidecar_app).text("startup.logsHint")
+                ),
             );
             return;
         }
@@ -325,10 +354,8 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                     sidecar::kill(&sidecar_app);
                     show_startup_failure(
                         &sidecar_app,
-                        &format!(
-                            "The running Bamboo did not report the selected version {}.",
-                            kernel.version
-                        ),
+                        &i18n::active(&sidecar_app)
+                            .format("startup.wrongVersion", &[("version", &kernel.version)]),
                     );
                     return;
                 }
@@ -374,8 +401,23 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
 /// shell's own menu items.
 fn build_app_menu<R: Runtime>(
     handle: &tauri::AppHandle<R>,
+    locale: Locale,
+    preference: Option<Locale>,
 ) -> std::result::Result<Menu<R>, tauri::Error> {
     let menu = Menu::default(handle)?;
+    for item in menu.items()? {
+        if let Some(submenu) = item.as_submenu() {
+            let key = match submenu.text()?.as_str() {
+                "File" => "menu.file",
+                "Edit" => "menu.edit",
+                "View" => "menu.view",
+                "Window" => "menu.window",
+                "Help" => "menu.help",
+                _ => continue,
+            };
+            submenu.set_text(locale.text(key))?;
+        }
+    }
     #[cfg(target_os = "macos")]
     if let Some(window_menu) = menu
         .get(WINDOW_SUBMENU_ID)
@@ -385,7 +427,7 @@ fn build_app_menu<R: Runtime>(
         window_menu.append(&MenuItem::with_id(
             handle,
             webview_recovery::RELOAD_MENU_ID,
-            "Reload Page",
+            locale.text("menu.reload"),
             true,
             Some("Cmd+R"),
         )?)?;
@@ -394,28 +436,28 @@ fn build_app_menu<R: Runtime>(
     let install_item = MenuItem::with_id(
         handle,
         cli_install::MENU_ID,
-        cli_install::MENU_LABEL,
+        locale.text("menu.installCli"),
         true,
         None::<&str>,
     )?;
     let update_kernel = MenuItem::with_id(
         handle,
         bamboo_update::MENU_ID,
-        bamboo_update::MENU_LABEL,
+        locale.text("menu.installKernel"),
         true,
         None::<&str>,
     )?;
     let apply_kernel = MenuItem::with_id(
         handle,
         bamboo_update::APPLY_MENU_ID,
-        bamboo_update::APPLY_MENU_LABEL,
+        locale.text("menu.applyKernel"),
         true,
         None::<&str>,
     )?;
     let updates = MenuItem::with_id(
         handle,
         component_startup::updates::MENU_ID,
-        "版本与更新",
+        locale.text("menu.updates"),
         true,
         None::<&str>,
     )?;
@@ -425,31 +467,59 @@ fn build_app_menu<R: Runtime>(
         vec![&install_item, &update_kernel, &apply_kernel]
     };
 
-    let mut appended = false;
-    if let Some(kind) = menu.get(HELP_SUBMENU_ID) {
-        if let Some(help) = kind.as_submenu() {
-            for item in &items {
-                help.append(*item)?;
-            }
-            appended = true;
-        }
-    }
-    if !appended {
-        // No Help submenu in this platform's default menu — add one so the
-        // item is still reachable.
-        let help = Submenu::with_items(
-            handle,
-            "Help",
-            true,
-            &items
-                .iter()
-                .map(|item| *item as &dyn tauri::menu::IsMenuItem<R>)
-                .collect::<Vec<_>>(),
-        )?;
+    let help = menu
+        .get(HELP_SUBMENU_ID)
+        .and_then(|item| item.as_submenu().cloned());
+    let help = if let Some(help) = help {
+        help
+    } else {
+        let help = Submenu::with_id(handle, HELP_SUBMENU_ID, locale.text("menu.help"), true)?;
         menu.append(&help)?;
+        help
+    };
+    for item in items {
+        help.append(item)?;
     }
+    let language_menu = Submenu::new(handle, locale.text("menu.language"), true)?;
+    for choice in std::iter::once(None).chain(Locale::ALL.into_iter().map(Some)) {
+        let label = choice.map_or_else(
+            || locale.text("menu.system"),
+            |language| language.text("locale.name"),
+        );
+        language_menu.append(&CheckMenuItem::with_id(
+            handle,
+            Locale::menu_id(choice),
+            label,
+            true,
+            preference == choice,
+            None::<&str>,
+        )?)?;
+    }
+    help.append(&language_menu)?;
 
     Ok(menu)
+}
+
+fn change_language<R: Runtime>(
+    handle: &tauri::AppHandle<R>,
+    preference: Option<Locale>,
+) -> anyhow::Result<()> {
+    let language = handle.state::<Language>();
+    let locale = language.resolve(preference);
+    let menu = build_app_menu(handle, locale, preference)?;
+    language.set_preference(preference)?;
+    handle.set_menu(menu)?;
+    if let Some(window) = handle.get_webview_window(component_startup::updates::MENU_ID) {
+        window.set_title(locale.text("updates.title"))?;
+    }
+    // Notify the startup page even when the component manager is unavailable.
+    if let Some(window) = handle
+        .get_webview_window("main")
+        .filter(|window| component_startup::updates::authorize(window, true).is_ok())
+    {
+        let _ = window.eval(format!("void window.bodhiI18n?.sync('{}');", locale.tag()));
+    }
+    Ok(())
 }
 
 /// Toggle main window visibility - show if hidden, hide if visible
@@ -482,8 +552,9 @@ pub fn run() {
     let mut last_window_size = None;
 
     tauri::Builder::default()
-        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |_, _| {
-            bamboo_update_page::response()
+        .enable_macos_default_menu(false)
+        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |context, _| {
+            bamboo_update_page::response(i18n::active(context.app_handle()))
         })
         .append_invoke_initialization_script(
             if component_startup::enabled() || frontend::uses_managed_frontend() {
@@ -498,8 +569,26 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
-        .menu(build_app_menu)
         .on_menu_event(|app, event| {
+            if let Some(preference) = Locale::from_menu_id(event.id().as_ref()) {
+                if let Err(error) = change_language(app, preference) {
+                    let locale = i18n::active(app);
+                    if let Ok(menu) =
+                        build_app_menu(app, locale, app.state::<Language>().preference())
+                    {
+                        let _ = app.set_menu(menu);
+                    }
+                    app.dialog()
+                        .message(error.to_string())
+                        .title(locale.text("language.saveFailed"))
+                        .kind(MessageDialogKind::Error)
+                        .buttons(MessageDialogButtons::OkCustom(
+                            locale.text("dialog.ok").into(),
+                        ))
+                        .show(|_| {});
+                }
+                return;
+            }
             if event.id() == cli_install::MENU_ID {
                 cli_install::run_from_menu(app);
             }
@@ -511,10 +600,14 @@ pub fn run() {
             }
             if event.id() == component_startup::updates::MENU_ID {
                 if let Err(error) = component_startup::updates::open(app) {
+                    let locale = i18n::active(app);
                     app.dialog()
                         .message(error)
-                        .title("版本与更新")
+                        .title(locale.text("updates.title"))
                         .kind(MessageDialogKind::Error)
+                        .buttons(MessageDialogButtons::OkCustom(
+                            locale.text("dialog.ok").into(),
+                        ))
                         .show(|_| {});
                 }
             }
@@ -549,6 +642,7 @@ pub fn run() {
             set_window_theme,
             show_desktop_notification,
             is_main_window_focused,
+            component_startup::updates::shell_translations,
             component_startup::updates::component_snapshot,
             component_startup::updates::check_components,
             component_startup::updates::set_component_source,

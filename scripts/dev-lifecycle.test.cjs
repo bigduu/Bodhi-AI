@@ -178,7 +178,8 @@ test("startup route contains only the splash and rejects a stale run without SPA
   const identity = await fetch(`${origin}/__bodhi_dev_identity?run=this-run`);
   assert.deepEqual(await identity.json(), { runId: "this-run", pid: 123 });
   for (const [name, contentType] of [["component-updates.html", "text/html"],
-    ["component-updates.js", "text/javascript"], ["component-bootstrap.js", "text/javascript"]]) {
+    ["component-updates.js", "text/javascript"], ["component-bootstrap.js", "text/javascript"],
+    ["i18n.js", "text/javascript"]]) {
     const asset = await fetch(`${origin}/${name}`);
     assert.equal(asset.status, 200);
     assert.equal(asset.headers.get("content-type"), contentType);

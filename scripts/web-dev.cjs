@@ -10,6 +10,7 @@ const COMPONENT_ASSETS = new Map([
   ["/component-updates.html", "text/html"],
   ["/component-updates.js", "text/javascript"],
   ["/component-bootstrap.js", "text/javascript"],
+  ["/i18n.js", "text/javascript"],
 ]);
 
 // Serve the shell's startup and update UI independently of the Lotus Vite root.

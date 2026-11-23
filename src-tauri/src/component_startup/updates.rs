@@ -4,8 +4,10 @@ use super::{
 };
 use crate::component_channel::{Changes, Combination};
 use crate::component_kernel::DownloadSource;
+use crate::i18n::{self, Locale};
 use chrono::Utc;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -28,10 +30,28 @@ pub(super) struct Updates {
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Display {
-    phase: String,
+    phase: Phase,
     error: Option<String>,
     progress: Option<Progress>,
     offer: Option<Offer>,
+}
+
+#[derive(Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum Phase {
+    #[default]
+    Preparing,
+    Downloading,
+    Starting,
+    StartupFailed,
+    Ready,
+    CheckFailed,
+    Checking,
+    Current,
+    Verified,
+    Queued,
+    Deferred,
+    SaveFailed,
 }
 
 #[derive(Clone, Serialize)]
@@ -52,6 +72,7 @@ struct Offer {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Snapshot {
+    locale: Locale,
     bodhi: String,
     active: Option<Versions>,
     running: bool,
@@ -71,7 +92,7 @@ impl Updates {
         total: Option<u64>,
     ) {
         if let Ok(mut display) = self.display.lock() {
-            display.phase = "正在下载并校验组件".into();
+            display.phase = Phase::Downloading;
             if let Some(progress) = &mut display.progress {
                 if progress.file == file && progress.source == source {
                     progress.received = received;
@@ -88,9 +109,9 @@ impl Updates {
         }
     }
 
-    pub(super) fn status(&self, phase: &str, error: Option<String>) {
+    pub(super) fn status(&self, phase: Phase, error: Option<String>) {
         if let Ok(mut display) = self.display.lock() {
-            display.phase = phase.into();
+            display.phase = phase;
             display.error = error;
             display.progress = None;
         }
@@ -98,9 +119,10 @@ impl Updates {
 }
 
 impl Manager {
-    fn snapshot(&self, bodhi: String) -> Result<Snapshot, String> {
+    fn snapshot(&self, bodhi: String, locale: Locale) -> Result<Snapshot, String> {
         let journal = Journal::read(&self.profile)?;
         Ok(Snapshot {
+            locale,
             bodhi,
             active: journal.active.as_ref().map(Versions::from),
             running: self.updates.ready.load(Ordering::Acquire),
@@ -156,7 +178,7 @@ impl Manager {
             return;
         }
         if let Err(error) = self.check_and_offer(app).await {
-            self.updates.status("组件更新检查失败", Some(error));
+            self.updates.status(Phase::CheckFailed, Some(error));
         }
     }
 
@@ -171,12 +193,12 @@ impl Manager {
         if let Ok(mut display) = self.updates.display.lock() {
             display.offer = None;
         }
-        self.updates.status("正在检查组件更新", None);
+        self.updates.status(Phase::Checking, None);
         let channel = self.channel().await?;
         self.record_check()?;
         let identity = current.identity();
         let Some(candidate) = channel.select(Some((current.sequence, &identity)))? else {
-            self.updates.status("组件已是兼容的最新版本", None);
+            self.updates.status(Phase::Current, None);
             return Ok(());
         };
         let combination = candidate.combination;
@@ -197,14 +219,15 @@ impl Manager {
                 changes: combination.changes.clone(),
             });
         }
-        self.updates.status("新版组件已校验", None);
+        self.updates.status(Phase::Verified, None);
         if journal
             .remind_after
             .is_some_and(|deadline| deadline > Utc::now().timestamp())
         {
             return Ok(());
         }
-        let message = confirmation(&current, combination);
+        let locale = i18n::active(app);
+        let message = confirmation(locale, &current, combination);
         let update = PreparedUpdate {
             current_sequence: current.sequence,
             current: identity,
@@ -214,39 +237,39 @@ impl Manager {
         let handle = app.clone();
         app.dialog()
             .message(message)
-            .title("Bodhi 组件更新")
+            .title(locale.text("updates.confirmTitle"))
             .kind(MessageDialogKind::Info)
             .buttons(MessageDialogButtons::OkCancelCustom(
-                "下次启动时升级".into(),
-                "稍后提醒".into(),
+                locale.text("updates.confirmApply").into(),
+                locale.text("updates.remindLater").into(),
             ))
             .show(move |approved| {
                 tauri::async_runtime::spawn(async move {
                     let manager = handle.state::<Manager>();
                     let result = if approved {
-                        manager.reconfirm(&update).await
+                        manager.reconfirm(&update, i18n::active(&handle)).await
                     } else {
                         manager.snooze()
                     };
                     manager.updates.dialog_open.store(false, Ordering::Release);
                     match result {
-                        Ok(()) if approved => manager.updates.status("已安排下次启动时升级", None),
-                        Ok(()) => manager.updates.status("稍后提醒", None),
-                        Err(error) => manager.updates.status("无法保存更新选择", Some(error)),
+                        Ok(()) if approved => manager.updates.status(Phase::Queued, None),
+                        Ok(()) => manager.updates.status(Phase::Deferred, None),
+                        Err(error) => manager.updates.status(Phase::SaveFailed, Some(error)),
                     }
                 });
             });
         Ok(())
     }
 
-    async fn reconfirm(&self, update: &PreparedUpdate) -> Result<(), String> {
+    async fn reconfirm(&self, update: &PreparedUpdate, locale: Locale) -> Result<(), String> {
         let channel = self.channel().await?;
         let current = Some((update.current_sequence, &update.current));
         if channel
             .select(current)?
             .is_none_or(|candidate| candidate.combination != &update.candidate)
         {
-            return Err("兼容目录已更新，请重新检查组件版本".into());
+            return Err(locale.text("updates.catalogChanged").into());
         }
         self.queue(update)
     }
@@ -258,7 +281,7 @@ fn check_interval() -> tokio::time::Interval {
     interval
 }
 
-fn confirmation(current: &Combination, next: &Combination) -> String {
+fn confirmation(locale: Locale, current: &Combination, next: &Combination) -> String {
     let mut sections = Vec::new();
     for (name, old, new, changes) in [
         (
@@ -280,7 +303,7 @@ fn confirmation(current: &Combination, next: &Combination) -> String {
         let heading = format!("{name} {old} → {new}");
         let mut lines = Vec::from([heading]);
         if changes.is_empty() {
-            lines.push("发布说明暂不可用".into());
+            lines.push(locale.text("updates.noNotes").into());
         }
         for change in changes.iter().take(4) {
             lines.push(format!(
@@ -290,7 +313,7 @@ fn confirmation(current: &Combination, next: &Combination) -> String {
         }
         sections.push(lines.join("\n"));
     }
-    sections.push("下载与校验已完成。升级将在下次启动 Bodhi 时生效。".into());
+    sections.push(locale.text("updates.confirmBody").into());
     sections.join("\n\n")
 }
 
@@ -300,7 +323,7 @@ pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         return window.set_focus().map_err(|error| error.to_string());
     }
     WebviewWindowBuilder::new(app, MENU_ID, WebviewUrl::App(PAGE.into()))
-        .title("Bodhi 版本与更新")
+        .title(i18n::active(app).text("updates.title"))
         .inner_size(690.0, 680.0)
         .min_inner_size(460.0, 420.0)
         .build()
@@ -308,7 +331,10 @@ pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn authorize<R: Runtime>(window: &WebviewWindow<R>, allow_splash: bool) -> Result<(), String> {
+pub(crate) fn authorize<R: Runtime>(
+    window: &WebviewWindow<R>,
+    allow_splash: bool,
+) -> Result<(), String> {
     let url = window.url().map_err(|error| error.to_string())?;
     let dev = if tauri::is_dev() {
         window.config().build.dev_url.as_ref()
@@ -335,8 +361,27 @@ fn can_access(label: &str, url: &tauri::Url, dev: Option<&tauri::Url>, allow_spl
     let updates = label == MENU_ID && url.path() == "/component-updates.html";
     let splash = allow_splash && label == "main";
     (updates && (bundled || owned_dev.is_some()))
-        || (splash && bundled && matches!(url.path(), "/" | "/index.html"))
+        || (splash && bundled && matches!(url.path(), "" | "/" | "/index.html"))
         || (splash && url.path() == "/__bodhi_startup" && owned_dev == Some(url))
+}
+
+#[tauri::command]
+pub(crate) fn shell_translations<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<ShellTranslations, String> {
+    authorize(&window, true)?;
+    let locale = i18n::active(&app);
+    Ok(ShellTranslations {
+        locale,
+        messages: locale.messages(),
+    })
+}
+
+#[derive(Serialize)]
+pub(crate) struct ShellTranslations {
+    locale: Locale,
+    messages: &'static BTreeMap<String, String>,
 }
 
 #[tauri::command]
@@ -347,7 +392,7 @@ pub(crate) fn component_snapshot<R: Runtime>(
     authorize(&window, true)?;
     app.try_state::<Manager>()
         .ok_or("The component updater is unavailable")?
-        .snapshot(app.package_info().version.to_string())
+        .snapshot(app.package_info().version.to_string(), i18n::active(&app))
 }
 
 #[tauri::command]
@@ -406,6 +451,10 @@ mod tests {
         let update = parse("http://127.0.0.1:1420/component-updates.html");
         let bundled = parse("tauri://localhost/component-updates.html");
         assert!(can_access(MENU_ID, &bundled, None, false));
+        let splash = parse("tauri://localhost");
+        assert!(can_access("main", &splash, None, true));
+        assert!(!can_access("main", &splash, None, false));
+        assert!(!can_access("main", &parse("tauri://foreign"), None, true));
         assert!(!can_access(MENU_ID, &update, None, false));
         assert!(can_access(MENU_ID, &update, Some(&dev), false));
         assert!(!can_access("main", &update, Some(&dev), true));
@@ -427,7 +476,10 @@ mod tests {
         assert_eq!(*receiver.borrow(), DownloadSource::GhFast);
         let reopened = Manager::new(profile).unwrap();
         assert_eq!(
-            reopened.snapshot("0.0.0".into()).unwrap().source,
+            reopened
+                .snapshot("0.0.0".into(), Locale::English)
+                .unwrap()
+                .source,
             DownloadSource::GhFast
         );
     }
