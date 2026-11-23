@@ -1,6 +1,104 @@
 use super::*;
 use std::fs;
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Bootstrap {
+    kind: String,
+    root_sha256: String,
+    sequence: u64,
+    bamboo_manifest_sha256: String,
+    lotus_manifest_sha256: String,
+}
+
+#[tokio::test]
+async fn published_thin_bootstrap_is_bootable_on_native_target() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let path = source.join("component-bootstrap.json");
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => panic!("Cannot read the thin bootstrap record: {error}"),
+    };
+    let lock: Bootstrap = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(lock.kind, "bodhi-component-bootstrap/v1");
+    assert_eq!(lock.root_sha256, crate::frontend::hash_bytes(TRUSTED_ROOT));
+    let dir = tempfile::tempdir().unwrap();
+    let profile_path = dir.path().join("component-profile");
+    fs::create_dir(&profile_path).unwrap();
+    let profile = Profile::open(&profile_path).unwrap();
+    let manager = Manager::new(profile.clone()).unwrap();
+    let pair = manager.choose().await.unwrap();
+    let identity = pair.identity();
+    assert_eq!(pair.sequence, lock.sequence);
+    assert_eq!(identity.bamboo_manifest_sha256, lock.bamboo_manifest_sha256);
+    assert_eq!(identity.lotus_manifest_sha256, lock.lotus_manifest_sha256);
+    let prepared = manager.prepare(&pair).await.unwrap();
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut child = std::process::Command::new(prepared.kernel.executable);
+    child.env_clear().envs(
+        ["PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "LANG"]
+            .into_iter()
+            .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+    );
+    child
+        .current_dir(dir.path())
+        .env("RUST_LOG", "info")
+        .env("BAMBOO_JIANDU_DATA_DIR", dir.path().join("jiandu"))
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .env("BAMBOO_BROWSER_NODE", &prepared.browser[0])
+        .env("BAMBOO_BROWSER_HOST_SCRIPT", &prepared.browser[1])
+        .env("BAMBOO_BROWSER_EXECUTABLE", &prepared.browser[2])
+        .args([
+            "serve",
+            "--parent-pid",
+            &std::process::id().to_string(),
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--data-dir",
+        ])
+        .arg(&profile.data)
+        .arg("--static-dir")
+        .arg(prepared.frontend.static_dir.unwrap());
+    let runtime = crate::sidecar::SidecarState::default();
+    let writer = profile.writer().unwrap();
+    let _lease = writer.try_clone().unwrap();
+    manager.begin(&pair).unwrap();
+    let status = runtime.start(child, writer, port).unwrap();
+    let readiness = crate::sidecar::wait_for_health(
+        port,
+        60,
+        Some(&status),
+        prepared.frontend.index_hash.as_deref(),
+    )
+    .await;
+    let version = if readiness.is_ok() {
+        crate::sidecar::owned_version(port, &status).await
+    } else {
+        Err("Cannot start the published pair".into())
+    };
+    runtime.stop().await.unwrap();
+    readiness.unwrap();
+    assert_eq!(version.unwrap(), pair.bamboo.version);
+    manager.finish(&pair, Ok(())).unwrap();
+    assert_eq!(manager.choose().await.unwrap(), pair);
+    let evidence = format!(
+        "\nBodhi component bootstrap: {} {} {} {} {}\n",
+        lock.root_sha256,
+        lock.sequence,
+        lock.bamboo_manifest_sha256,
+        lock.lotus_manifest_sha256,
+        env!("BODHI_BUILD_TARGET")
+    );
+    std::io::Write::write_all(&mut std::io::stdout().lock(), evidence.as_bytes()).unwrap();
+}
+
 #[tokio::test]
 async fn ready_history_and_data_floor_survive_a_failed_start() {
     let dir = tempfile::tempdir().unwrap();

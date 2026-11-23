@@ -14,6 +14,14 @@ accepts its lock and five native CI lanes on Dev, the dispatcher can reserve
 the first v3 version from that accepted source. Historical v1 runs, including
 #116, keep their original workflow snapshots, source locks and recovery contract.
 
+## Thin installer contract
+
+The thin controller recognizes v4 from the frozen source's `src-tauri/component-bootstrap.json`. The record names the initial signed component pair by sequence and producer manifest hashes and binds the embedded public TUF root by SHA-256. A thin cut requires an admitted production root, a complete published component catalog and a native bootstrap witness from each of the five original feature jobs. The witness records the tested root and pair identity after the owned Bamboo process and Lotus entry page are healthy.
+
+The v4 native builders use `--features thin-shell --config src-tauri/tauri.thin.conf.json`. Reservations bind the root, bootstrap record and configuration bytes instead of the bundled Bamboo and Lotus locks. Each native builder verifies the installed shell and records its original payload and architecture. Finalization retains those receipts and publishes `bodhi-release-v4.json`. Recovery selects the original evidence schema and reuses its bytes. Main promotion verifies the original outputs and bootstrap witnesses with read-only access.
+
+After the reviewed controller reaches protected Main, a normal bundled release source still uses the v3 contract. The thin contract becomes usable once the production component channel and all native bootstrap witnesses are in place. Historical controller and artifact identities remain attached to their releases.
+
 ## Feature Unit and E2E
 
 Feature and integration PRs target `dev`. The [CI workflow](../.github/workflows/ci.yml)

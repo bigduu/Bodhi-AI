@@ -17,7 +17,7 @@ use tokio::sync::watch;
 const TRUSTED_ROOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/component-update-root.json"));
 
 pub(crate) fn enabled() -> bool {
-    !TRUSTED_ROOT.is_empty()
+    cfg!(feature = "thin-shell") && !TRUSTED_ROOT.is_empty()
 }
 
 pub(crate) struct Manager {
