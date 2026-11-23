@@ -1,6 +1,6 @@
 //! Restore an already approved published frontend from the official npm tarball.
 use super::{cache_slot, safe_relative, verify_resource, Receipt, VerifiedFrontend};
-use crate::bamboo_profile::Profile;
+use crate::bamboo_profile::{publish_directory, Profile};
 use crate::component_channel::Asset;
 use flate2::read::GzDecoder;
 use std::collections::BTreeMap;
@@ -82,47 +82,9 @@ fn install(profile: &Profile, expected: &[u8], bytes: &[u8]) -> Result<VerifiedF
     extract_dist(bytes, &staged.join("dist"), Some(&receipt.files))
         .map_err(|error| error.to_string())?;
     fs::write(staged.join("receipt.json"), expected).map_err(|error| error.to_string())?;
-    publish(profile, &staged, &slot, |root| {
+    publish_directory(profile, &staged, &slot, |root| {
         verify_resource(root, expected)
     })
-}
-
-pub(super) fn publish(
-    profile: &Profile,
-    staged: &Path,
-    slot: &Path,
-    verify: impl Fn(&Path) -> Result<VerifiedFrontend, String>,
-) -> Result<VerifiedFrontend, String> {
-    verify(staged)?;
-    let _update = profile.update_lock()?;
-    if let Ok(frontend) = verify(slot) {
-        return Ok(frontend);
-    }
-    // New slots may be prepared while Bamboo is running. Replacing the
-    // bytes of an existing slot requires the exclusive profile writer lease.
-    let (_writer, quarantined) = match fs::symlink_metadata(slot) {
-        Ok(_) => {
-            let writer = profile.writer()?;
-            let quarantine = tempfile::tempdir_in(&profile.state_dir).map_err(|e| e.to_string())?;
-            fs::rename(slot, quarantine.path().join("frontend")).map_err(|e| e.to_string())?;
-            (Some(writer), Some(quarantine))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => (None, None),
-        Err(error) => return Err(error.to_string()),
-    };
-    if let Err(error) = fs::rename(staged, slot) {
-        if let Some(quarantine) = quarantined {
-            if let Err(restore) = fs::rename(quarantine.path().join("frontend"), slot) {
-                let retained = quarantine.keep();
-                return Err(format!(
-                    "{error}. Could not restore {}: {restore}",
-                    retained.display()
-                ));
-            }
-        }
-        return Err(error.to_string());
-    }
-    verify(slot)
 }
 
 pub(super) fn extract_dist(

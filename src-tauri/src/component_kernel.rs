@@ -112,17 +112,23 @@ pub async fn prepare_kernel(
         return Ok(result());
     }
 
-    let file = follow_source(&mut sources, async |source| {
-        download(
-            &root,
-            &official,
-            source,
-            &artifact.executable,
-            &mut progress,
-        )
-        .await
-    })
+    let mut file = acquire_asset(
+        &root,
+        &official,
+        &artifact.executable,
+        &mut sources,
+        &mut progress,
+    )
     .await?;
+    native::verify(file.as_file_mut(), TARGET)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o700))
+            .map_err(|error| error.to_string())?;
+    }
+    let file = file.into_temp_path();
     check_executable_version(&file, version).await?;
     let _update = profile.update_lock()?;
     if verify_cached(&executable, &artifact.executable).is_ok() {
@@ -135,6 +141,19 @@ pub async fn prepare_kernel(
     };
     persist(file, &executable).map_err(|error| error.to_string())?;
     Ok(result())
+}
+
+pub(crate) async fn acquire_asset(
+    root: &Path,
+    official: &str,
+    expected: &Asset,
+    sources: &mut watch::Receiver<DownloadSource>,
+    progress: &mut impl FnMut(DownloadSource, u64, u64),
+) -> Result<tempfile::NamedTempFile, String> {
+    follow_source(sources, async |source| {
+        download(root, official, source, expected, progress).await
+    })
+    .await
 }
 
 async fn follow_source<T>(
@@ -179,7 +198,7 @@ async fn download(
     source: DownloadSource,
     expected: &Asset,
     progress: &mut impl FnMut(DownloadSource, u64, u64),
-) -> Result<tempfile::TempPath, String> {
+) -> Result<tempfile::NamedTempFile, String> {
     progress(source, 0, expected.size_bytes);
     let mut response = source
         .client()?
@@ -199,8 +218,13 @@ async fn download(
     {
         return Err("Bamboo download size differs from the signed size".into());
     }
+    let extension = if official.ends_with(".exe") {
+        ".exe"
+    } else {
+        ""
+    };
     let mut file = tempfile::Builder::new()
-        .suffix(std::env::consts::EXE_SUFFIX)
+        .suffix(extension)
         .tempfile_in(root)
         .map_err(|error| error.to_string())?;
     let mut length = 0u64;
@@ -222,18 +246,10 @@ async fn download(
         return Err("Bamboo executable differs from the signed component release".into());
     }
     file.rewind().map_err(|error| error.to_string())?;
-    native::verify(file.as_file_mut(), TARGET)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o700))
-            .map_err(|error| error.to_string())?;
-    }
     file.as_file()
         .sync_all()
         .map_err(|error| error.to_string())?;
-    Ok(file.into_temp_path())
+    Ok(file)
 }
 
 fn verify_cached(path: &Path, expected: &Asset) -> Result<(), String> {

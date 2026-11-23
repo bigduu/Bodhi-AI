@@ -16,7 +16,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -277,6 +277,7 @@ pub(crate) fn command<R: Runtime>(
     data_dir: &Path,
     static_dir: Option<&Path>,
     kernel: Option<&Path>,
+    browser_runtime: Option<[PathBuf; 3]>,
 ) -> Result<Command, String> {
     let command = match kernel {
         Some(path) => app.shell().command(path),
@@ -308,8 +309,13 @@ pub(crate) fn command<R: Runtime>(
         );
     }
 
-    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let [node, host, browser] = crate::browser_runtime::resolve(&resources)?;
+    let [node, host, browser] = match browser_runtime {
+        Some(paths) => paths,
+        None => {
+            let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+            crate::browser_runtime::resolve(&resources)?
+        }
+    };
     log::info!("Managed browser runtime: {}", host.display());
     command
         .env("BAMBOO_BROWSER_NODE", node)

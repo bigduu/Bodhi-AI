@@ -3,7 +3,7 @@ use super::{
     download, file_inventory, hash_bytes, owned_directory, safe_relative, valid_sha256,
     VerifiedFrontend,
 };
-use crate::bamboo_profile::{is_link, Profile};
+use crate::bamboo_profile::{is_link, publish_directory, Profile};
 use crate::component_channel::LotusRelease;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -66,7 +66,7 @@ pub async fn prepare_release(
         let staged = scratch.path().join("frontend");
         download::extract_dist(&bytes, &staged.join("dist"), None)
             .map_err(|error| error.to_string())?;
-        download::publish(&profile, &staged, &slot, |root| {
+        publish_directory(&profile, &staged, &slot, |root| {
             verify_release(root, &release)
         })
     })
