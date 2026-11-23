@@ -1,0 +1,62 @@
+name: Prepare published components
+run-name: Component inputs for Bamboo ${{ inputs.bamboo }} and Lotus ${{ inputs.lotus }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      bamboo:
+        description: Exact published Bamboo version
+        type: string
+        required: true
+      lotus:
+        description: Exact published Lotus Next npm version
+        type: string
+        required: true
+      previous_bamboo:
+        description: Previously accepted Bamboo version for the change history
+        type: string
+      previous_lotus:
+        description: Previously accepted Lotus Next version for the change history
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: Verify original component identities
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the trusted repository entrypoint
+        run: test "$GITHUB_REPOSITORY" = bigduu/Bodhi-AI && test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Read and verify upstream outputs without building the shell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPONENT_BAMBOO: ${{ inputs.bamboo }}
+          COMPONENT_LOTUS: ${{ inputs.lotus }}
+          COMPONENT_PRIOR_BAMBOO: ${{ inputs.previous_bamboo }}
+          COMPONENT_PRIOR_LOTUS: ${{ inputs.previous_lotus }}
+        run: |
+          set -euo pipefail
+          args=("$COMPONENT_BAMBOO" "$COMPONENT_LOTUS")
+          if [[ -n "$COMPONENT_PRIOR_BAMBOO" || -n "$COMPONENT_PRIOR_LOTUS" ]]; then
+            args+=(--from "$COMPONENT_PRIOR_BAMBOO" "$COMPONENT_PRIOR_LOTUS")
+          fi
+          node scripts/prepare-component-candidate.cjs "${args[@]}" > "$RUNNER_TEMP/component-candidate.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: component-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/component-candidate.json
+          if-no-files-found: error
+          retention-days: 30
