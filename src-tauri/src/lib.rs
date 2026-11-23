@@ -23,6 +23,7 @@ pub mod browser_runtime;
 mod build_support;
 pub mod cli_install;
 pub mod command;
+pub mod component_channel;
 pub mod frontend;
 pub mod sidecar;
 #[cfg(target_os = "macos")]

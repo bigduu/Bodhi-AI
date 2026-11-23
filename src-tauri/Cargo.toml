@@ -47,6 +47,8 @@ sha2 = { workspace = true }
 flate2 = "1"
 tar = { version = "0.4.46", default-features = false }
 semver = "1"
+tough = "0.24"
+futures-util = { workspace = true }
 zstd = { workspace = true }
 
 crossbeam = { workspace = true }

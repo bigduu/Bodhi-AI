@@ -1,0 +1,286 @@
+//! Authentication and selection of independently published components.
+mod transport;
+
+use futures_util::TryStreamExt;
+use reqwest::Url;
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use tough::{Limits, RepositoryLoader, TargetName, Transport};
+
+const REPOSITORY: &str = "https://raw.githubusercontent.com/bigduu/Bodhi-AI/components-stable/";
+const TARGET_FILE: &str = "channel-v1.json";
+const MAX_CHANNEL_BYTES: usize = 1024 * 1024;
+pub const SHELL_PROTOCOL: u32 = 1;
+pub const NATIVE_TARGETS: [&str; 5] = [
+    "aarch64-apple-darwin",
+    "aarch64-pc-windows-msvc",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Asset {
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeArtifact {
+    pub target: String,
+    pub asset_name: String,
+    pub executable: Asset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BambooRelease {
+    pub version: String,
+    pub source_revision: String,
+    pub manifest: Asset,
+    pub browser_host: Asset,
+    pub artifacts: Vec<NativeArtifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LotusRelease {
+    pub version: String,
+    pub source_revision: String,
+    pub manifest_sha256: String,
+    pub resources_sha256: String,
+    pub tarball: Asset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PairIdentity {
+    pub bamboo_manifest_sha256: String,
+    pub lotus_manifest_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Changes {
+    pub bamboo: Vec<String>,
+    pub lotus: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Combination {
+    pub sequence: u64,
+    pub bootstrap: bool,
+    accepts: Vec<PairIdentity>,
+    pub bamboo: BambooRelease,
+    pub lotus: LotusRelease,
+    pub changes: Changes,
+}
+
+impl Combination {
+    pub fn identity(&self) -> PairIdentity {
+        PairIdentity {
+            bamboo_manifest_sha256: self.bamboo.manifest.sha256.clone(),
+            lotus_manifest_sha256: self.lotus.manifest_sha256.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Channel {
+    schema_version: u32,
+    shell_protocol: u32,
+    combinations: Vec<Combination>,
+}
+
+#[derive(Debug)]
+pub struct VerifiedChannel(Channel);
+
+#[derive(Debug)]
+pub struct Candidate<'a> {
+    pub combination: &'a Combination,
+    pub artifact: &'a NativeArtifact,
+}
+
+impl VerifiedChannel {
+    pub fn select(
+        &self,
+        current: Option<(u64, &PairIdentity)>,
+    ) -> Result<Option<Candidate<'_>>, String> {
+        self.select_for_target(current, env!("BODHI_BUILD_TARGET"))
+    }
+
+    fn select_for_target(
+        &self,
+        current: Option<(u64, &PairIdentity)>,
+        target: &str,
+    ) -> Result<Option<Candidate<'_>>, String> {
+        let target_index = NATIVE_TARGETS
+            .iter()
+            .position(|supported| *supported == target)
+            .ok_or("The component channel does not support this native target")?;
+        Ok(self.0.combinations.iter().rev().find_map(|combination| {
+            let compatible = match current {
+                None => combination.bootstrap,
+                Some((sequence, identity)) => {
+                    combination.sequence > sequence
+                        && combination.identity() != *identity
+                        && combination.accepts.contains(identity)
+                }
+            };
+            compatible.then(|| Candidate {
+                combination,
+                artifact: &combination.bamboo.artifacts[target_index],
+            })
+        }))
+    }
+}
+
+/// The root comes from the desktop publisher and the directory belongs to the
+/// native updater. Keep the datastore between checks to detect metadata rollback.
+pub async fn load_stable(trusted_root: &[u8], datastore: &Path) -> Result<VerifiedChannel, String> {
+    let base = Url::parse(REPOSITORY).expect("stable channel URL");
+    load(trusted_root, datastore, &base, transport::Https::new()?).await
+}
+
+async fn load(
+    trusted_root: &[u8],
+    datastore: &Path,
+    base: &Url,
+    transport: impl Transport + 'static,
+) -> Result<VerifiedChannel, String> {
+    let metadata = base.join("metadata/").map_err(|e| e.to_string())?;
+    let targets = base.join("targets/").map_err(|e| e.to_string())?;
+    let limits = Limits {
+        max_root_size: 128 * 1024,
+        max_targets_size: MAX_CHANNEL_BYTES as u64,
+        max_snapshot_size: 128 * 1024,
+        max_timestamp_size: 32 * 1024,
+        max_root_updates: 32,
+    };
+    let repository = RepositoryLoader::new(&trusted_root, metadata, targets)
+        .transport(transport)
+        .datastore(datastore)
+        .limits(limits)
+        .load()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !repository.root().signed.consistent_snapshot {
+        return Err("The component channel requires consistent snapshots".into());
+    }
+    let name = TargetName::new(TARGET_FILE).expect("component channel target");
+    let stream = repository
+        .read_target(&name)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("The signed targets do not contain the component channel")?;
+    let bytes = stream
+        .map_err(|error| error.to_string())
+        .try_fold(Vec::new(), |mut data, part| async move {
+            // tough validates the final hash when the stream terminates. A
+            // separate cap keeps even a correctly signed catalog bounded.
+            if part.len() > MAX_CHANNEL_BYTES - data.len() {
+                return Err("The signed component channel exceeds its size limit".to_string());
+            }
+            data.extend_from_slice(&part);
+            Ok(data)
+        })
+        .await?;
+    parse(&bytes)
+}
+
+fn parse(bytes: &[u8]) -> Result<VerifiedChannel, String> {
+    let channel: Channel = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if channel.schema_version != 1 || channel.shell_protocol != SHELL_PROTOCOL {
+        return Err("The component channel requires a different Bodhi protocol".into());
+    }
+    if !(1..=64).contains(&channel.combinations.len())
+        || !channel
+            .combinations
+            .iter()
+            .any(|combination| combination.bootstrap)
+    {
+        return Err("Invalid component catalog inventory".into());
+    }
+    let mut sequence = 0;
+    for combination in &channel.combinations {
+        let bamboo = &combination.bamboo;
+        let lotus = &combination.lotus;
+        if combination.sequence <= sequence
+            || !stable_version(&bamboo.version)
+            || !stable_version(&lotus.version)
+            || !hex(&bamboo.source_revision, 40)
+            || !hex(&lotus.source_revision, 40)
+            || !hex(&lotus.manifest_sha256, 64)
+            || !hex(&lotus.resources_sha256, 64)
+            || !asset(&bamboo.manifest, 1, 1024 * 1024)
+            || !asset(&bamboo.browser_host, 1, 8 * 1024 * 1024)
+            || !asset(&lotus.tarball, 1, 32 * 1024 * 1024)
+        {
+            return Err("Invalid component release identity".into());
+        }
+        if bamboo.artifacts.len() != NATIVE_TARGETS.len()
+            || !bamboo
+                .artifacts
+                .iter()
+                .zip(NATIVE_TARGETS)
+                .all(|(artifact, target)| {
+                    artifact.target == target
+                        && artifact.asset_name == native_asset_name(target)
+                        && asset(&artifact.executable, 65_536, 1024 * 1024 * 1024)
+                })
+        {
+            return Err("Invalid Bamboo native artifact inventory".into());
+        }
+        if combination.accepts.len() > 64
+            || !combination.accepts.iter().all(|identity| {
+                hex(&identity.bamboo_manifest_sha256, 64)
+                    && hex(&identity.lotus_manifest_sha256, 64)
+            })
+            || !notes(&combination.changes.bamboo)
+            || !notes(&combination.changes.lotus)
+        {
+            return Err("Invalid compatibility or change record".into());
+        }
+        sequence = combination.sequence;
+    }
+    Ok(VerifiedChannel(channel))
+}
+
+fn native_asset_name(target: &str) -> String {
+    let suffix = if target.ends_with("-windows-msvc") {
+        ".exe"
+    } else {
+        ""
+    };
+    format!("bamboo-{target}{suffix}")
+}
+
+fn hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn stable_version(version: &str) -> bool {
+    semver::Version::parse(version)
+        .is_ok_and(|parsed| parsed.major > 0 && parsed.pre.is_empty() && parsed.build.is_empty())
+}
+
+fn asset(value: &Asset, min: u64, max: u64) -> bool {
+    (min..=max).contains(&value.size_bytes) && hex(&value.sha256, 64)
+}
+
+fn notes(lines: &[String]) -> bool {
+    lines.len() <= 64
+        && lines
+            .iter()
+            .all(|line| line.len() <= 2048 && !line.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests;
