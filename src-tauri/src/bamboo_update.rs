@@ -22,7 +22,7 @@ pub const MENU_LABEL: &str = "安装 Bamboo 内核更新…";
 pub const APPLY_MENU_ID: &str = "apply-bamboo-update";
 pub const APPLY_MENU_LABEL: &str = "应用 Bamboo 内核更新…";
 const TITLE: &str = "Bamboo 内核更新";
-const RELEASES: &str = "https://github.com/bigduu/Bamboo-agent/releases/download";
+pub(crate) const RELEASES: &str = "https://github.com/bigduu/Bamboo-agent/releases/download";
 const BUNDLED_LOCK: &str = include_str!("../../scripts/bamboo-sidecar-lock.json");
 const MAX_JSON: u64 = 1024 * 1024;
 const MAX_BINARY: u64 = 1024 * 1024 * 1024;
@@ -708,7 +708,7 @@ async fn install_binary(
     persist(file, destination).map_err(|e| e.to_string())
 }
 
-async fn check_executable_version(path: &Path, expected: &str) -> Result<(), String> {
+pub(crate) async fn check_executable_version(path: &Path, expected: &str) -> Result<(), String> {
     let mut cmd = tokio::process::Command::new(path);
     cmd.arg("--version").stdin(Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]

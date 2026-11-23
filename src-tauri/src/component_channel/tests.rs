@@ -12,6 +12,10 @@ struct TestRepository {
     datastore: PathBuf,
 }
 
+pub(crate) async fn fixture_channel() -> VerifiedChannel {
+    TestRepository::new().load().await.unwrap()
+}
+
 impl TestRepository {
     fn new() -> Self {
         let storage = tempfile::tempdir().unwrap();
