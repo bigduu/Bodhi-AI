@@ -388,6 +388,7 @@ dependencies = [
  "crossbeam",
  "dirs 5.0.1",
  "env_logger",
+ "flate2",
  "libc",
  "log",
  "objc2-app-kit",
@@ -396,11 +397,13 @@ dependencies = [
  "portable-pty",
  "regex",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
  "shared_child",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -1223,6 +1226,16 @@ dependencies = [
  "libc",
  "thiserror 1.0.69",
  "winapi",
+]
+
+[[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -2784,7 +2797,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4341,6 +4354,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
 ]
 
 [[package]]

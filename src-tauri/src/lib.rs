@@ -208,44 +208,43 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     app.fs_scope().forbid_directory(&profile.state_dir, true)?;
     log::info!("App data dir: {:?}", profile.data);
 
-    let frontend = match frontend::resolve(app.handle(), &profile) {
-        Ok(frontend) => frontend,
-        Err(error) => {
-            show_startup_failure(app.handle(), &error);
-            return Ok(());
-        }
-    };
-    let owns_frontend = frontend.static_dir.is_some();
-    let port = web_service_port();
-    if owns_frontend {
-        if let Err(error) = sidecar::require_available_port(port) {
-            show_startup_failure(
-                app.handle(),
-                &format!("{error}\n\nRelaunch Bodhi with an available BODHI_BACKEND_PORT."),
-            );
-            return Ok(());
-        }
-    }
     // Run the bamboo backend as a managed sidecar process (replaces the in-process
     // WebService). The child is held in SidecarState and killed on app exit; it also
     // self-exits if this process dies uncleanly — see `sidecar` and the
     // `--parent-pid` orphan guard on `bamboo serve`.
     app.manage(sidecar::SidecarState::default());
-    if let Some(manifest) = frontend.manifest_sha256.clone() {
-        match bamboo_update::Updates::for_app(app.handle(), profile.clone(), manifest) {
-            Ok(updates) => {
-                app.manage(updates);
-            }
-            Err(error) => {
-                show_startup_failure(app.handle(), &error);
-                return Ok(());
-            }
-        }
-    }
-
     let sidecar_app = app.handle().clone();
     let development_url = app.config().build.dev_url.clone();
     tauri::async_runtime::spawn(async move {
+        let frontend = match frontend::prepare(&sidecar_app, &profile).await {
+            Ok(frontend) => frontend,
+            Err(error) => {
+                show_startup_failure(&sidecar_app, &error);
+                return;
+            }
+        };
+        let owns_frontend = frontend.static_dir.is_some();
+        let port = web_service_port();
+        if owns_frontend {
+            if let Err(error) = sidecar::require_available_port(port) {
+                show_startup_failure(
+                    &sidecar_app,
+                    &format!("{error}\n\nRelaunch Bodhi with an available BODHI_BACKEND_PORT."),
+                );
+                return;
+            }
+        }
+        if let Some(manifest) = frontend.manifest_sha256.clone() {
+            match bamboo_update::Updates::for_app(&sidecar_app, profile.clone(), manifest) {
+                Ok(updates) => {
+                    sidecar_app.manage(updates);
+                }
+                Err(error) => {
+                    show_startup_failure(&sidecar_app, &error);
+                    return;
+                }
+            }
+        }
         let updates = sidecar_app.try_state::<bamboo_update::Updates>();
         // Only the explicitly selected legacy rollback package retains
         // external-server reuse. Lotus Next source and package builds always own
