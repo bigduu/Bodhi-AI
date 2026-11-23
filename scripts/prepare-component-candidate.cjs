@@ -19,6 +19,18 @@ const api = (endpoint) => JSON.parse(execFileSync("gh", ["api", endpoint, "--met
   encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
 }));
 
+function requireAcceptedSource(repository, sourceRevision) {
+  assert.match(sourceRevision, SHA);
+  const branch = api(`repos/${repository}/branches/dev`);
+  assert.equal(branch.name, "dev");
+  assert.equal(branch.protected, true, `Require protected ${repository} Dev`);
+  const dev = branch.commit.sha;
+  assert.match(dev, SHA);
+  const admission = api(`repos/${repository}/compare/${sourceRevision}...${dev}`);
+  assert.equal(admission.merge_base_commit.sha, sourceRevision, `${repository} release source is outside protected Dev history`);
+  assert.ok(["ahead", "identical"].includes(admission.status) && admission.behind_by === 0);
+}
+
 async function readBytes(url, limit, allowGithubRedirects = false) {
   const signal = AbortSignal.timeout(90_000);
   let current = new URL(url);
@@ -86,7 +98,7 @@ async function bambooRelease(version) {
   assert.equal(release.tag_name, `v${version}`);
   assert.ok(!release.draft && !release.prerelease && release.published_at);
   const { sha: sourceRevision } = api(`repos/${BAMBOO}/commits/v${version}`);
-  assert.match(sourceRevision, SHA);
+  requireAcceptedSource(BAMBOO, sourceRevision);
   const { bytes, identity: manifestAsset } = await releaseManifest(release, MANIFEST_V3);
   const targets = JSON.parse(bytes).artifacts.map((item) => item.target);
   const lock = { schemaVersion: 1, repository: BAMBOO, version, sourceRevision,
@@ -139,10 +151,7 @@ async function lotusRelease(version) {
       distDirectory: dist,
       expectedIdentity: { packageName: PACKAGE, packageVersion: version, sourceDirty: false, entrypoint: "index.html" },
     });
-    assert.match(manifest.sourceRevision, SHA);
-    const admission = api(`repos/${LOTUS}/compare/${manifest.sourceRevision}...dev`);
-    assert.equal(admission.merge_base_commit.sha, manifest.sourceRevision, "Lotus source is outside accepted Dev history");
-    assert.ok(["ahead", "identical"].includes(admission.status) && admission.behind_by === 0);
+    requireAcceptedSource(LOTUS, manifest.sourceRevision);
     return { version, sourceRevision: manifest.sourceRevision, manifestSha256, resourcesSha256: manifest.resourcesSha256,
       tarball: { sha256: digest("sha256", bytes), sizeBytes: bytes.length } };
   } finally {
