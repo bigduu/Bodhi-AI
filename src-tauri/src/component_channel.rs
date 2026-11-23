@@ -71,14 +71,14 @@ pub struct PairIdentity {
     pub lotus_manifest_sha256: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Changes {
     pub bamboo: Vec<String>,
     pub lotus: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Combination {
     pub sequence: u64,
@@ -95,6 +95,25 @@ impl Combination {
             bamboo_manifest_sha256: self.bamboo.manifest.sha256.clone(),
             lotus_manifest_sha256: self.lotus.manifest_sha256.clone(),
         }
+    }
+
+    pub(crate) fn candidate(&self) -> Result<Candidate<'_>, String> {
+        let target = env!("BODHI_BUILD_TARGET");
+        let mut artifacts = self
+            .bamboo
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.target == target);
+        let artifact = artifacts
+            .next()
+            .ok_or("The component release has no native asset for this target")?;
+        if artifacts.next().is_some() {
+            return Err("The component release contains duplicate native assets".into());
+        }
+        Ok(Candidate {
+            combination: self,
+            artifact,
+        })
     }
 }
 

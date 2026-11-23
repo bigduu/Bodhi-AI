@@ -20,7 +20,7 @@ pub async fn prepare_runtime(
     profile_data: &Path,
     candidate: &Candidate<'_>,
     mut sources: watch::Receiver<DownloadSource>,
-    mut progress: impl FnMut(DownloadSource, u64, u64),
+    mut progress: impl FnMut(DownloadSource, u64, u64) + Send,
 ) -> Result<[PathBuf; 3], String> {
     let artifact = candidate
         .artifact
