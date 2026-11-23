@@ -32,6 +32,16 @@ pub struct NativeArtifact {
     pub target: String,
     pub asset_name: String,
     pub executable: Asset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_runtime: Option<BrowserRuntimeArtifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserRuntimeArtifact {
+    pub asset_name: String,
+    pub archive: Asset,
+    pub receipt_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -231,6 +241,12 @@ fn parse(bytes: &[u8]) -> Result<VerifiedChannel, String> {
                     artifact.target == target
                         && artifact.asset_name == native_asset_name(target)
                         && asset(&artifact.executable, 65_536, 1024 * 1024 * 1024)
+                        && artifact.browser_runtime.as_ref().is_none_or(|runtime| {
+                            runtime.asset_name
+                                == format!("bamboo-browser-runtime-v1-{target}.tar.gz")
+                                && asset(&runtime.archive, 1, 768 * 1024 * 1024)
+                                && hex(&runtime.receipt_sha256, 64)
+                        })
                 })
         {
             return Err("Invalid Bamboo native artifact inventory".into());

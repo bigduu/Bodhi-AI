@@ -23,6 +23,7 @@ pub mod browser_runtime;
 mod build_support;
 pub mod cli_install;
 pub mod command;
+pub mod component_browser;
 pub mod component_channel;
 pub mod component_kernel;
 pub mod frontend;
@@ -272,6 +273,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 &profile.data,
                 frontend.static_dir.as_deref(),
                 selected.as_ref().map(|kernel| kernel.executable.as_path()),
+                None,
             )?;
             let status = runtime.start(command, writer, port)?;
             Ok::<_, String>((Some(status), selected))

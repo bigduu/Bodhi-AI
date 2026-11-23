@@ -919,6 +919,7 @@ async fn apply_in_window<R: Runtime>(
                     &updates.profile.data,
                     frontend.static_dir.as_deref(),
                     Some(&kernel.executable),
+                    None,
                 )?;
                 if let Err(error) = page.park(&window, &ready_url).await {
                     // Failure before stopping Bamboo can restore the previous

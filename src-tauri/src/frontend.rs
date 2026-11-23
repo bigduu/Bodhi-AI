@@ -168,7 +168,7 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn safe_relative(file: &str) -> bool {
+pub(crate) fn safe_relative(file: &str) -> bool {
     !file.is_empty()
         && !file
             .chars()
@@ -252,7 +252,7 @@ fn content_hash(files: &BTreeMap<String, String>) -> String {
     format!("{:x}", digest.finalize())
 }
 
-fn valid_sha256(value: &str) -> bool {
+pub(crate) fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
