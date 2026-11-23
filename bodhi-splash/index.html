@@ -14,7 +14,10 @@
         animation: spin 0.8s linear infinite; }
       @keyframes spin { to { transform: rotate(360deg); } }
       .hint { font-size: 12px; opacity: 0.6; margin-top: 6px; }
+      #component-download { width: min(340px, 75vw); margin: 12px auto; }
+      #component-download progress { width: 100%; accent-color: #8ab4f8; }
     </style>
+    <script src="component-bootstrap.js" defer></script>
   </head>
   <body>
     <!-- Shown only while the bamboo sidecar boots. The Rust shell navigates this
@@ -23,6 +26,10 @@
       <div class="spinner"></div>
       Starting Bodhi…
       <div class="hint">launching local engine</div>
+      <div id="component-download" hidden>
+        <progress aria-label="组件下载进度"></progress>
+        <div class="hint" id="component-download-detail"></div>
+      </div>
     </div>
   </body>
 </html>

@@ -5,7 +5,7 @@ use std::fs;
 async fn ready_history_and_data_floor_survive_a_failed_start() {
     let dir = tempfile::tempdir().unwrap();
     let profile = Profile::open(dir.path()).unwrap();
-    let manager = Manager::new(profile.clone());
+    let manager = Manager::new(profile.clone()).unwrap();
     let channel = component_channel::tests::fixture_channel().await;
     let next = channel.select(None).unwrap().unwrap().combination.clone();
     // The real compatibility fixture's starting version is the previous pair.
@@ -31,7 +31,7 @@ async fn ready_history_and_data_floor_survive_a_failed_start() {
         .is_err());
     drop(writer);
 
-    let migrated = Manager::new(profile.clone());
+    let migrated = Manager::new(profile.clone()).unwrap();
     let _writer = profile.writer().unwrap();
     assert_eq!(migrated.choose().await.unwrap(), next);
     assert!(check_component_floor(&profile, &original.bamboo.version).is_err());

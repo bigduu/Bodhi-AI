@@ -1,5 +1,6 @@
 use crate::bamboo_profile::{is_link, persist, Profile};
 use crate::component_channel::Combination;
+use crate::component_kernel::DownloadSource;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -42,6 +43,12 @@ pub(super) struct Journal {
     pub queued: Option<Combination>,
     pub trial: Option<Combination>,
     pub history: Vec<History>,
+    #[serde(default)]
+    pub source: DownloadSource,
+    #[serde(default)]
+    pub last_check: Option<String>,
+    #[serde(default)]
+    pub remind_after: Option<i64>,
 }
 
 impl Journal {

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bodhi 版本与更新</title>
+  <style>
+    :root { color-scheme: dark; font: 14px/1.5 system-ui, sans-serif; background: #17191c; color: #e9ecf0; }
+    body { max-width: 720px; margin: auto; padding: 28px; }
+    h1 { margin: 0; font-size: 24px; font-weight: 650; }
+    h2 { font-size: 15px; margin: 0 0 10px; }
+    header, .row, .versions { display: flex; align-items: center; gap: 12px; }
+    header, .row { justify-content: space-between; flex-wrap: wrap; }
+    .versions { flex-wrap: wrap; gap: 24px; margin: 22px 0; }
+    dt, small, label { color: #adb6c2; }
+    dd { margin: 0; font-variant-numeric: tabular-nums; }
+    section { margin: 0 0 16px; padding: 16px; border: 1px solid #353a44; border-radius: 10px; background: #202328; }
+    button, select { font: inherit; border: 1px solid #454c57; border-radius: 7px; padding: 7px 10px; background: #2b3038; color: inherit; }
+    button { background: #c2dcff; color: #132642; border-color: transparent; font-weight: 600; }
+    button:disabled { opacity: .55; }
+    button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 3px; }
+    p { margin: 9px 0; overflow-wrap: anywhere; }
+    progress { width: 100%; accent-color: #8ab4f8; }
+    .error { color: #ffb8ae; }
+    ol, ul { padding-left: 22px; }
+    li { margin: 5px 0; overflow-wrap: anywhere; }
+    #history li { border-bottom: 1px solid #3a3e46; padding: 7px 0; }
+    #history li:last-child { border: 0; }
+  </style>
+  <script src="component-updates.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>版本与更新</h1>
+    <button id="check" type="button">检查更新</button>
+  </header>
+  <dl class="versions">
+    <div><dt>Bodhi</dt><dd id="bodhi">—</dd></div>
+    <div><dt>Bamboo</dt><dd id="bamboo">—</dd></div>
+    <div><dt>Lotus Next</dt><dd id="lotus">—</dd></div>
+  </dl>
+  <section>
+    <div class="row">
+      <label for="source">GitHub 下载源</label>
+      <select id="source">
+        <option value="github">GitHub 官方</option>
+        <option value="gh-proxy">gh-proxy.com</option>
+        <option value="gh-fast">ghfast.top</option>
+      </select>
+    </div>
+    <p id="phase" role="status"></p>
+    <div id="download" hidden>
+      <progress id="progress" aria-label="当前文件下载进度"></progress>
+      <small id="download-detail"></small>
+    </div>
+    <p id="error" class="error" hidden></p>
+    <small id="last-check"></small>
+  </section>
+  <section id="notes" hidden>
+    <h2>更新内容</h2>
+    <ul id="changes"></ul>
+  </section>
+  <section>
+    <h2>更新记录</h2>
+    <small id="history-empty">暂无更新记录</small>
+    <ul id="history"></ul>
+  </section>
+</body>
+</html>

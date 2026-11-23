@@ -19,6 +19,7 @@ const TARGET: &str = env!("BODHI_BUILD_TARGET");
 #[serde(rename_all = "kebab-case")]
 pub enum DownloadSource {
     #[default]
+    #[serde(rename = "github")]
     GitHub,
     GhProxy,
     GhFast,
