@@ -102,6 +102,95 @@ fn bamboo_command(
 }
 
 #[tokio::test]
+async fn signed_lotus_update_reuses_the_same_owned_bamboo_and_profile() {
+    let native_assembly = std::env::var("BAMBOO_SIDECAR_SOURCE").as_deref() == Ok("release")
+        && std::env::var("LOTUS_SOURCE").as_deref() == Ok("package");
+    if !native_assembly {
+        return;
+    }
+    let [old, new] = crate::component_channel::tests::lotus_fixtures().await;
+    let scratch = tempfile::tempdir().unwrap();
+    let data = scratch.path().join("profile");
+    fs::create_dir(&data).unwrap();
+    let profile = Profile::open(&data).unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let assembly = executable.parent().unwrap().parent().unwrap();
+    let bamboo = assembly.join(format!("bamboo{}", std::env::consts::EXE_SUFFIX));
+    let port = TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let runtime = DesktopRuntime(SidecarState::default());
+
+    let frontend = crate::frontend::prepare_release(&profile.data, &old, |_, _| {})
+        .await
+        .unwrap();
+    let status = runtime
+        .0
+        .start(
+            bamboo_command(
+                &profile,
+                &bamboo,
+                frontend.static_dir.as_deref().unwrap(),
+                scratch.path(),
+                port,
+            ),
+            profile.writer().unwrap(),
+            port,
+        )
+        .unwrap();
+    sidecar::wait_for_health(port, 45, Some(&status), frontend.index_hash.as_deref())
+        .await
+        .unwrap();
+    let bamboo_version = sidecar::owned_version(port, &status).await.unwrap();
+
+    let mut progress = 0;
+    let candidate = crate::frontend::prepare_release(&profile.data, &new, |bytes, total| {
+        assert_eq!(total, Some(new.tarball.size_bytes));
+        assert!(bytes >= progress && bytes <= new.tarball.size_bytes);
+        progress = bytes;
+    })
+    .await
+    .unwrap();
+    assert_eq!(progress, new.tarball.size_bytes);
+    assert_ne!(frontend.static_dir, candidate.static_dir);
+    let cached = crate::frontend::prepare_release(&profile.data, &new, |_, _| {
+        panic!("a verified Lotus Next cache should need no download");
+    })
+    .await
+    .unwrap();
+    assert_eq!(cached.index_hash, candidate.index_hash);
+    sidecar::wait_for_health(port, 3, Some(&status), frontend.index_hash.as_deref())
+        .await
+        .unwrap();
+
+    runtime.0.stop().await.unwrap();
+    let status = runtime
+        .0
+        .start(
+            bamboo_command(
+                &profile,
+                &bamboo,
+                cached.static_dir.as_deref().unwrap(),
+                scratch.path(),
+                port,
+            ),
+            profile.writer().unwrap(),
+            port,
+        )
+        .unwrap();
+    sidecar::wait_for_health(port, 45, Some(&status), cached.index_hash.as_deref())
+        .await
+        .unwrap();
+    assert_eq!(
+        sidecar::owned_version(port, &status).await.unwrap(),
+        bamboo_version
+    );
+    runtime.0.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn published_kernel_update_preserves_profile_on_native_assembly() {
     // The canonical native feature jobs set both variables, stage verified
     // resources, and run this in the usual debug/test compilation. Bare Rust

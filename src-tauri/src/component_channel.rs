@@ -283,4 +283,4 @@ fn notes(lines: &[String]) -> bool {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
