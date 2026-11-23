@@ -146,7 +146,8 @@ impl Manager {
         }
         let result = self.launch_once(app).await;
         if let Err(error) = &result {
-            self.updates.status("组件启动失败", Some(error.clone()));
+            self.updates
+                .status(updates::Phase::StartupFailed, Some(error.clone()));
         } else {
             self.updates.ready.store(true, Ordering::Release);
         }
@@ -158,7 +159,7 @@ impl Manager {
         crate::sidecar::require_available_port(port)?;
         let pair = self.choose().await?;
         let prepared = self.prepare(&pair).await?;
-        self.updates.status("正在启动组件", None);
+        self.updates.status(updates::Phase::Starting, None);
         let writer = self.profile.writer()?;
         let command = crate::sidecar::command(
             app,
@@ -203,7 +204,7 @@ impl Manager {
                 log::warn!("Cannot stop Bamboo after a failed component launch: {error}");
             }
         } else {
-            self.updates.status("组件已就绪", None);
+            self.updates.status(updates::Phase::Ready, None);
         }
         result
     }

@@ -318,15 +318,19 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         updates.prepare_launch().await.unwrap().is_none(),
         "staging alone must not activate even on relaunch"
     );
-    let candidate = updates.activation_target(&staged).unwrap();
+    let context = ActivationContext {
+        port,
+        index_hash: Some(&index),
+        locale: Locale::English,
+    };
+    let candidate = updates.activation_target(&staged, context.locale).unwrap();
     let mut stale = candidate.clone();
     stale.upgrade.manifest_sha256 = "d".repeat(64);
     assert!(updates
         .activate(
             &stale,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |_| panic!("stale approval reached process setup"),
             |_| panic!("stale approval reached page restore"),
         )
@@ -336,8 +340,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .activate(
             candidate,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |_| Err("update page did not commit".into()),
             |_| panic!("failed page transition reached page restore"),
         )
@@ -368,8 +371,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .activate(
             candidate,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |kernel| command(kernel),
             |_| panic!("writer conflict reached page restore"),
         )
@@ -388,8 +390,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .activate(
             candidate,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |kernel| command(kernel),
             |version| {
                 assert_eq!(version, transition.candidate);
@@ -407,7 +408,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     assert!(state.pending.is_none());
     assert_eq!(state.started_version.as_deref(), Some(active.as_str()));
     assert!(
-        updates.activation_target(&state).is_err(),
+        updates.activation_target(&state, context.locale).is_err(),
         "successful activation clears the pending update"
     );
     let list = http
