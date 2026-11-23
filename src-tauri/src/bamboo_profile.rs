@@ -32,7 +32,8 @@ pub(crate) fn create_directory(path: &Path) -> io::Result<()> {
     match fs::create_dir(path) {
         Ok(()) => sync_directory(path.parent().expect("state directory parent")),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            if fs::symlink_metadata(path)?.is_dir() {
+            let metadata = fs::symlink_metadata(path)?;
+            if metadata.is_dir() && !is_link(&metadata) {
                 Ok(())
             } else {
                 Err(io::Error::new(
@@ -43,6 +44,18 @@ pub(crate) fn create_directory(path: &Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
+}
+
+pub(crate) fn is_link(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    metadata.is_symlink()
 }
 
 fn exclusive_file(path: &Path) -> io::Result<File> {

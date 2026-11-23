@@ -120,8 +120,12 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     let profile = Profile::open(&profile).unwrap();
     let executable = std::env::current_exe().unwrap();
     let assembly = executable.parent().unwrap().parent().unwrap();
-    let frontend = assembly.join("frontend/dist");
-    let index = crate::frontend::hash_bytes(&fs::read(frontend.join("index.html")).unwrap());
+    let receipt = fs::read(assembly.join("frontend/receipt.json")).unwrap();
+    let cached = crate::frontend::resolve_profile(assembly, &receipt, &profile).unwrap();
+    let frontend = cached.static_dir.unwrap();
+    let index = cached.index_hash.unwrap();
+    let lotus = cached.manifest_sha256.unwrap();
+    assert!(frontend.starts_with(&profile.state_dir));
 
     let client = release_client().unwrap();
     let base = format!("{RELEASES}/v{}", transition.baseline);
@@ -186,14 +190,11 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     assert_eq!(status, reqwest::StatusCode::CREATED, "{session}");
     let session_id = session["session"]["id"].as_str().unwrap();
 
-    let receipt: Value =
-        serde_json::from_slice(&fs::read(assembly.join("frontend/receipt.json")).unwrap()).unwrap();
-    let lotus = receipt["artifactManifestSha256"].as_str().unwrap();
     let updates = Updates {
         profile: profile.clone(),
         root: scratch.path().join("kernels/profile"),
         bodhi_version: "0.0.0".into(),
-        lotus_manifest_sha256: lotus.into(),
+        lotus_manifest_sha256: lotus.clone(),
         bundled_version: old_version.clone(),
         bundled_binary: baseline,
         running_version: Mutex::new(None),

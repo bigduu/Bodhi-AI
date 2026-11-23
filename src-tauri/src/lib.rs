@@ -200,7 +200,15 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
     #[cfg(target_os = "macos")]
     webview_recovery::observe(app.handle());
 
-    let frontend = match frontend::resolve(app.handle()) {
+    let app_data_dir = app_settings::bamboo_dir();
+    std::fs::create_dir_all(&app_data_dir)?;
+    let profile = bamboo_profile::Profile::open(&app_data_dir)?;
+    // The profile state is trusted by the native launcher even if the user
+    // chooses a data directory normally writable by the WebView.
+    app.fs_scope().forbid_directory(&profile.state_dir, true)?;
+    log::info!("App data dir: {:?}", profile.data);
+
+    let frontend = match frontend::resolve(app.handle(), &profile) {
         Ok(frontend) => frontend,
         Err(error) => {
             show_startup_failure(app.handle(), &error);
@@ -218,14 +226,6 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             return Ok(());
         }
     }
-    let app_data_dir = app_settings::bamboo_dir();
-    std::fs::create_dir_all(&app_data_dir)?;
-    let profile = bamboo_profile::Profile::open(&app_data_dir)?;
-    // The profile state is trusted by the native launcher even if the user
-    // chooses a data directory normally writable by the WebView.
-    app.fs_scope().forbid_directory(&profile.state_dir, true)?;
-    log::info!("App data dir: {:?}", profile.data);
-
     // Run the bamboo backend as a managed sidecar process (replaces the in-process
     // WebService). The child is held in SidecarState and killed on app exit; it also
     // self-exits if this process dies uncleanly — see `sidecar` and the
