@@ -124,6 +124,7 @@ function fixture(arm64 = false) {
     else if (endpoint === `contents/.github/workflows/recover-release.yml?ref=${C2}`) result = { sha: main.RECOVERY_BLOB };
     else if ([S, FM].some(commit => endpoint === `contents/.github/workflows/ci.yml?ref=${commit}`))
       result = { sha: f.featureBlob || featureBlob };
+    else if (endpoint === `contents/src-tauri/component-bootstrap.json?ref=${S}`) return null;
     else if (endpoint.startsWith("contents/") && endpoint.endsWith(`?ref=${S}`)) {
       const file = endpoint.slice(9).split("?")[0]; result = { encoding: "base64", content: lockBytes[file].toString("base64") };
     } else assert.fail(`Unexpected read-only request: ${endpoint}`);
@@ -172,8 +173,8 @@ test("Main requires the installer inspector in the five-target controller's post
 test("Main accepts only a reviewed release workflow producer", () => {
   const f = fixture();
   const newBlob = execFileSync("git", ["hash-object", ".github/workflows/release.yml"], { encoding: "utf8" }).trim();
-  assert.equal(newBlob, out.ARM64_RELEASE_WORKFLOW_BLOB);
-  assert.equal(execFileSync("git", ["hash-object", ".github/workflows/recover-release.yml"], { encoding: "utf8" }).trim(), main.ARM64_RECOVERY_BLOB);
+  assert.equal(newBlob, out.THIN_RELEASE_WORKFLOW_BLOB);
+  assert.equal(execFileSync("git", ["hash-object", ".github/workflows/recover-release.yml"], { encoding: "utf8" }).trim(), main.THIN_RECOVERY_BLOB);
   f.run.display_title = `Bodhi original v${f.value.version} @ ${S}`;
   f.onRead = (endpoint, response) => {
     if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) response.sha = newBlob;

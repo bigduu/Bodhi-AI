@@ -9,7 +9,7 @@ on:
         type: choice
         required: true
         default: "2"
-        options: ["2", "3", "1"]
+        options: ["2", "3", "4", "1"]
       release_run_id:
         description: "Original release.yml run with every required native output"
         required: true
@@ -71,7 +71,7 @@ jobs:
         run: node scripts/release-finalizer.cjs recover "${{ runner.temp }}/bodhi-original-release/bodhi-release-evidence.json"
 
   recover-original:
-    if: inputs.evidence_schema == '2' || inputs.evidence_schema == '3'
+    if: inputs.evidence_schema == '2' || inputs.evidence_schema == '3' || inputs.evidence_schema == '4'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -19,6 +19,7 @@ const LEGACY_BASE = "aef64d4adce7296086a71b1a6c82fa65c7ccf42d";
 const LEGACY_TREE = "41baf69faf3b4c3da5f649a80b58b7283ed90400";
 const RECOVERY_BLOB = "bebaa01d241bc33c3f968cac5292735845876c78";
 const ARM64_RECOVERY_BLOB = "dd95b26ff82a25c77628579861ee715eca2e76ee";
+const THIN_RECOVERY_BLOB = "e52aaed4ff24f3186199ccdccd4fa26a7c6db1b7";
 const RECOVERY31_BLOB = "3f201b9725f5e1da751841569f41f174db8f00e2";
 const FINALIZER31_BLOB = "0fc7de135db1718c7fa5147a3a4512e2db191583";
 const FINALIZER31_RUN = 40796552747;
@@ -39,6 +40,7 @@ const CONTROLS = Object.freeze([".github/workflows/ci.yml", ".github/workflows/r
   "scripts/release-install-shell.cjs", "scripts/release-install-shell.test.cjs",
   "scripts/stage-release-frontend.py", "scripts/stage-release-frontend.test.py"]);
 const ARM64_CONTROLS = Object.freeze([...CONTROLS, "scripts/bamboo-sidecar.cjs", "scripts/installer-payload.cjs"]);
+const THIN_CONTROLS = Object.freeze([...ARM64_CONTROLS, "scripts/thin-release-inputs.cjs", "scripts/verify-thin-bundle.cjs"]);
 const LOCKS = ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"];
 function id(value) { assert.match(String(value), /^[1-9][0-9]*$/); assert.ok(Number.isSafeInteger(Number(value))); return Number(value); }
 function sha(value) { assert.match(value || "", SHA); return value; }
@@ -99,7 +101,9 @@ const ancestors = new Set(CONTROLS.flatMap(file => file.split("/").slice(0, -1).
 function projection(value) { return [...value.entries].filter(([file]) => !ancestors.has(file)).sort(([a], [b]) => a.localeCompare(b)); }
 function overlay(base, controls) {
   const entries = new Map(base.entries);
-  const files = controls.entries.get(".github/workflows/release.yml")?.sha === out.ARM64_RELEASE_WORKFLOW_BLOB ? ARM64_CONTROLS : CONTROLS;
+  const blob = controls.entries.get(".github/workflows/release.yml")?.sha;
+  const files = blob === out.THIN_RELEASE_WORKFLOW_BLOB ? THIN_CONTROLS
+    : blob === out.ARM64_RELEASE_WORKFLOW_BLOB ? ARM64_CONTROLS : CONTROLS;
   for (const file of files) {
     const entry = controls.entries.get(file);
     assert.ok(entry && entry.type === "blob" && entry.mode === "100644", `Missing regular controller file: ${file}`);
@@ -123,11 +127,14 @@ function sourceReceipt(reservation, request, readLog) {
   const stable = value => Object.fromEntries(Object.entries(value).filter(([key]) => !["observedDev", "currentDev"].includes(key)));
   assert.deepEqual(stable(fresh), stable(recorded), "Original accepted source proof differs");
   finalizer.refreshSource({ source: reservation.source }, reservation, request);
-  for (const file of LOCKS) {
+  const thinInputs = reservation.schemaVersion === 4 ? require("./thin-release-inputs.cjs") : null;
+  if (thinInputs) thinInputs.verifyNativeBootstrap(fresh, reservation.bootstrap, readLog);
+  for (const file of thinInputs ? thinInputs.INPUTS : LOCKS) {
     const response = request(`contents/${file}?ref=${reservation.source}`);
     assert.equal(response?.encoding, "base64"); assert.ok(response.content.length <= 180000);
     const data = Buffer.from(response.content, "base64"); assert.equal(out.sha256(data), reservation.lockHashes[file], "Original source lock differs");
     if (file === LOCKS[1]) assert.deepEqual(JSON.parse(data), reservation.frontend);
+    if (file === thinInputs?.BOOTSTRAP_FILE) assert.deepEqual(JSON.parse(data), reservation.bootstrap);
   }
   return fresh;
 }
@@ -273,7 +280,9 @@ function published(value, base, request = readOnly, options = {}) {
       assert.equal(out.workflow(recovery.path), ".github/workflows/recover-release.yml");
       assert.equal(recovery.display_title, `Recover Bodhi v${ctx.version} from ${ctx.runId} attempt ${ctx.attempt}`);
       const recoveryBlob = controller(sha(recovery.head_sha), base, "recover-release.yml",
-        contract.schemaVersion === 2 ? [RECOVERY_BLOB, ARM64_RECOVERY_BLOB] : ARM64_RECOVERY_BLOB, request);
+        contract.schemaVersion === 4 ? THIN_RECOVERY_BLOB
+          : contract.schemaVersion === 2 ? [RECOVERY_BLOB, ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB]
+          : [ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB], request);
       const jobName = recoveryBlob === RECOVERY_BLOB ? "recover-v2" : "recover-original";
       const jobs = out.pages(`actions/runs/${recovery.id}/jobs?filter=all`, "jobs", request);
       assert.equal(new Set(jobs.map(job => job.id)).size, jobs.length);
@@ -406,6 +415,6 @@ function main() {
   assert.deepEqual(runtime(), identity, "Main execution changed while admitting source");
   console.log(JSON.stringify({ ...proof, runtime: identity }, null, 2));
 }
-module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, ARM64_RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage,
+module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage,
   sourceReceipt, recovered31Targets, published31, published, bootstrap, verifyMain };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi main admission: ${error.message}`); process.exitCode = 1; } }

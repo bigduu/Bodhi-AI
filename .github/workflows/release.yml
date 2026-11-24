@@ -141,7 +141,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf rpm
       - name: Install installer inspection tools
-        if: steps.original.outputs.reuse != 'true' && runner.os == 'Linux' && needs.preflight.outputs.schema_version == '3'
+        if: steps.original.outputs.reuse != 'true' && runner.os == 'Linux' && (needs.preflight.outputs.schema_version == '3' || needs.preflight.outputs.schema_version == '4')
         run: sudo apt-get install -y cpio squashfs-tools
       - name: Install Rust stable
         if: steps.original.outputs.reuse != 'true'
@@ -170,7 +170,7 @@ jobs:
           shared-key: bodhi-ci-${{ matrix.target }}
           cache-on-failure: true
       - name: Cache exact published Bamboo inputs
-        if: steps.original.outputs.reuse != 'true'
+        if: steps.original.outputs.reuse != 'true' && needs.preflight.outputs.schema_version != '4'
         uses: actions/cache@v5
         with:
           path: product/src-tauri/.bamboo-sidecar-cache
@@ -180,7 +180,7 @@ jobs:
         working-directory: controller
         run: node scripts/release-install-shell.cjs
       - name: Install accepted frontend package
-        if: steps.original.outputs.reuse != 'true'
+        if: steps.original.outputs.reuse != 'true' && needs.preflight.outputs.schema_version != '4'
         working-directory: product
         shell: bash
         env:
@@ -207,7 +207,19 @@ jobs:
         id: native_build
         if: steps.original.outputs.reuse != 'true'
         working-directory: product
-        run: npm run tauri:build -- --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" --verbose
+        shell: bash
+        env:
+          BODHI_RELEASE_SCHEMA: ${{ needs.preflight.outputs.schema_version }}
+          BODHI_NATIVE_TARGET: ${{ matrix.target }}
+          BODHI_NATIVE_BUNDLES: ${{ matrix.bundles }}
+        run: |
+          set -euo pipefail
+          args=(--target "$BODHI_NATIVE_TARGET" --bundles "$BODHI_NATIVE_BUNDLES" --verbose)
+          if [ "$BODHI_RELEASE_SCHEMA" = 4 ]; then
+            unset BAMBOO_SIDECAR_SOURCE LOTUS_SOURCE LOTUS_PACKAGE_NAME
+            args+=(--features thin-shell --config src-tauri/tauri.thin.conf.json)
+          fi
+          npm run tauri:build -- "${args[@]}"
       - name: Verify static assembly and capture original outputs
         if: steps.original.outputs.reuse != 'true'
         working-directory: controller
