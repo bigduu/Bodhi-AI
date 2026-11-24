@@ -123,9 +123,12 @@ async fn signed_lotus_update_reuses_the_same_owned_bamboo_and_profile() {
         .port();
     let runtime = DesktopRuntime(SidecarState::default());
 
-    let frontend = crate::frontend::prepare_release(&profile.data, &old, |_, _| {})
-        .await
-        .unwrap();
+    let (_, settings) =
+        tokio::sync::watch::channel(crate::component_download::DownloadSettings::default());
+    let frontend =
+        crate::frontend::prepare_release(&profile.data, &old, settings.clone(), |_, _, _| {})
+            .await
+            .unwrap();
     let status = runtime
         .0
         .start(
@@ -146,16 +149,21 @@ async fn signed_lotus_update_reuses_the_same_owned_bamboo_and_profile() {
     let bamboo_version = sidecar::owned_version(port, &status).await.unwrap();
 
     let mut progress = 0;
-    let candidate = crate::frontend::prepare_release(&profile.data, &new, |bytes, total| {
-        assert_eq!(total, Some(new.tarball.size_bytes));
-        assert!(bytes >= progress && bytes <= new.tarball.size_bytes);
-        progress = bytes;
-    })
+    let candidate = crate::frontend::prepare_release(
+        &profile.data,
+        &new,
+        settings.clone(),
+        |_, bytes, total| {
+            assert_eq!(total, new.tarball.size_bytes);
+            assert!(bytes >= progress && bytes <= new.tarball.size_bytes);
+            progress = bytes;
+        },
+    )
     .await
     .unwrap();
     assert_eq!(progress, new.tarball.size_bytes);
     assert_ne!(frontend.static_dir, candidate.static_dir);
-    let cached = crate::frontend::prepare_release(&profile.data, &new, |_, _| {
+    let cached = crate::frontend::prepare_release(&profile.data, &new, settings, |_, _, _| {
         panic!("a verified Lotus Next cache should need no download");
     })
     .await

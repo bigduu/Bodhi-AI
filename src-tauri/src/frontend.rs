@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager, Runtime};
 mod download;
 #[path = "frontend_release.rs"]
 mod release;
-pub use release::prepare_release;
+pub(crate) use release::prepare_release;
 
 const COMPILED_RECEIPT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend-receipt.json"));
 

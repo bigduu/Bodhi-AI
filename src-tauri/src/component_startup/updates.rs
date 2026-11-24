@@ -1,9 +1,9 @@
 use super::{
-    journal::{History, Journal, Versions},
+    journal::{self, History, Journal, Versions},
     Manager, PreparedUpdate,
 };
-use crate::component_channel::{self, Changes, Combination};
-use crate::component_kernel::DownloadSource;
+use crate::component_channel::{Changes, Combination};
+use crate::component_download::{DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
 use chrono::Utc;
 use serde::Serialize;
@@ -60,7 +60,7 @@ struct Progress {
     file: String,
     source: Option<DownloadSource>,
     received: u64,
-    total: Option<u64>,
+    total: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -77,7 +77,7 @@ pub(crate) struct Snapshot {
     active: Option<Versions>,
     running: bool,
     queued: Option<Versions>,
-    source: DownloadSource,
+    settings: DownloadSettings,
     last_check: Option<String>,
     display: Display,
     history: Vec<History>,
@@ -89,10 +89,11 @@ impl Updates {
         file: &str,
         source: Option<DownloadSource>,
         received: u64,
-        total: Option<u64>,
+        total: u64,
     ) {
         if let Ok(mut display) = self.display.lock() {
             display.phase = Phase::Downloading;
+            display.error = None;
             if let Some(progress) = &mut display.progress {
                 if progress.file == file && progress.source == source {
                     progress.received = received;
@@ -127,7 +128,7 @@ impl Manager {
             active: journal.active.as_ref().map(Versions::from),
             running: self.updates.ready.load(Ordering::Acquire),
             queued: journal.queued.as_ref().map(Versions::from),
-            source: journal.source,
+            settings: self.settings.borrow().clone(),
             last_check: journal.last_check,
             display: self
                 .updates
@@ -139,12 +140,11 @@ impl Manager {
         })
     }
 
-    fn remember_source(&self, source: DownloadSource) -> Result<(), String> {
+    fn remember_settings(&self, settings: DownloadSettings) -> Result<(), String> {
+        let settings = settings.validated()?;
         let _lock = self.profile.update_lock()?;
-        let mut journal = Journal::read(&self.profile)?;
-        journal.source = source;
-        journal.save(&self.profile)?;
-        self.sources.send_replace(source);
+        journal::save_settings(&self.profile, &settings)?;
+        self.settings.send_replace(settings);
         Ok(())
     }
 
@@ -194,7 +194,7 @@ impl Manager {
             display.offer = None;
         }
         self.updates.status(Phase::Checking, None);
-        let channel = component_channel::load_stable().await?;
+        let channel = self.load_catalog().await?;
         self.record_check()?;
         let identity = current.identity();
         let Some(candidate) = channel.select(Some((current.sequence, &identity)))? else {
@@ -263,7 +263,7 @@ impl Manager {
     }
 
     async fn reconfirm(&self, update: &PreparedUpdate, locale: Locale) -> Result<(), String> {
-        let channel = component_channel::load_stable().await?;
+        let channel = self.load_catalog().await?;
         let current = Some((update.current_sequence, &update.current));
         if channel
             .select(current)?
@@ -400,7 +400,7 @@ pub(crate) fn check_components<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
 ) -> Result<(), String> {
-    authorize(&window, false)?;
+    authorize(&window, true)?;
     if app.try_state::<Manager>().is_none() {
         return Err("The component updater is unavailable".into());
     }
@@ -416,15 +416,27 @@ pub(crate) fn check_components<R: Runtime>(
 }
 
 #[tauri::command]
-pub(crate) fn set_component_source<R: Runtime>(
+pub(crate) async fn open_component_updates<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
-    source: DownloadSource,
+) -> Result<(), String> {
+    authorize(&window, true)?;
+    if app.try_state::<Manager>().is_none() {
+        return Err("The component updater is unavailable".into());
+    }
+    open(&app)
+}
+
+#[tauri::command]
+pub(crate) fn set_component_download_settings<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    settings: DownloadSettings,
 ) -> Result<(), String> {
     authorize(&window, false)?;
     app.try_state::<Manager>()
         .ok_or("The component updater is unavailable")?
-        .remember_source(source)
+        .remember_settings(settings)
 }
 
 #[cfg(test)]
@@ -467,19 +479,41 @@ mod tests {
     }
 
     #[test]
-    fn selected_source_is_persisted_before_observers_restart_the_download() {
+    fn download_settings_inherit_the_legacy_source_and_persist_before_switching() {
         let state = tempfile::tempdir().unwrap();
         let profile = crate::bamboo_profile::Profile::open(state.path()).unwrap();
+        let legacy = Journal {
+            source: DownloadSource::GhFast,
+            ..Journal::default()
+        };
+        legacy.save(&profile).unwrap();
         let manager = Manager::new(profile.clone()).unwrap();
-        let receiver = manager.sources.subscribe();
-        manager.remember_source(DownloadSource::GhFast).unwrap();
-        assert_eq!(*receiver.borrow(), DownloadSource::GhFast);
-        let reopened = Manager::new(profile).unwrap();
+        let receiver = manager.settings.subscribe();
+        assert_eq!(receiver.borrow().source, DownloadSource::GhFast);
+        let selected = DownloadSettings {
+            source: DownloadSource::Custom,
+            mirror_url: Some("https://mirror.example.com/bodhi".into()),
+            proxy_url: Some("http://localhost:8888".into()),
+        };
+        manager.remember_settings(selected.clone()).unwrap();
+        assert_eq!(journal::read_settings(&profile).unwrap(), selected);
+        assert_eq!(*receiver.borrow(), selected);
+        assert!(manager
+            .remember_settings(DownloadSettings {
+                source: DownloadSource::Custom,
+                ..DownloadSettings::default()
+            })
+            .is_err());
+        let reopened = Manager::new(profile.clone()).unwrap();
         assert_eq!(
             reopened
                 .snapshot("0.0.0".into(), Locale::English)
                 .unwrap()
-                .source,
+                .settings,
+            selected
+        );
+        assert_eq!(
+            Journal::read(&profile).unwrap().source,
             DownloadSource::GhFast
         );
     }

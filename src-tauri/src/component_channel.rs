@@ -1,5 +1,6 @@
 //! Selection from the official catalog of independently published components.
-use reqwest::{redirect::Policy, Client, StatusCode};
+use crate::component_download::DownloadSettings;
+use reqwest::{redirect::Policy, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -166,19 +167,19 @@ impl VerifiedChannel {
 
 /// The catalog comes from the official repository over HTTPS. Download
 /// mirrors apply to archives whose size and digest the catalog already fixes.
-pub async fn load_stable() -> Result<VerifiedChannel, String> {
-    let client = Client::builder()
-        .https_only(true)
+pub(crate) async fn load_stable(settings: &DownloadSettings) -> Result<VerifiedChannel, String> {
+    let client = settings
+        .client()?
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.without_url().to_string())?;
     let mut response = client
         .get(STABLE_CATALOG_URL)
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.without_url().to_string())?;
     if response.status() != StatusCode::OK {
         return Err(format!(
             "The component catalog returned HTTP {}",
@@ -186,7 +187,11 @@ pub async fn load_stable() -> Result<VerifiedChannel, String> {
         ));
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| error.without_url().to_string())?
+    {
         if chunk.len() > MAX_CHANNEL_BYTES - bytes.len() {
             return Err("The component catalog exceeds its size limit".into());
         }

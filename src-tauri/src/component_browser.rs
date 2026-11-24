@@ -3,7 +3,7 @@ use crate::bamboo_profile::{publish_directory, Profile};
 use crate::bamboo_update::RELEASES;
 use crate::browser_runtime::verify_published;
 use crate::component_channel::{BrowserRuntimeArtifact, Candidate};
-use crate::component_kernel::{acquire_asset, DownloadSource};
+use crate::component_download::{acquire_asset, DownloadSettings, DownloadSource};
 use crate::frontend::{safe_relative, valid_sha256};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -16,11 +16,11 @@ const TARGET: &str = env!("BODHI_BUILD_TARGET");
 const MAX_ARCHIVE: u64 = 768 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 2 * 1024 * 1024 * 1024;
 
-pub async fn prepare_runtime(
+pub(crate) async fn prepare_runtime(
     profile_data: &Path,
     candidate: &Candidate<'_>,
-    mut sources: watch::Receiver<DownloadSource>,
-    mut progress: impl FnMut(DownloadSource, u64, u64) + Send,
+    settings: watch::Receiver<DownloadSettings>,
+    progress: impl FnMut(Option<DownloadSource>, u64, u64) + Send,
 ) -> Result<[PathBuf; 3], String> {
     let artifact = candidate
         .artifact
@@ -36,19 +36,13 @@ pub async fn prepare_runtime(
     let version = semver::Version::parse(&candidate.combination.bamboo.version)
         .map_err(|error| error.to_string())?;
     let url = format!("{RELEASES}/v{version}/{}", artifact.asset_name);
-    let file = acquire_asset(
-        &profile.state_dir,
-        &url,
-        &artifact.archive,
-        &mut sources,
-        &mut progress,
-    )
-    .await?;
+    let download = acquire_asset(&profile, &url, &artifact.archive, settings, progress).await?;
     let expected = artifact.clone();
     tokio::task::spawn_blocking(move || {
+        let download = download;
         install(
             &profile,
-            file.reopen().map_err(|e| e.to_string())?,
+            download.file.reopen().map_err(|error| error.to_string())?,
             &expected,
         )
     })

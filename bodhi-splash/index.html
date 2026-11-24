@@ -8,7 +8,7 @@
       html, body { margin: 0; height: 100%; background: #1e1e1e; color: #9aa0a6;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
         display: flex; align-items: center; justify-content: center; }
-      .wrap { text-align: center; }
+      .wrap { width: min(460px, 85vw); text-align: center; }
       .spinner { width: 30px; height: 30px; margin: 0 auto 14px;
         border: 3px solid #3a3a3a; border-top-color: #8ab4f8; border-radius: 50%;
         animation: spin 0.8s linear infinite; }
@@ -16,6 +16,11 @@
       .hint { font-size: 12px; opacity: 0.6; margin-top: 6px; }
       #component-download { width: min(340px, 75vw); margin: 12px auto; }
       #component-download progress { width: 100%; accent-color: #8ab4f8; }
+      #component-error { color: #ffb8ae; font-size: 13px; overflow-wrap: anywhere; }
+      #component-actions { margin-top: 16px; }
+      button { font: inherit; border: 1px solid #505763; border-radius: 7px;
+        padding: 7px 11px; color: #e9ecf0; background: #2b3038; cursor: pointer; }
+      button:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 3px; }
     </style>
     <script src="i18n.js" defer></script>
     <script src="component-bootstrap.js" defer></script>
@@ -24,12 +29,17 @@
     <!-- Shown only while the bamboo sidecar boots. The Rust shell navigates this
          webview to the sidecar's URL once it is healthy (see sidecar.rs). -->
     <div class="wrap">
-      <div class="spinner"></div>
-      <div data-i18n="startup.title">Starting Bodhi</div>
-      <div class="hint" data-i18n="startup.hint">Bodhi is preparing Bamboo and Lotus.</div>
+      <div class="spinner" id="startup-spinner"></div>
+      <div id="startup-title" data-i18n="startup.title">Starting Bodhi</div>
+      <div id="startup-hint" class="hint" data-i18n="startup.hint">Bodhi is preparing Bamboo and Lotus.</div>
       <div id="component-download" hidden>
         <progress aria-label="Download progress" data-i18n-label="progress.label"></progress>
         <div class="hint" id="component-download-detail"></div>
+      </div>
+      <p id="component-error" role="status" hidden></p>
+      <div id="component-actions" hidden>
+        <button id="open-download-settings" type="button" data-i18n="source.settings">Download settings</button>
+        <button id="retry-startup" type="button" data-i18n="updates.retry" hidden>Retry startup</button>
       </div>
     </div>
   </body>

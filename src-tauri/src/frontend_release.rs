@@ -5,12 +5,14 @@ use super::{
 };
 use crate::bamboo_profile::{is_link, publish_directory, Profile};
 use crate::component_channel::LotusRelease;
+use crate::component_download::{acquire_asset, DownloadSettings, DownloadSource};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
+use tokio::sync::watch;
 
 const MANIFEST: &str = "lotus-next-manifest.json";
 const MAX_MANIFEST: u64 = 1024 * 1024;
@@ -38,12 +40,15 @@ struct Resource {
 
 /// Reuse a verified local frontend or acquire the approved release from npm.
 /// The caller supplies a release identity from the authenticated channel.
-pub async fn prepare_release(
+pub(crate) async fn prepare_release(
     profile_data: &Path,
     release: &LotusRelease,
-    progress: impl FnMut(u64, Option<u64>),
+    settings: watch::Receiver<DownloadSettings>,
+    progress: impl FnMut(Option<DownloadSource>, u64, u64) + Send,
 ) -> Result<VerifiedFrontend, String> {
-    if !valid_sha256(&release.tarball.sha256) {
+    if !valid_sha256(&release.tarball.sha256)
+        || !(1..=download::MAX_DOWNLOAD as u64).contains(&release.tarball.size_bytes)
+    {
         return Err("Invalid Lotus Next tarball identity".into());
     }
     let profile = Profile::open(profile_data).map_err(|error| error.to_string())?;
@@ -53,18 +58,15 @@ pub async fn prepare_release(
     if let Ok(frontend) = verify_release(&slot, release) {
         return Ok(frontend);
     }
-    let bytes = download::fetch(&release.version, Some(&release.tarball), progress).await?;
+    let official = download::archive_url(&release.version)?;
+    let download = acquire_asset(&profile, &official, &release.tarball, settings, progress).await?;
     let release = release.clone();
     tokio::task::spawn_blocking(move || {
-        if bytes.len() as u64 != release.tarball.size_bytes
-            || hash_bytes(&bytes) != release.tarball.sha256
-        {
-            return Err("The Lotus Next tarball differs from the component catalog".into());
-        }
+        let mut download = download;
         let scratch =
             tempfile::tempdir_in(&profile.state_dir).map_err(|error| error.to_string())?;
         let staged = scratch.path().join("frontend");
-        download::extract_dist(&bytes, &staged.join("dist"), None)
+        download::extract_dist(download.file.as_file_mut(), &staged.join("dist"), None)
             .map_err(|error| error.to_string())?;
         publish_directory(&profile, &staged, &slot, |root| {
             verify_release(root, &release)

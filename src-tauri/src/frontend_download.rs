@@ -1,7 +1,6 @@
 //! Restore an already approved published frontend from the official npm tarball.
 use super::{cache_slot, safe_relative, verify_resource, Receipt, VerifiedFrontend};
 use crate::bamboo_profile::{publish_directory, Profile};
-use crate::component_channel::Asset;
 use flate2::read::GzDecoder;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -9,7 +8,7 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::time::Duration;
 
-const MAX_DOWNLOAD: usize = 32 * 1024 * 1024;
+pub(super) const MAX_DOWNLOAD: usize = 32 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 128 * 1024 * 1024;
 const MAX_ENTRIES: usize = 16_384;
 
@@ -18,7 +17,7 @@ pub(super) async fn acquire(
     expected: &[u8],
     receipt: &Receipt,
 ) -> Result<VerifiedFrontend, String> {
-    let bytes = fetch(&receipt.version, None, |_, _| {}).await?;
+    let bytes = fetch(&receipt.version).await?;
     let expected = expected.to_vec();
     let profile = profile.clone();
     tokio::task::spawn_blocking(move || install(&profile, &expected, &bytes))
@@ -26,17 +25,16 @@ pub(super) async fn acquire(
         .map_err(|error| error.to_string())?
 }
 
-pub(super) async fn fetch(
-    version: &str,
-    approved: Option<&Asset>,
-    mut progress: impl FnMut(u64, Option<u64>),
-) -> Result<Vec<u8>, String> {
+pub(super) fn archive_url(version: &str) -> Result<String, String> {
     let version = semver::Version::parse(version).map_err(|error| error.to_string())?;
-    let limit = approved.map_or(MAX_DOWNLOAD as u64, |asset| asset.size_bytes);
-    if limit == 0 || limit > MAX_DOWNLOAD as u64 {
-        return Err("Lotus Next download exceeds its size limit".into());
-    }
-    let url = format!("https://registry.npmjs.org/@bigduu/lotus-next/-/lotus-next-{version}.tgz");
+    Ok(format!(
+        "https://registry.npmjs.org/@bigduu/lotus-next/-/lotus-next-{version}.tgz"
+    ))
+}
+
+async fn fetch(version: &str) -> Result<Vec<u8>, String> {
+    let url = archive_url(version)?;
+    let limit = MAX_DOWNLOAD as u64;
     let client = reqwest::Client::builder()
         .https_only(true)
         .no_gzip()
@@ -57,9 +55,7 @@ pub(super) async fn fetch(
     if content_length.is_some_and(|size| size > limit) {
         return Err("Lotus Next download exceeds its size limit".into());
     }
-    let total = approved.map(|asset| asset.size_bytes).or(content_length);
     let mut bytes = Vec::new();
-    progress(0, total);
     while let Some(chunk) = response
         .chunk()
         .await
@@ -69,7 +65,6 @@ pub(super) async fn fetch(
             return Err("Lotus Next download exceeds its size limit".into());
         }
         bytes.extend_from_slice(&chunk);
-        progress(bytes.len() as u64, total);
     }
     Ok(bytes)
 }
@@ -88,11 +83,11 @@ fn install(profile: &Profile, expected: &[u8], bytes: &[u8]) -> Result<VerifiedF
 }
 
 pub(super) fn extract_dist(
-    bytes: &[u8],
+    reader: impl Read,
     output: &Path,
     approved_files: Option<&BTreeMap<String, String>>,
 ) -> io::Result<()> {
-    let mut archive = tar::Archive::new(GzDecoder::new(bytes).take(MAX_UNPACKED + 1));
+    let mut archive = tar::Archive::new(GzDecoder::new(reader).take(MAX_UNPACKED + 1));
     for (number, item) in archive.entries()?.enumerate() {
         let mut entry = item?;
         let name = entry.path_bytes();
