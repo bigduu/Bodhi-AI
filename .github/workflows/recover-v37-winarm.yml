@@ -1,0 +1,51 @@
+name: Recover Bodhi 2026.11.37 from its original installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_controller_sha:
+        description: "Exact protected Main controller SHA"
+        required: true
+        type: string
+
+concurrency:
+  group: bodhi-release-2026.11.37
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  recover:
+    name: Recover original 2026.11.37 installers
+    if: github.ref == 'refs/heads/main' && github.ref_protected && inputs.expected_controller_sha == github.workflow_sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - name: Check installer inspection tools
+        run: command -v 7z && command -v unzip
+      - name: Verify and assemble retained installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+        run: node scripts/recover-v37-winarm.cjs assemble "$RUNNER_TEMP/bodhi-v37/evidence.json"
+      - name: Retain verified recovery evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: bodhi-v37-winarm-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodhi-v37/evidence.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish the original draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+        run: node scripts/recover-v37-winarm.cjs publish "$RUNNER_TEMP/bodhi-v37/evidence.json"

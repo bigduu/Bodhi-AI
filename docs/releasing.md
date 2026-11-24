@@ -415,7 +415,7 @@ second physical build or missing original output cannot use this exception.
 
 A finalizer failure before publication evidence is retained can rerun that
 failed finalizer in the same run. Partial uploads keep their original asset IDs.
-After the evidence upload, use the original schema (2 or 3) if **Publish the
+After the evidence upload, use the original schema (2, 3 or 4) if **Publish the
 original draft** was the sole failing finalizer step:
 
 ```sh
@@ -431,6 +431,20 @@ hashes. It downloads the retained publication evidence by ID and promotes only
 the unchanged original release. If GitHub published it after a lost response,
 recovery confirms it without another PATCH. A newer recovery controller keeps
 its own actual GitHub identity and never impersonates the original controller.
+
+For 2026.11.37 only, the Windows ARM64 installer was built and saved before
+PowerShell crashed while reading its version. Recover its exact archive and
+the four other already verified targets from the original run:
+
+```sh
+gh workflow run recover-v37-winarm.yml -R bigduu/Bodhi-AI --ref main \
+  -f expected_controller_sha=<PROTECTED_MAIN_SHA>
+```
+
+The recovery validates the saved Windows package and records the original
+build job and archive separately from the recovery job. Use the same original
+release run and attempt in the Main promotion locator, with the completed
+recovery run and attempt in `recovery`.
 
 For historical v1 runs, including #116, select `-f evidence_schema=1` with their
 original run/attempt/source/version. The byte-pinned v1 helper and frozen workflow
