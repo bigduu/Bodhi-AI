@@ -194,11 +194,7 @@ impl Manager {
             (handoff, unconfirmed)
         };
         let pair = self.choose().await?;
-        let prepared = if handoff.is_some() {
-            self.reopen_prepared(&pair).await?
-        } else {
-            self.prepare(&pair).await?
-        };
+        let prepared = self.prepare(&pair).await?;
         self.updates.status(updates::Phase::Starting, None);
         let writer = self.profile.writer()?;
         let command = crate::sidecar::command(
@@ -252,6 +248,7 @@ impl Manager {
                 self.updates.status(updates::Phase::Ready, None);
             }
             if let Some(handoff) = handoff {
+                self.updates.restoring.store(true, Ordering::Release);
                 let handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let manager = handle.state::<Self>();
@@ -259,6 +256,7 @@ impl Manager {
                     loop {
                         match manager.resume_planned_restart(&runtime, &handoff).await {
                             Ok(()) => {
+                                manager.updates.restoring.store(false, Ordering::Release);
                                 manager.updates.status(updates::Phase::Ready, None);
                                 break;
                             }

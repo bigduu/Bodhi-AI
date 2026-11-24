@@ -27,6 +27,7 @@ pub(super) struct Updates {
     dialog_open: AtomicBool,
     pub(super) boot: tokio::sync::Mutex<()>,
     pub(super) ready: AtomicBool,
+    pub(super) restoring: AtomicBool,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -189,7 +190,10 @@ impl Manager {
                 .as_ref()
                 .map(|candidate| candidate.sequence)
                 .or(super::PlannedRestart::read(&self.profile)?
-                    .filter(|plan| journal.active.as_ref() != Some(&plan.candidate))
+                    .filter(|plan| {
+                        journal.active.as_ref() != Some(&plan.candidate)
+                            && !self.updates.restoring.load(Ordering::Acquire)
+                    })
                     .map(|plan| plan.candidate.sequence)),
             settings: self.settings.borrow().clone(),
             last_check: journal.last_check,
@@ -364,6 +368,9 @@ impl Manager {
         let _action = self.updates.action.lock().await;
         if self.updates.restart_requested.load(Ordering::Acquire) {
             return Ok(());
+        }
+        if self.updates.restoring.load(Ordering::Acquire) {
+            return Err("Wait for Bamboo to restore the previous sessions".into());
         }
         let locale = i18n::active(app);
         let journal = Journal::read(&self.profile)?;

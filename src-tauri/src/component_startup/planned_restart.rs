@@ -29,6 +29,7 @@ pub(super) struct PlannedRestart {
     current: PairIdentity,
     owner: String,
     commit_requested: bool,
+    exit_confirmed: bool,
 }
 
 impl PlannedRestart {
@@ -126,6 +127,7 @@ mod tests {
             current: original.identity(),
             owner: "shutdown-fixture".into(),
             commit_requested: false,
+            exit_confirmed: false,
         };
         plan.save(&profile).unwrap();
         assert!(manager.arm_authorized_restart().unwrap().is_none());
@@ -155,6 +157,15 @@ mod tests {
         writer(plan.request);
         assert!(manager.arm_authorized_restart().is_err());
         fs::write(&ready, &digest).unwrap();
+        assert_eq!(
+            manager.arm_authorized_restart().unwrap().unwrap().request,
+            plan.request
+        );
+        assert_eq!(manager.choose().await.unwrap(), original);
+        assert!(Journal::read(&profile).unwrap().queued.is_none());
+
+        plan.exit_confirmed = true;
+        plan.save(&profile).unwrap();
         assert_eq!(
             manager.arm_authorized_restart().unwrap().unwrap().request,
             plan.request
@@ -403,7 +414,16 @@ impl Manager {
         runtime: &SidecarState,
         update: &SelectedUpdate,
     ) -> Result<PlannedRestart, String> {
-        let target = self.reopen_prepared(&update.candidate).await?;
+        let target = match self.reopen_prepared(&update.candidate).await {
+            Ok(target) => target,
+            Err(error) => {
+                let _lock = self.profile.update_lock()?;
+                journal::clear_downloaded(&self.profile, &update.candidate)?;
+                return Err(format!(
+                    "Cannot verify the cached update: {error}. Download this update again."
+                ));
+            }
+        };
         if !planned_update::executable_supports(&target.kernel.executable).await? {
             return Err("The downloaded Bamboo cannot restore a planned update. The current session remains available.".into());
         }
@@ -419,6 +439,7 @@ impl Manager {
             current: update.current.clone(),
             owner: runtime.planned_update_owner()?,
             commit_requested: false,
+            exit_confirmed: false,
         };
         plan.save(&self.profile)?;
         Ok(plan)
@@ -491,7 +512,10 @@ impl Manager {
         }
         runtime.wait_for_update_exit(TIMEOUT, false).await?;
         let _writer = self.profile.writer()?;
-        crate::sidecar::require_available_port(port)
+        crate::sidecar::require_available_port(port)?;
+        let _lock = self.profile.update_lock()?;
+        plan.exit_confirmed = true;
+        plan.save(&self.profile)
     }
 
     pub(super) fn arm_authorized_restart(&self) -> Result<Option<PlannedRestart>, String> {
@@ -503,10 +527,25 @@ impl Manager {
         }
         let _lock = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
-        if journal.active.as_ref().is_none_or(|active| {
-            active != &plan.candidate
-                && (active.sequence != plan.current_sequence || active.identity() != plan.current)
-        }) {
+        let original = |active: &Combination| {
+            active.sequence == plan.current_sequence && active.identity() == plan.current
+        };
+        if !plan.exit_confirmed {
+            // Bamboo's receipt authorizes session recovery. Activation also
+            // requires the desktop's durable observation of a clean exit.
+            if journal.next().is_some_and(original) {
+                return Ok(Some(plan));
+            }
+            return Err(
+                "The approved Bamboo recovery no longer matches the original component release"
+                    .into(),
+            );
+        }
+        if journal
+            .active
+            .as_ref()
+            .is_none_or(|active| active != &plan.candidate && !original(active))
+        {
             return Err(
                 "The approved Bamboo handoff no longer matches the active component release".into(),
             );

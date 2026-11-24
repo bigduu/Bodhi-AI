@@ -116,6 +116,13 @@ pub(super) fn save_downloaded(profile: &Profile, pair: &Combination) -> Result<(
     save_json(profile, VERIFIED_DOWNLOAD, pair)
 }
 
+pub(super) fn clear_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
+    if read_downloaded(profile)?.as_ref() == Some(pair) {
+        fs::remove_file(profile.state_dir.join(VERIFIED_DOWNLOAD)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub(super) fn read_json<T: DeserializeOwned>(
     profile: &Profile,
     name: &str,
