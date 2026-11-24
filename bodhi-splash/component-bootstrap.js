@@ -46,6 +46,6 @@ if (window.__TAURI_INTERNALS__) {
   }
 
   get("open-download-settings").addEventListener("click", () => run("open_component_updates"));
-  get("retry-startup").addEventListener("click", () => run("check_components"));
+  get("retry-startup").addEventListener("click", () => run("retry_component_startup"));
   void i18n.sync().then(refresh);
 }

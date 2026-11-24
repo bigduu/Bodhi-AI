@@ -72,8 +72,13 @@ Open **Versions and Updates** or select **Download settings** on the
 startup screen. Choose GitHub, an existing GitHub mirror or **Custom mirror**.
 Set an optional HTTP, HTTPS, SOCKS5 or SOCKS5H forward proxy such as
 `http://127.0.0.1:7890`. With the field empty, Bodhi uses environment proxy
-settings. Save the settings, then choose **Retry startup** or **Check for
-updates** if a transfer has already stopped.
+settings. Save the settings, then choose **Retry startup** or **Retry
+download** if a transfer has stopped.
+
+**Check for updates** reads the official release catalog. Choose **Download
+update** when a compatible update is available. After verification, choose
+**Restart and update** to close Bamboo gracefully and reopen Bodhi with the
+new components.
 
 A custom mirror at `https://mirror.example.com/bodhi/` serves the original
 asset host and path under that base. For example, serve GitHub release files

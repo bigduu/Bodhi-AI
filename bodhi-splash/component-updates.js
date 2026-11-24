@@ -1,6 +1,8 @@
 const get = (id) => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
 const i18n = window.bodhiI18n;
+let currentSnapshot = null;
+let actionPending = false;
 let actionError = "";
 let mirrorUrl = null;
 let dirty = false;
@@ -37,15 +39,36 @@ function append(list, value) {
   list.append(item);
 }
 
+function renderActions({ running, queued, offer, display }) {
+  const busy = actionPending || [
+    "checking", "preparing", "downloading", "starting", "saving", "shuttingDown", "restarting",
+  ].includes(display.phase);
+  const pendingRestart = queued != null;
+  const canDownload = running && !pendingRestart && !!offer && !offer.downloaded;
+  const canApply = running && (pendingRestart || !!offer?.downloaded);
+  get("check").textContent = i18n.text(running ? "updates.check" : "updates.retry");
+  get("check").disabled = busy || (running ? pendingRestart : display.phase !== "startupFailed");
+  get("update-actions").hidden = !(canDownload || canApply);
+  get("download-update").hidden = !canDownload;
+  get("download-update").disabled = busy;
+  get("download-update").textContent = i18n.text(
+    display.phase === "downloadFailed" ? "updates.retryDownload" : "updates.download",
+  );
+  get("apply-update").hidden = !canApply;
+  get("apply-update").disabled = busy;
+  get("apply-update").textContent = i18n.text(pendingRestart ? "updates.retryRestart" : "updates.confirmApply");
+  get("restart-hint").hidden = !canApply;
+}
+
 function render(snapshot) {
-  const { active, queued, display, history } = snapshot;
+  currentSnapshot = snapshot;
+  const { active, display, history, offer } = snapshot;
   get("bodhi").textContent = snapshot.bodhi;
   get("bamboo").textContent = active?.bamboo || "—";
   get("lotus").textContent = active?.lotus || "—";
   renderSettings(snapshot.settings);
-  get("check").textContent = i18n.text(snapshot.running ? "updates.check" : "updates.retry");
-  get("check").disabled = (snapshot.running && !!queued) || !!display.progress || ["checking", "starting"].includes(display.phase);
-  get("phase").textContent = i18n.text(queued && snapshot.running ? "updates.queued" : `phase.${display.phase}`);
+  renderActions(snapshot);
+  get("phase").textContent = i18n.text(`phase.${display.phase}`);
   get("error").hidden = !(actionError || display.error);
   get("error").textContent = actionError || display.error || "";
   get("last-check").textContent = snapshot.lastCheck
@@ -68,9 +91,8 @@ function render(snapshot) {
 
   const changes = get("changes");
   changes.replaceChildren();
-  get("notes").hidden = !display.offer;
-  if (display.offer) {
-    const offer = display.offer;
+  get("notes").hidden = !offer;
+  if (offer) {
     for (const [key, name] of [["bamboo", "Bamboo"], ["lotus", "Lotus Next"]]) {
       if (active?.[key] === offer.versions[key]) continue;
       append(changes, `${name} ${active?.[key] || "—"} → ${offer.versions[key]}`);
@@ -106,9 +128,32 @@ async function refresh() {
   }
 }
 
-get("check").addEventListener("click", async () => {
+async function runAction(command, args) {
+  if (actionPending || !currentSnapshot) return;
+  actionPending = true;
   actionError = "";
-  try { await invoke("check_components"); } catch (error) { actionError = String(error); }
+  renderActions(currentSnapshot);
+  try {
+    await invoke(command, args);
+  } catch (error) {
+    actionError = String(error);
+  } finally {
+    actionPending = false;
+  }
+}
+
+get("check").addEventListener("click", () => {
+  void runAction(currentSnapshot?.running ? "check_components" : "retry_component_startup");
+});
+
+get("download-update").addEventListener("click", () => {
+  const sequence = currentSnapshot?.offer?.sequence;
+  if (sequence != null) void runAction("download_component_update", { sequence });
+});
+
+get("apply-update").addEventListener("click", () => {
+  const sequence = currentSnapshot?.queued ?? currentSnapshot?.offer?.sequence;
+  if (sequence != null) void runAction("apply_component_update", { sequence });
 });
 
 function editSettings() {

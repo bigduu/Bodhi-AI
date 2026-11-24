@@ -11,6 +11,7 @@ use crate::frontend::VerifiedFrontend;
 use journal::Journal;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tauri::{AppHandle, Manager as _, Runtime};
 use tokio::sync::watch;
 
@@ -176,7 +177,7 @@ impl Manager {
             .ok_or("Bodhi's main window is unavailable")?;
         self.begin(&pair)?;
         let outcome = async {
-            let status = runtime.start(command, writer, port)?;
+            let status = runtime.start(command, writer, port, Some(&self.profile.state_dir))?;
             crate::sidecar::wait_for_health(
                 port,
                 60,
@@ -210,20 +211,31 @@ impl Manager {
         result
     }
 
-    fn queue(&self, update: &PreparedUpdate) -> Result<(), String> {
+    async fn prepare_restart(
+        &self,
+        runtime: &crate::sidecar::SidecarState,
+        port: u16,
+    ) -> Result<(), String> {
+        let _update = self.profile.update_lock()?;
+        let journal = Journal::read(&self.profile)?;
+        if journal.queued.is_none() || journal.active.is_none() || journal.trial.is_some() {
+            return Err("There is no approved component update to restart into.".into());
+        }
+
+        self.updates.status(updates::Phase::ShuttingDown, None);
+        runtime.stop_for_update(Duration::from_secs(90)).await?;
+        // Take the writer lease again to prove the old runtime and anything
+        // inheriting its handle have released the profile.
+        let _writer = self.profile.writer()?;
+        crate::sidecar::require_available_port(port)
+    }
+
+    fn queue(&self, update: &SelectedUpdate) -> Result<(), String> {
         let _update = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
-        let active = journal
-            .active
-            .as_ref()
-            .ok_or("The current component pair is unavailable")?;
-        if journal.trial.is_some()
-            || journal.queued.is_some()
-            || active.sequence != update.current_sequence
-            || active.identity() != update.current
-            || update.candidate.sequence <= active.sequence
-        {
-            return Err("This component update is no longer applicable".into());
+        update.validate_transition(&journal)?;
+        if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
+            return Err("Download and verify this component update before applying it".into());
         }
         check_component_floor(&self.profile, &update.candidate.bamboo.version)?;
         journal.queued = Some(update.candidate.clone());
@@ -231,10 +243,26 @@ impl Manager {
     }
 }
 
-struct PreparedUpdate {
+struct SelectedUpdate {
     current_sequence: u64,
     current: PairIdentity,
     candidate: Combination,
+}
+
+impl SelectedUpdate {
+    fn validate_transition(&self, journal: &Journal) -> Result<(), String> {
+        if journal.trial.is_none()
+            && journal.queued.is_none()
+            && journal.active.as_ref().is_some_and(|active| {
+                active.sequence == self.current_sequence
+                    && active.identity() == self.current
+                    && self.candidate.sequence > active.sequence
+            })
+        {
+            return Ok(());
+        }
+        Err("This component update is no longer applicable".into())
+    }
 }
 
 #[cfg(test)]

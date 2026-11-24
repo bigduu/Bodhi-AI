@@ -23,6 +23,7 @@
     .setting { display: grid; gap: 4px; }
     .setting[hidden] { display: none; }
     .settings-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    #update-actions { margin-top: 12px; }
     p { margin: 9px 0; overflow-wrap: anywhere; }
     progress { width: 100%; accent-color: #8ab4f8; }
     .error { color: #ffb8ae; }
@@ -37,7 +38,7 @@
 <body>
   <header>
     <h1 data-i18n="updates.heading">Versions and Updates</h1>
-    <button id="check" type="button" data-i18n="updates.check">Check for updates</button>
+    <button id="check" type="button" data-i18n="updates.check" disabled>Check for updates</button>
   </header>
   <dl class="versions">
     <div><dt>Bodhi</dt><dd id="bodhi">—</dd></div>
@@ -81,9 +82,14 @@
     </div>
     <p id="error" class="error" hidden></p>
     <small id="last-check"></small>
+    <div id="update-actions" hidden>
+      <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
+      <button id="download-update" type="button" data-i18n="updates.download" hidden>Download update</button>
+      <button id="apply-update" type="button" aria-describedby="restart-hint" hidden></button>
+    </div>
   </section>
   <section id="notes" hidden>
-    <h2 data-i18n="updates.changes">Available updates</h2>
+    <h2 data-i18n="updates.changes">Release notes</h2>
     <ul id="changes"></ul>
   </section>
   <section>

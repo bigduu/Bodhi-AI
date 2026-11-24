@@ -1,15 +1,16 @@
 use super::{
     journal::{self, History, Journal, Versions},
-    Manager, PreparedUpdate,
+    Manager, SelectedUpdate,
 };
-use crate::component_channel::{Changes, Combination};
+use crate::component_channel::{Changes, VerifiedChannel};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
 use chrono::Utc;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager as _, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -21,7 +22,8 @@ const INTERVAL: Duration = Duration::from_secs(30 * 60);
 #[derive(Default)]
 pub(super) struct Updates {
     display: Mutex<Display>,
-    check: tokio::sync::Mutex<()>,
+    action: tokio::sync::Mutex<()>,
+    restart_requested: AtomicBool,
     dialog_open: AtomicBool,
     pub(super) boot: tokio::sync::Mutex<()>,
     pub(super) ready: AtomicBool,
@@ -33,7 +35,8 @@ struct Display {
     phase: Phase,
     error: Option<String>,
     progress: Option<Progress>,
-    offer: Option<Offer>,
+    #[serde(skip)]
+    selection: Option<Arc<SelectedUpdate>>,
 }
 
 #[derive(Clone, Copy, Default, Serialize)]
@@ -48,9 +51,13 @@ pub(super) enum Phase {
     CheckFailed,
     Checking,
     Current,
+    Available,
+    DownloadFailed,
     Verified,
-    Queued,
-    Deferred,
+    Saving,
+    ShuttingDown,
+    Restarting,
+    RestartFailed,
     SaveFailed,
 }
 
@@ -63,10 +70,12 @@ struct Progress {
     total: u64,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Serialize)]
 struct Offer {
+    sequence: u64,
     versions: Versions,
     changes: Changes,
+    downloaded: bool,
 }
 
 #[derive(Serialize)]
@@ -76,10 +85,11 @@ pub(crate) struct Snapshot {
     bodhi: String,
     active: Option<Versions>,
     running: bool,
-    queued: Option<Versions>,
+    queued: Option<u64>,
     settings: DownloadSettings,
     last_check: Option<String>,
     display: Display,
+    offer: Option<Offer>,
     history: Vec<History>,
 }
 
@@ -117,25 +127,68 @@ impl Updates {
             display.progress = None;
         }
     }
+
+    fn set_selection(
+        &self,
+        selection: Option<Arc<SelectedUpdate>>,
+        downloaded: bool,
+    ) -> Result<(), String> {
+        let mut display = self
+            .display
+            .lock()
+            .map_err(|_| "Cannot set the update status")?;
+        display.phase = match (&selection, downloaded) {
+            (None, _) => Phase::Current,
+            (Some(_), false) => Phase::Available,
+            (Some(_), true) => Phase::Verified,
+        };
+        display.selection = selection;
+        display.error = None;
+        display.progress = None;
+        Ok(())
+    }
+
+    fn selected(&self, sequence: u64, locale: Locale) -> Result<Arc<SelectedUpdate>, String> {
+        self.display
+            .lock()
+            .map_err(|_| "Cannot read the update status")?
+            .selection
+            .as_ref()
+            .filter(|selection| selection.candidate.sequence == sequence)
+            .cloned()
+            .ok_or_else(|| locale.text("updates.catalogChanged").into())
+    }
 }
 
 impl Manager {
     fn snapshot(&self, bodhi: String, locale: Locale) -> Result<Snapshot, String> {
         let journal = Journal::read(&self.profile)?;
+        let display = self
+            .updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot read the update status")?
+            .clone();
+        let offer = match display.selection.as_ref() {
+            None => None,
+            Some(update) => Some(Offer {
+                sequence: update.candidate.sequence,
+                versions: Versions::from(&update.candidate),
+                changes: update.candidate.changes.clone(),
+                downloaded: journal::read_downloaded(&self.profile)?.as_ref()
+                    == Some(&update.candidate),
+            }),
+        };
         Ok(Snapshot {
             locale,
             bodhi,
             active: journal.active.as_ref().map(Versions::from),
             running: self.updates.ready.load(Ordering::Acquire),
-            queued: journal.queued.as_ref().map(Versions::from),
+            queued: journal.queued.as_ref().map(|candidate| candidate.sequence),
             settings: self.settings.borrow().clone(),
             last_check: journal.last_check,
-            display: self
-                .updates
-                .display
-                .lock()
-                .map_err(|_| "Cannot read the update status")?
-                .clone(),
+            display,
+            offer,
             history: journal.history,
         })
     }
@@ -166,103 +219,180 @@ impl Manager {
         let mut interval = check_interval();
         loop {
             interval.tick().await;
-            self.check(app).await;
+            let Ok(_action) = self.updates.action.try_lock() else {
+                continue;
+            };
+            if self.check().await {
+                self.remind(app);
+            }
         }
     }
 
-    async fn check<R: Runtime>(&self, app: &AppHandle<R>) {
-        let Ok(_in_flight) = self.updates.check.try_lock() else {
-            return;
-        };
-        if self.updates.dialog_open.load(Ordering::Acquire) {
-            return;
-        }
-        if let Err(error) = self.check_and_offer(app).await {
-            self.updates.status(Phase::CheckFailed, Some(error));
+    async fn check(&self) -> bool {
+        match self.detect(self.load_catalog()).await {
+            Ok(available) => available,
+            Err(error) => {
+                self.updates.status(Phase::CheckFailed, Some(error));
+                false
+            }
         }
     }
 
-    async fn check_and_offer<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
+    async fn detect(
+        &self,
+        load_catalog: impl Future<Output = Result<VerifiedChannel, String>>,
+    ) -> Result<bool, String> {
         let journal = Journal::read(&self.profile)?;
         let Some(current) = journal.active else {
-            return Ok(());
+            return Ok(false);
         };
         if journal.trial.is_some() || journal.queued.is_some() {
-            return Ok(());
-        }
-        if let Ok(mut display) = self.updates.display.lock() {
-            display.offer = None;
+            return Ok(false);
         }
         self.updates.status(Phase::Checking, None);
-        let channel = self.load_catalog().await?;
+        let channel = load_catalog.await?;
         self.record_check()?;
         let identity = current.identity();
-        let Some(candidate) = channel.select(Some((current.sequence, &identity)))? else {
-            self.updates.status(Phase::Current, None);
-            return Ok(());
-        };
-        let combination = candidate.combination;
-        if let Err(error) = self.prepare(combination).await {
-            let _lock = self.profile.update_lock()?;
-            let mut journal = Journal::read(&self.profile)?;
-            let effective = journal.active.as_ref().map(Versions::from);
-            journal.record(combination, Some(error.clone()));
-            if let Some(last) = journal.history.last_mut() {
-                last.effective = effective;
-            }
-            journal.save(&self.profile)?;
-            return Err(error);
-        }
-        if let Ok(mut display) = self.updates.display.lock() {
-            display.offer = Some(Offer {
-                versions: Versions::from(combination),
-                changes: combination.changes.clone(),
+        let selection = channel
+            .select(Some((current.sequence, &identity)))?
+            .map(|candidate| {
+                Arc::new(SelectedUpdate {
+                    current_sequence: current.sequence,
+                    current: identity,
+                    candidate: candidate.combination.clone(),
+                })
             });
-        }
-        self.updates.status(Phase::Verified, None);
-        if journal
-            .remind_after
-            .is_some_and(|deadline| deadline > Utc::now().timestamp())
+        let downloaded = journal::read_downloaded(&self.profile)?;
+        let verified = selection
+            .as_ref()
+            .is_some_and(|update| downloaded.as_ref() == Some(&update.candidate));
+        let notify = selection.is_some()
+            && !verified
+            && journal
+                .remind_after
+                .is_none_or(|deadline| deadline <= Utc::now().timestamp());
+        self.updates.set_selection(selection, verified)?;
+        Ok(notify)
+    }
+
+    fn remind<R: Runtime>(&self, app: &AppHandle<R>) {
+        if app.get_webview_window(MENU_ID).is_some()
+            || self.updates.dialog_open.swap(true, Ordering::AcqRel)
         {
-            return Ok(());
+            return;
         }
         let locale = i18n::active(app);
-        let message = confirmation(locale, &current, combination);
-        let update = PreparedUpdate {
-            current_sequence: current.sequence,
-            current: identity,
-            candidate: combination.clone(),
-        };
-        self.updates.dialog_open.store(true, Ordering::Release);
         let handle = app.clone();
         app.dialog()
-            .message(message)
-            .title(locale.text("updates.confirmTitle"))
+            .message(locale.text("updates.availableBody"))
+            .title(locale.text("updates.availableTitle"))
             .kind(MessageDialogKind::Info)
             .buttons(MessageDialogButtons::OkCancelCustom(
-                locale.text("updates.confirmApply").into(),
+                locale.text("updates.view").into(),
                 locale.text("updates.remindLater").into(),
             ))
-            .show(move |approved| {
+            .show(move |view| {
                 tauri::async_runtime::spawn(async move {
                     let manager = handle.state::<Manager>();
-                    let result = if approved {
-                        manager.reconfirm(&update, i18n::active(&handle)).await
+                    let result = if view {
+                        open(&handle)
                     } else {
                         manager.snooze()
                     };
-                    manager.updates.dialog_open.store(false, Ordering::Release);
-                    match result {
-                        Ok(()) if approved => manager.updates.status(Phase::Queued, None),
-                        Ok(()) => manager.updates.status(Phase::Deferred, None),
-                        Err(error) => manager.updates.status(Phase::SaveFailed, Some(error)),
+                    if let Err(error) = result {
+                        log::warn!("Cannot handle the component update reminder: {error}");
                     }
+                    manager.updates.dialog_open.store(false, Ordering::Release);
                 });
             });
+    }
+
+    async fn download(&self, sequence: u64, locale: Locale) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        let update = self.updates.selected(sequence, locale)?;
+        let journal = Journal::read(&self.profile)?;
+        update.validate_transition(&journal)?;
+        if journal::read_downloaded(&self.profile)?.as_ref() == Some(&update.candidate) {
+            return Ok(());
+        }
+        self.updates.status(Phase::Downloading, None);
+        let result = self.prepare(&update.candidate).await.map(|_| ());
+        let phase = if result.is_ok() {
+            Phase::Verified
+        } else {
+            Phase::DownloadFailed
+        };
+        let error = result.as_ref().err().cloned();
+        if let Err(error) = self.record_download(&update, result) {
+            self.updates.status(Phase::SaveFailed, Some(error));
+        } else {
+            self.updates.status(phase, error);
+        }
         Ok(())
     }
 
-    async fn reconfirm(&self, update: &PreparedUpdate, locale: Locale) -> Result<(), String> {
+    fn record_download(
+        &self,
+        update: &SelectedUpdate,
+        outcome: Result<(), String>,
+    ) -> Result<(), String> {
+        let _lock = self.profile.update_lock()?;
+        let mut journal = Journal::read(&self.profile)?;
+        update.validate_transition(&journal)?;
+        if let Err(error) = outcome {
+            let effective = journal.active.as_ref().map(Versions::from);
+            journal.record(&update.candidate, Some(error));
+            if let Some(last) = journal.history.last_mut() {
+                last.effective = effective;
+            }
+            journal.save(&self.profile)
+        } else {
+            journal::save_downloaded(&self.profile, &update.candidate)
+        }
+    }
+
+    async fn apply<R: Runtime>(&self, app: &AppHandle<R>, sequence: u64) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        if self.updates.restart_requested.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let locale = i18n::active(app);
+        let journal = Journal::read(&self.profile)?;
+        if let Some(queued) = &journal.queued {
+            if queued.sequence != sequence {
+                return Err(locale.text("updates.catalogChanged").into());
+            }
+        } else {
+            let update = self.updates.selected(sequence, locale)?;
+            update.validate_transition(&journal)?;
+            if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
+                return Err(locale.text("updates.downloadRequired").into());
+            }
+            self.updates.status(Phase::Saving, None);
+            if let Err(error) = self.reconfirm(&update, locale).await {
+                self.updates.status(Phase::SaveFailed, Some(error));
+                return Ok(());
+            }
+        }
+        if let Err(error) = self
+            .prepare_restart(
+                &app.state::<crate::sidecar::SidecarState>(),
+                crate::web_service_port(),
+            )
+            .await
+        {
+            self.updates.status(Phase::RestartFailed, Some(error));
+            return Ok(());
+        }
+        self.updates
+            .restart_requested
+            .store(true, Ordering::Release);
+        self.updates.status(Phase::Restarting, None);
+        app.request_restart();
+        Ok(())
+    }
+
+    async fn reconfirm(&self, update: &SelectedUpdate, locale: Locale) -> Result<(), String> {
         let channel = self.load_catalog().await?;
         let current = Some((update.current_sequence, &update.current));
         if channel
@@ -279,42 +409,6 @@ fn check_interval() -> tokio::time::Interval {
     let mut interval = tokio::time::interval(INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     interval
-}
-
-fn confirmation(locale: Locale, current: &Combination, next: &Combination) -> String {
-    let mut sections = Vec::new();
-    for (name, old, new, changes) in [
-        (
-            "Bamboo",
-            &current.bamboo.version,
-            &next.bamboo.version,
-            &next.changes.bamboo,
-        ),
-        (
-            "Lotus Next",
-            &current.lotus.version,
-            &next.lotus.version,
-            &next.changes.lotus,
-        ),
-    ] {
-        if old == new {
-            continue;
-        }
-        let heading = format!("{name} {old} → {new}");
-        let mut lines = Vec::from([heading]);
-        if changes.is_empty() {
-            lines.push(locale.text("updates.noNotes").into());
-        }
-        for change in changes.iter().take(4) {
-            lines.push(format!(
-                "• {}",
-                change.chars().take(230).collect::<String>()
-            ));
-        }
-        sections.push(lines.join("\n"));
-    }
-    sections.push(locale.text("updates.confirmBody").into());
-    sections.join("\n\n")
 }
 
 pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -396,7 +490,47 @@ pub(crate) fn component_snapshot<R: Runtime>(
 }
 
 #[tauri::command]
-pub(crate) fn check_components<R: Runtime>(
+pub(crate) async fn check_components<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    let manager = running_manager(&app)?;
+    let _action = manager.updates.action.lock().await;
+    manager.check().await;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn download_component_update<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    sequence: u64,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    running_manager(&app)?
+        .download(sequence, i18n::active(&app))
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn apply_component_update<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    sequence: u64,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    running_manager(&app)?.apply(&app, sequence).await
+}
+
+fn running_manager<R: Runtime>(app: &AppHandle<R>) -> Result<tauri::State<'_, Manager>, String> {
+    app.try_state::<Manager>()
+        .filter(|manager| manager.updates.ready.load(Ordering::Acquire))
+        .ok_or_else(|| "The component updater is unavailable until startup completes".into())
+}
+
+#[tauri::command]
+pub(crate) fn retry_component_startup<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
 ) -> Result<(), String> {
@@ -406,9 +540,7 @@ pub(crate) fn check_components<R: Runtime>(
     }
     tauri::async_runtime::spawn(async move {
         let manager = app.state::<Manager>();
-        if manager.updates.ready.load(Ordering::Acquire) {
-            manager.check(&app).await;
-        } else if matches!(manager.launch(&app).await, Ok(true)) {
+        if matches!(manager.launch(&app).await, Ok(true)) {
             manager.poll(&app).await;
         }
     });
@@ -454,6 +586,53 @@ mod tests {
                 .is_err()
         );
         assert_eq!(interval.tick().await, start + Duration::from_secs(1800));
+    }
+
+    #[tokio::test]
+    async fn detection_and_verified_download_leave_the_active_pair_selected() {
+        use crate::component_channel::tests::{fixture_channel, initial_combination};
+
+        let state = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(state.path()).unwrap();
+        let original = initial_combination().await;
+        Journal {
+            active: Some(original.clone()),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        assert!(manager
+            .detect(async { Ok(fixture_channel().await) })
+            .await
+            .unwrap());
+        let snapshot = manager.snapshot("0.0.0".into(), Locale::English).unwrap();
+        assert!(snapshot.last_check.is_some());
+        assert!(matches!(snapshot.display.phase, Phase::Available));
+        assert!(snapshot.display.progress.is_none() && snapshot.queued.is_none());
+        let offer = snapshot.offer.unwrap();
+        assert!(!offer.downloaded);
+        let update = manager
+            .updates
+            .selected(offer.sequence, Locale::English)
+            .unwrap();
+        assert!(manager.queue(&update).is_err());
+
+        manager
+            .record_download(&update, Err("interrupted transfer".into()))
+            .unwrap();
+        assert!(journal::read_downloaded(&profile).unwrap().is_none());
+        manager.record_download(&update, Ok(())).unwrap();
+        let reopened = Manager::new(profile.clone()).unwrap();
+        assert_eq!(reopened.choose().await.unwrap(), original);
+        assert!(!reopened
+            .detect(async { Ok(fixture_channel().await) })
+            .await
+            .unwrap());
+        let verified = reopened.snapshot("0.0.0".into(), Locale::English).unwrap();
+        assert!(matches!(verified.display.phase, Phase::Verified));
+        assert!(verified.offer.unwrap().downloaded);
+        assert!(verified.queued.is_none());
     }
 
     #[test]

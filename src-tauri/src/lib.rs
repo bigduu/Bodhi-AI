@@ -316,7 +316,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 selected.as_ref().map(|kernel| kernel.executable.as_path()),
                 None,
             )?;
-            let status = runtime.start(command, writer, port)?;
+            let status = runtime.start(command, writer, port, None)?;
             Ok::<_, String>((Some(status), selected))
         };
         let (owned, selected) = match launch.await {
@@ -646,6 +646,9 @@ pub fn run() {
             component_startup::updates::shell_translations,
             component_startup::updates::component_snapshot,
             component_startup::updates::check_components,
+            component_startup::updates::download_component_update,
+            component_startup::updates::apply_component_update,
+            component_startup::updates::retry_component_startup,
             component_startup::updates::open_component_updates,
             component_startup::updates::set_component_download_settings,
         ])
