@@ -444,6 +444,175 @@
           "lotusManifestSha256": "916e4664dc48277f6ce159b82fa347f272ceaf75aaf78b03443eec2fd8438a72"
         }
       ]
+    },
+    {
+      "sequence": 4,
+      "bootstrap": true,
+      "accepts": [
+        {
+          "bambooManifestSha256": "97735c89506603d295a41bd6db1a4d77432e5d344c9b1cb44fc0573feeb98e03",
+          "lotusManifestSha256": "916e4664dc48277f6ce159b82fa347f272ceaf75aaf78b03443eec2fd8438a72"
+        },
+        {
+          "bambooManifestSha256": "44517b32708b01bd8e1b0ec3283148b2e8a9680f10d0199873768faab49b7d3f",
+          "lotusManifestSha256": "916e4664dc48277f6ce159b82fa347f272ceaf75aaf78b03443eec2fd8438a72"
+        },
+        {
+          "bambooManifestSha256": "834cb55aeab3f68d7189743ce5d1813f27956c30c0c866688c678c955af8616a",
+          "lotusManifestSha256": "916e4664dc48277f6ce159b82fa347f272ceaf75aaf78b03443eec2fd8438a72"
+        }
+      ],
+      "bamboo": {
+        "version": "2026.11.42",
+        "sourceRevision": "fde9fed7e7c3dbc9eb48a40ffce56c06df52f47f",
+        "manifest": {
+          "sha256": "834cb55aeab3f68d7189743ce5d1813f27956c30c0c866688c678c955af8616a",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "f60d39dd7d8814fd9ea2ac4cde3131f6e913ccb9026f2a0f3afb6b1c96de71af",
+              "sizeBytes": 273095728
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "72ad72236f4320d9d841b74cc793c511e12bb37a8b6dd2246da420c2fcd686fe",
+                "sizeBytes": 135224500
+              },
+              "receiptSha256": "f5b556f6071ce16639aa6c185d43e60cccd037218831897323bba894e9adb6c9"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "7e5add24b8f607a91907db946ba8ad0363bf1a55a81582bf7ac51e1fb770fa92",
+              "sizeBytes": 221276160
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "c2b09f31707d75c90e3332058c66eecef6eecec670f19213dcf15caf8a9a328c",
+                "sizeBytes": 154106831
+              },
+              "receiptSha256": "a4292abbaed7c711f074ed8b4a9ea981a5f3752a69e71ea34e535a25ae755a05"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "bc993b20d4f4c585868523912ef11e90994889e76e178cca87ff55f75c61b7c6",
+              "sizeBytes": 298742456
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "056464d0d4699c4ed5a1a6e17f42184f7b4faed975376ea35b514c8d64b494d9",
+                "sizeBytes": 163847294
+              },
+              "receiptSha256": "1f99ee995abd9de08fb182dde0125d2c56211bd2d56527add5aa57f61c4b2488"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "4908e59ec18f5953270bb6a8555c833748f45ea4da9cc77d7ca629e96263f8a9",
+              "sizeBytes": 268279808
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "e1c142331a6885ae963b8a2723db06f38b4fff01944dfd5662a7e78ba1ef1736",
+                "sizeBytes": 158153222
+              },
+              "receiptSha256": "0675ccecb3da3810f17f07f72e0f33a9e1f3a4bc2d3b0485a6093d3df8edd5d6"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "e33d25d682e678a7794bcf18c4eca3d4d9cfc1f0742c19286af3fed0375387d0",
+              "sizeBytes": 313425656
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "445c272ca25386f257adf7aa4afc81556cdf24e64f1aefc1bef2b13cfd48a848",
+                "sizeBytes": 156683089
+              },
+              "receiptSha256": "7cc4dc9ed5cc7bd1ea1da8af2da1c430b2e54aacf7be93c79254c76e31805b2c"
+            }
+          }
+        ]
+      },
+      "lotus": {
+        "version": "2026.11.29",
+        "sourceRevision": "038df6dd71125efbeec03752a2ebf8f3c3a3e875",
+        "manifestSha256": "3e86e724b1199f780130bff16fc1ac18635b7d9e74c7566fdfada0b60d67b794",
+        "resourcesSha256": "be640c99d8ef660fd52ff37fbbcce4e83d8cd8366ccad6c31f805c0ede0e4cfb",
+        "tarball": {
+          "sha256": "5b2aa0853bf643abce68c1be793ec07dcb525e92fffc50b35c183b4fc3dd4a15",
+          "sizeBytes": 4144469
+        }
+      },
+      "changes": {
+        "bamboo": [],
+        "lotus": [
+          "fix: preserve collapsed Side Chat and remote placement",
+          "fix: restore browser-local settings for guests",
+          "fix: restore main chat image drops and send following",
+          "fix: preserve workspace path fallback chain",
+          "fix: restore assistant Markdown styling in Solid",
+          "fix: keep the remote host badge readable on narrow screens",
+          "test: await shell config before guest Settings assertions",
+          "test: assert detached history independently of wheel distance",
+          "test: verify Markdown line height independently of font wrapping",
+          "test: wait for the root menu focus trap before opening its submenu",
+          "Merge pull request #687 from bigduu/lotus-next/fix/686-solid-ui-parity",
+          "fix: restore responsive chat and settings layout",
+          "fix: preserve the chat title at the compact breakpoint",
+          "feat: expose SubAgent time limits in System settings",
+          "Merge pull request #691 from bigduu/lotus-next/fix/689-responsive-layout",
+          "Merge branch 'dev' into lotus-next/feat/692-subagent-time-limit-settings",
+          "fix: keep Send reachable in short attachment drafts",
+          "fix: preserve SubAgent settings during concurrent saves",
+          "test: dismiss the attachment preview through its close button",
+          "fix: guide first model setup and show effective defaults",
+          "Merge remote-tracking branch 'origin/dev' into lotus-next/fix/695-first-run-defaults",
+          "test: cover first-run provider verification in the browser",
+          "fix: show the project directory once in the draft toolbar",
+          "fix: load inherited models when setup capability arrives",
+          "Merge pull request #693 from bigduu/lotus-next/feat/692-subagent-time-limit-settings",
+          "Merge remote-tracking branch 'origin/dev' into lotus-next/fix/695-first-run-defaults",
+          "Merge commit '7a7bd2894bf402bc0492dc10bb49b2e8eab2ebdc' into lotus-next/fix/690-short-composer",
+          "fix: restore the saved Root before loading starter history",
+          "Merge pull request #694 from bigduu/lotus-next/fix/690-short-composer",
+          "Merge branch 'dev' into lotus-next/fix/695-first-run-defaults",
+          "Merge pull request #696 from bigduu/lotus-next/fix/695-first-run-defaults",
+          "feat: prioritize running sidebar sessions (#698)",
+          "Merge pull request #699 from bigduu/lotus-next/feat/698-running-session-priority",
+          "fix: preserve workbench focus after closing a tab",
+          "Merge pull request #700 from bigduu/lotus-next/fix/697-phone-workbench-focus",
+          "fix(chat): explain terminal model failures",
+          "fix(chat): cover Bodhi proxy rejections in failure guidance",
+          "test(chat): verify failed transcript hydrates before guidance",
+          "fix(chat): explain terminal model failures (#702)",
+          "fix(chat): stabilize restored transcript startup",
+          "fix(chat): keep non-scrolling startup transcripts readable",
+          "Merge pull request #704 from bigduu/lotus-next/fix/703-stable-startup-transcript"
+        ]
+      }
     }
   ]
 }
