@@ -1,6 +1,6 @@
 //! Durable desktop intent and verification of the old Bamboo process's receipt.
 
-use super::{journal, Combination, Journal, Manager, SelectedUpdate};
+use super::{journal, Combination, Journal, Manager, PairIdentity, SelectedUpdate};
 use crate::bamboo_profile::{is_link, Profile};
 use crate::component_kernel;
 use crate::sidecar::{
@@ -25,6 +25,8 @@ const MAX_INTENT: u64 = 4 * 1024 * 1024;
 pub(super) struct PlannedRestart {
     pub(super) request: Uuid,
     pub(super) candidate: Combination,
+    current_sequence: u64,
+    current: PairIdentity,
     owner: String,
     commit_requested: bool,
 }
@@ -120,6 +122,8 @@ mod tests {
         let mut plan = PlannedRestart {
             request: Uuid::new_v4(),
             candidate: target.clone(),
+            current_sequence: original.sequence,
+            current: original.identity(),
             owner: "shutdown-fixture".into(),
             commit_requested: false,
         };
@@ -177,6 +181,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BODHI_PLANNED_UPDATE_BAMBOO set to an independently built native Bamboo"]
     async fn native_bodhi_control_replaces_two_owned_bamboo_processes() {
+        let _ = env_logger::builder().is_test(true).try_init();
         let binary = PathBuf::from(std::env::var_os("BODHI_PLANNED_UPDATE_BAMBOO").unwrap());
         assert!(planned_update::executable_supports(&binary).await.unwrap());
         let scratch = tempfile::tempdir().unwrap();
@@ -234,6 +239,12 @@ mod tests {
         let start = |runtime: &SidecarState, prepared: &super::super::Prepared| {
             let mut command = std::process::Command::new(&prepared.kernel.executable);
             command
+                .env_clear()
+                .envs(
+                    ["PATH", "SystemRoot", "SYSTEMROOT", "TEMP", "TMP", "LANG"]
+                        .into_iter()
+                        .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+                )
                 .args([
                     "serve",
                     "--bind",
@@ -249,6 +260,7 @@ mod tests {
                 .arg(prepared.frontend.static_dir.as_ref().unwrap())
                 .current_dir(&profile.data)
                 .env("RUST_LOG", "info")
+                .env("XDG_CONFIG_HOME", profile.data.join("config"))
                 .env("BAMBOO_JIANDU_DATA_DIR", profile.data.join("jiandu"));
             runtime
                 .start(
@@ -403,6 +415,8 @@ impl Manager {
         let plan = PlannedRestart {
             request: Uuid::new_v4(),
             candidate: update.candidate.clone(),
+            current_sequence: update.current_sequence,
+            current: update.current.clone(),
             owner: runtime.planned_update_owner()?,
             commit_requested: false,
         };
@@ -489,6 +503,14 @@ impl Manager {
         }
         let _lock = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
+        if journal.active.as_ref().is_none_or(|active| {
+            active != &plan.candidate
+                && (active.sequence != plan.current_sequence || active.identity() != plan.current)
+        }) {
+            return Err(
+                "The approved Bamboo handoff no longer matches the active component release".into(),
+            );
+        }
         if let Some(next) = journal.next() {
             if next == &plan.candidate {
                 return Ok(Some(plan));
