@@ -44,7 +44,8 @@
       const percent = (Math.floor(100 * received / total) / 100).toLocaleString(locale, { style: "percent" });
       counter += " / " + bytes(total) + " · " + percent;
     }
-    const sourceName = source === "github" ? text("source.github") : mirrors[source] || "npm";
+    const sourceName = source === "github" || source === "custom"
+      ? text(`source.${source}`) : mirrors[source] || "npm";
     return file + " · " + sourceName + " · " + counter;
   }
 

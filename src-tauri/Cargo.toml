@@ -63,7 +63,7 @@ tauri-plugin-notification = { workspace = true }
 tempfile = { workspace = true }
 shared_child = "1.1"
 tokio = { workspace = true }
-reqwest = { workspace = true, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls-tls", "socks"] }
 uuid = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]

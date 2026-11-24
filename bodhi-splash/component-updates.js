@@ -2,6 +2,34 @@ const get = (id) => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
 const i18n = window.bodhiI18n;
 let actionError = "";
+let mirrorUrl = null;
+let dirty = false;
+let saving = false;
+let settingsMessage = "";
+let settingsError = "";
+
+function showSettingsState() {
+  const custom = get("source").value === "custom";
+  get("mirror-settings").hidden = !custom;
+  get("mirror-url").disabled = !custom;
+  get("mirror-url").required = custom;
+  get("settings-fields").disabled = saving;
+  get("save-settings").disabled = !dirty;
+  const status = get("settings-status");
+  const message = settingsError || (settingsMessage && i18n.text(settingsMessage));
+  status.classList.toggle("error", !!settingsError);
+  if (status.textContent !== message) status.textContent = message;
+}
+
+function renderSettings(settings) {
+  if (!dirty && !saving) {
+    mirrorUrl = settings.mirrorUrl;
+    get("source").value = settings.source;
+    get("mirror-url").value = mirrorUrl || "";
+    get("proxy-url").value = settings.proxyUrl || "";
+  }
+  showSettingsState();
+}
 
 function append(list, value) {
   const item = document.createElement("li");
@@ -14,7 +42,7 @@ function render(snapshot) {
   get("bodhi").textContent = snapshot.bodhi;
   get("bamboo").textContent = active?.bamboo || "—";
   get("lotus").textContent = active?.lotus || "—";
-  if (document.activeElement !== get("source")) get("source").value = snapshot.source;
+  renderSettings(snapshot.settings);
   get("check").textContent = i18n.text(snapshot.running ? "updates.check" : "updates.retry");
   get("check").disabled = (snapshot.running && !!queued) || !!display.progress || ["checking", "starting"].includes(display.phase);
   get("phase").textContent = i18n.text(queued && snapshot.running ? "updates.queued" : `phase.${display.phase}`);
@@ -83,10 +111,39 @@ get("check").addEventListener("click", async () => {
   try { await invoke("check_components"); } catch (error) { actionError = String(error); }
 });
 
-get("source").addEventListener("change", async (event) => {
-  actionError = "";
-  try { await invoke("set_component_source", { source: event.target.value }); }
-  catch (error) { actionError = String(error); }
+function editSettings() {
+  dirty = true;
+  settingsMessage = "";
+  settingsError = "";
+  showSettingsState();
+}
+
+get("download-settings").addEventListener("input", editSettings);
+get("source").addEventListener("change", editSettings);
+
+get("download-settings").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (saving || !dirty) return;
+  const source = get("source").value;
+  const settings = {
+    source,
+    proxyUrl: get("proxy-url").value.trim() || null,
+    mirrorUrl: source === "custom" ? get("mirror-url").value.trim() || null : mirrorUrl,
+  };
+  saving = true;
+  settingsMessage = "";
+  settingsError = "";
+  showSettingsState();
+  try {
+    await invoke("set_component_download_settings", { settings });
+    dirty = false;
+    settingsMessage = "source.saved";
+  } catch (error) {
+    settingsError = String(error);
+  } finally {
+    saving = false;
+    showSettingsState();
+  }
 });
 
 void i18n.sync().then(refresh);

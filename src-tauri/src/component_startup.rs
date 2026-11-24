@@ -4,8 +4,9 @@ pub(crate) mod updates;
 
 use crate::bamboo_profile::Profile;
 use crate::bamboo_update::{check_component_floor, record_component_launch};
-use crate::component_channel::{self, Combination, PairIdentity};
-use crate::component_kernel::{self, DownloadSource, VerifiedKernel};
+use crate::component_channel::{self, Combination, PairIdentity, VerifiedChannel};
+use crate::component_download::{while_selected, DownloadSettings};
+use crate::component_kernel::{self, VerifiedKernel};
 use crate::frontend::VerifiedFrontend;
 use journal::Journal;
 use std::path::PathBuf;
@@ -19,7 +20,7 @@ pub(crate) fn enabled() -> bool {
 
 pub(crate) struct Manager {
     profile: Profile,
-    sources: watch::Sender<DownloadSource>,
+    settings: watch::Sender<DownloadSettings>,
     updates: updates::Updates,
 }
 
@@ -31,19 +32,30 @@ struct Prepared {
 
 impl Manager {
     pub(crate) fn new(profile: Profile) -> Result<Self, String> {
-        let (sources, _) = watch::channel(Journal::read(&profile)?.source);
+        let (settings, _) = watch::channel(journal::read_settings(&profile)?);
         Ok(Self {
             profile,
-            sources,
+            settings,
             updates: updates::Updates::default(),
         })
+    }
+
+    async fn load_catalog(&self) -> Result<VerifiedChannel, String> {
+        let mut settings = self.settings.subscribe();
+        loop {
+            let selected = settings.borrow_and_update().clone();
+            let load = component_channel::load_stable(&selected);
+            if let Some(result) = while_selected(&mut settings, &selected, load).await {
+                return result;
+            }
+        }
     }
 
     async fn choose(&self) -> Result<Combination, String> {
         if let Some(pair) = Journal::read(&self.profile)?.next() {
             return Ok(pair.clone());
         }
-        component_channel::load_stable()
+        self.load_catalog()
             .await?
             .select(None)?
             .map(|candidate| candidate.combination.clone())
@@ -56,36 +68,33 @@ impl Manager {
         let kernel = component_kernel::prepare_kernel(
             &self.profile.data,
             &candidate,
-            self.sources.subscribe(),
+            self.settings.subscribe(),
             |source, received, total| {
-                self.updates.progress(
-                    &candidate.artifact.asset_name,
-                    Some(source),
-                    received,
-                    Some(total),
-                )
+                self.updates
+                    .progress(&candidate.artifact.asset_name, source, received, total)
             },
         )
         .await?;
         let lotus_archive = format!("lotus-next-{}.tgz", pair.lotus.version);
-        let frontend =
-            crate::frontend::prepare_release(&self.profile.data, &pair.lotus, |received, total| {
-                self.updates.progress(&lotus_archive, None, received, total)
-            })
-            .await?;
+        let frontend = crate::frontend::prepare_release(
+            &self.profile.data,
+            &pair.lotus,
+            self.settings.subscribe(),
+            |source, received, total| {
+                self.updates
+                    .progress(&lotus_archive, source, received, total)
+            },
+        )
+        .await?;
         let browser = if candidate.artifact.browser_runtime.is_some() {
             Some(
                 crate::component_browser::prepare_runtime(
                     &self.profile.data,
                     &candidate,
-                    self.sources.subscribe(),
+                    self.settings.subscribe(),
                     |source, received, total| {
-                        self.updates.progress(
-                            "Bamboo Browser Runtime",
-                            Some(source),
-                            received,
-                            Some(total),
-                        )
+                        self.updates
+                            .progress("Bamboo Browser Runtime", source, received, total)
                     },
                 )
                 .await?,
@@ -135,6 +144,7 @@ impl Manager {
         if self.updates.ready.load(Ordering::Acquire) {
             return Ok(false);
         }
+        self.updates.status(updates::Phase::Preparing, None);
         let result = self.launch_once(app).await;
         if let Err(error) = &result {
             self.updates

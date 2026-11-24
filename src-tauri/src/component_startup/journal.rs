@@ -1,11 +1,13 @@
 use crate::bamboo_profile::{is_link, persist, Profile};
 use crate::component_channel::Combination;
-use crate::component_kernel::DownloadSource;
+use crate::component_download::{DownloadSettings, DownloadSource};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{self, Read};
 
+const JOURNAL: &str = "components-v1.json";
+const DOWNLOAD_SETTINGS: &str = "component-download-settings-v1.json";
 const MAX_STATE: u64 = 2 * 1024 * 1024;
 const HISTORY_LIMIT: usize = 40;
 
@@ -53,41 +55,11 @@ pub(super) struct Journal {
 
 impl Journal {
     pub fn read(profile: &Profile) -> Result<Self, String> {
-        let path = profile.state_dir.join("components-v1.json");
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(error) => return Err(error.to_string()),
-        };
-        if !metadata.is_file() || is_link(&metadata) || metadata.len() > MAX_STATE {
-            return Err("Invalid component profile state file".into());
-        }
-        let mut bytes = Vec::new();
-        File::open(path)
-            .map_err(|e| e.to_string())?
-            .take(MAX_STATE + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_STATE {
-            return Err("The component profile state exceeds its size limit".into());
-        }
-        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+        Ok(read_json(profile, JOURNAL)?.unwrap_or_default())
     }
 
     pub fn save(&self, profile: &Profile) -> Result<(), String> {
-        let bytes = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        if bytes.len() as u64 > MAX_STATE {
-            return Err("The component profile state exceeds its size limit".into());
-        }
-        let mut file =
-            tempfile::NamedTempFile::new_in(&profile.state_dir).map_err(|e| e.to_string())?;
-        io::Write::write_all(&mut file, &bytes).map_err(|e| e.to_string())?;
-        file.as_file().sync_all().map_err(|e| e.to_string())?;
-        persist(
-            file.into_temp_path(),
-            &profile.state_dir.join("components-v1.json"),
-        )
-        .map_err(|e| e.to_string())
+        save_json(profile, JOURNAL, self)
     }
 
     pub fn next(&self) -> Option<&Combination> {
@@ -119,4 +91,56 @@ impl Journal {
             self.history.drain(..self.history.len() - HISTORY_LIMIT);
         }
     }
+}
+
+pub(super) fn read_settings(profile: &Profile) -> Result<DownloadSettings, String> {
+    if let Some(settings) = read_json::<DownloadSettings>(profile, DOWNLOAD_SETTINGS)? {
+        return settings.validated();
+    }
+    Ok(DownloadSettings {
+        source: Journal::read(profile)?.source,
+        ..DownloadSettings::default()
+    })
+}
+
+pub(super) fn save_settings(profile: &Profile, settings: &DownloadSettings) -> Result<(), String> {
+    save_json(profile, DOWNLOAD_SETTINGS, settings)
+}
+
+fn read_json<T: DeserializeOwned>(profile: &Profile, name: &str) -> Result<Option<T>, String> {
+    let path = profile.state_dir.join(name);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !metadata.is_file() || is_link(&metadata) || metadata.len() > MAX_STATE {
+        return Err(format!("Invalid component profile state file: {name}"));
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(MAX_STATE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_STATE {
+        return Err("The component profile state exceeds its size limit".into());
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn save_json(profile: &Profile, name: &str, state: &impl Serialize) -> Result<(), String> {
+    let bytes = serde_json::to_vec(state).map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_STATE {
+        return Err("The component profile state exceeds its size limit".into());
+    }
+    let mut file =
+        tempfile::NamedTempFile::new_in(&profile.state_dir).map_err(|error| error.to_string())?;
+    io::Write::write_all(&mut file, &bytes).map_err(|error| error.to_string())?;
+    file.as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    persist(file.into_temp_path(), &profile.state_dir.join(name)).map_err(|error| error.to_string())
 }
