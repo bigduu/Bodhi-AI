@@ -149,21 +149,22 @@ impl SidecarState {
     /// Stop this exact child through the server's normal cleanup path.
     pub(crate) async fn stop_for_update(&self, timeout: Duration) -> Result<(), String> {
         let child = self.owned_child()?;
-        if child
+        let exited = match child
             .process
             .try_wait()
             .map_err(|error| error.to_string())?
-            .is_some()
         {
-            return Ok(());
-        }
-        child.request_shutdown()?;
-        let process = child.process.clone();
-        let exited = tokio::task::spawn_blocking(move || process.wait_timeout(timeout))
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| format!("Cannot wait for managed Bamboo shutdown: {error}"))?
-            .ok_or("Bamboo is still shutting down. Retry the update after it exits.")?;
+            Some(exited) => exited,
+            None => {
+                child.request_shutdown()?;
+                let process = child.process.clone();
+                tokio::task::spawn_blocking(move || process.wait_timeout(timeout))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .map_err(|error| format!("Cannot wait for managed Bamboo shutdown: {error}"))?
+                    .ok_or("Bamboo is still shutting down. Retry the update after it exits.")?
+            }
+        };
         if !exited.success() {
             return Err(format!("Bamboo exited with {exited} during shutdown."));
         }
@@ -193,8 +194,10 @@ impl SidecarState {
         self.exiting.store(true, Ordering::SeqCst);
         if let Ok(mut recorded) = self.child.lock() {
             if let Some(child) = recorded.take() {
-                log::info!("Killing bamboo sidecar on app exit");
-                let _ = child.process.kill();
+                if !child.process.try_wait().is_ok_and(|exit| exit.is_some()) {
+                    log::info!("Killing bamboo sidecar on app exit");
+                    let _ = child.process.kill();
+                }
             }
         }
     }
@@ -567,6 +570,7 @@ mod tests {
         assert!(work.path().join("clean-exit").is_file());
         assert!(require_available_port(port).is_ok());
         assert!(profile.writer().is_ok());
+        runtime.stop_for_update(Duration::ZERO).await.unwrap();
     }
 
     #[test]
