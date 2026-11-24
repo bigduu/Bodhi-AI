@@ -17,6 +17,7 @@
     section { margin: 0 0 16px; padding: 16px; border: 1px solid #353a44; border-radius: 10px; background: #202328; }
     button, select, input { font: inherit; border: 1px solid #454c57; border-radius: 7px; padding: 7px 10px; background: #2b3038; color: inherit; }
     button { background: #c2dcff; color: #132642; border-color: transparent; font-weight: 600; }
+    button.secondary { background: #2b3038; color: inherit; border-color: #454c57; }
     button:disabled { opacity: .55; }
     button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 3px; }
     fieldset { display: grid; gap: 12px; border: 0; margin: 0; padding: 0; min-width: 0; }
@@ -86,6 +87,7 @@
       <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
       <button id="download-update" type="button" data-i18n="updates.download" hidden>Download update</button>
       <button id="apply-update" type="button" aria-describedby="restart-hint" hidden></button>
+      <button id="skip-version" class="secondary" type="button" data-i18n="updates.skipVersion" hidden>Skip this version</button>
     </div>
   </section>
   <section id="notes" hidden>

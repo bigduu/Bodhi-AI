@@ -152,6 +152,15 @@ mod tests {
 
         plan.commit_requested = true;
         plan.save(&profile).unwrap();
+        let locale = crate::i18n::Locale::English;
+        assert_eq!(
+            manager
+                .set_skipped(target.sequence, target.identity(), true, locale)
+                .await
+                .unwrap_err(),
+            locale.text("updates.restartPending")
+        );
+        assert!(journal::read_skipped(&profile).unwrap().is_empty());
         fs::write(&ready, writer(Uuid::new_v4())).unwrap();
         assert!(manager.arm_authorized_restart().is_err());
         writer(plan.request);

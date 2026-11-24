@@ -61,6 +61,7 @@
   "phase.current": "Up to date",
   "phase.downloadFailed": "Download failed",
   "phase.downloading": "Downloading…",
+  "phase.skipped": "Version skipped",
   "phase.preparing": "Preparing…",
   "phase.shuttingDown": "Waiting for Bamboo to shut down…",
   "phase.restarting": "Restarting Bodhi…",
@@ -108,6 +109,10 @@
   "updates.retryRestart": "Retry restart",
   "updates.remindLater": "Remind me later",
   "updates.retry": "Retry startup",
+  "updates.skipVersion": "Skip this version",
+  "updates.undoSkip": "Undo skip",
+  "updates.undoSkipRequired": "Undo the skip before downloading or applying this version.",
+  "updates.restartPending": "A component restart is pending. Finish restarting before changing skipped versions.",
   "updates.view": "View update",
   "updates.title": "Bodhi Versions and Updates"
 }

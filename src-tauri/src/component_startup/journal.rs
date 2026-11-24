@@ -1,5 +1,5 @@
 use crate::bamboo_profile::{is_link, persist, Profile};
-use crate::component_channel::Combination;
+use crate::component_channel::{Combination, PairIdentity};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -9,6 +9,7 @@ use std::io::{self, Read};
 const JOURNAL: &str = "components-v1.json";
 const DOWNLOAD_SETTINGS: &str = "component-download-settings-v1.json";
 const VERIFIED_DOWNLOAD: &str = "component-verified-download-v1.json";
+const SKIPPED_VERSIONS: &str = "component-skipped-versions-v1.json";
 const MAX_STATE: u64 = 2 * 1024 * 1024;
 const HISTORY_LIMIT: usize = 40;
 
@@ -114,6 +115,14 @@ pub(super) fn read_downloaded(profile: &Profile) -> Result<Option<Combination>, 
 
 pub(super) fn save_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
     save_json(profile, VERIFIED_DOWNLOAD, pair)
+}
+
+pub(super) fn read_skipped(profile: &Profile) -> Result<Vec<PairIdentity>, String> {
+    Ok(read_json(profile, SKIPPED_VERSIONS)?.unwrap_or_default())
+}
+
+pub(super) fn save_skipped(profile: &Profile, pairs: &[PairIdentity]) -> Result<(), String> {
+    save_json(profile, SKIPPED_VERSIONS, &pairs)
 }
 
 pub(super) fn clear_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {

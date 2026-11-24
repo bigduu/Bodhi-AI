@@ -61,6 +61,7 @@
   "phase.current": "已是最新版本",
   "phase.downloadFailed": "下載失敗",
   "phase.downloading": "正在下載…",
+  "phase.skipped": "已略過此版本",
   "phase.preparing": "準備中…",
   "phase.shuttingDown": "正在等待 Bamboo 完成關閉…",
   "phase.restarting": "正在重新啟動 Bodhi…",
@@ -108,6 +109,10 @@
   "updates.retryRestart": "重試重新啟動",
   "updates.remindLater": "稍後提醒",
   "updates.retry": "重試啟動",
+  "updates.skipVersion": "略過此版本",
+  "updates.undoSkip": "取消略過",
+  "updates.undoSkipRequired": "請先取消略過，再下載或套用此版本。",
+  "updates.restartPending": "元件更新正在等待重新啟動，請先完成重新啟動。",
   "updates.view": "查看更新",
   "updates.title": "Bodhi 版本與更新"
 }

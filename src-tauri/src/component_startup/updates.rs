@@ -2,7 +2,7 @@ use super::{
     journal::{self, History, Journal, Versions},
     Manager, SelectedUpdate,
 };
-use crate::component_channel::{Changes, VerifiedChannel};
+use crate::component_channel::{Changes, PairIdentity, VerifiedChannel};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
 use chrono::Utc;
@@ -53,6 +53,7 @@ pub(super) enum Phase {
     Checking,
     Current,
     Available,
+    Skipped,
     DownloadFailed,
     Verified,
     Saving,
@@ -74,9 +75,11 @@ struct Progress {
 #[derive(Serialize)]
 struct Offer {
     sequence: u64,
+    identity: PairIdentity,
     versions: Versions,
     changes: Changes,
     downloaded: bool,
+    skipped: bool,
 }
 
 #[derive(Serialize)]
@@ -133,15 +136,17 @@ impl Updates {
         &self,
         selection: Option<Arc<SelectedUpdate>>,
         downloaded: bool,
+        skipped: bool,
     ) -> Result<(), String> {
         let mut display = self
             .display
             .lock()
             .map_err(|_| "Cannot set the update status")?;
-        display.phase = match (&selection, downloaded) {
-            (None, _) => Phase::Current,
-            (Some(_), false) => Phase::Available,
-            (Some(_), true) => Phase::Verified,
+        display.phase = match (&selection, downloaded, skipped) {
+            (None, _, _) => Phase::Current,
+            (Some(_), _, true) => Phase::Skipped,
+            (Some(_), false, false) => Phase::Available,
+            (Some(_), true, false) => Phase::Verified,
         };
         display.selection = selection;
         display.error = None;
@@ -172,13 +177,19 @@ impl Manager {
             .clone();
         let offer = match display.selection.as_ref() {
             None => None,
-            Some(update) => Some(Offer {
-                sequence: update.candidate.sequence,
-                versions: Versions::from(&update.candidate),
-                changes: update.candidate.changes.clone(),
-                downloaded: journal::read_downloaded(&self.profile)?.as_ref()
-                    == Some(&update.candidate),
-            }),
+            Some(update) => {
+                let identity = update.candidate.identity();
+                let skipped = journal::read_skipped(&self.profile)?.contains(&identity);
+                Some(Offer {
+                    sequence: update.candidate.sequence,
+                    identity,
+                    versions: Versions::from(&update.candidate),
+                    changes: update.candidate.changes.clone(),
+                    downloaded: journal::read_downloaded(&self.profile)?.as_ref()
+                        == Some(&update.candidate),
+                    skipped,
+                })
+            }
         };
         Ok(Snapshot {
             locale,
@@ -279,12 +290,17 @@ impl Manager {
         let verified = selection
             .as_ref()
             .is_some_and(|update| downloaded.as_ref() == Some(&update.candidate));
+        let skipped_pairs = journal::read_skipped(&self.profile)?;
+        let skipped = selection
+            .as_ref()
+            .is_some_and(|update| skipped_pairs.contains(&update.candidate.identity()));
         let notify = selection.is_some()
             && !verified
+            && !skipped
             && journal
                 .remind_after
                 .is_none_or(|deadline| deadline <= Utc::now().timestamp());
-        self.updates.set_selection(selection, verified)?;
+        self.updates.set_selection(selection, verified, skipped)?;
         Ok(notify)
     }
 
@@ -325,6 +341,7 @@ impl Manager {
         let update = self.updates.selected(sequence, locale)?;
         let journal = Journal::read(&self.profile)?;
         update.validate_transition(&journal)?;
+        self.require_unskipped(&update, locale)?;
         if journal::read_downloaded(&self.profile)?.as_ref() == Some(&update.candidate) {
             return Ok(());
         }
@@ -340,6 +357,49 @@ impl Manager {
             self.updates.status(Phase::SaveFailed, Some(error));
         } else {
             self.updates.status(phase, error);
+        }
+        Ok(())
+    }
+
+    pub(super) async fn set_skipped(
+        &self,
+        sequence: u64,
+        identity: PairIdentity,
+        skip: bool,
+        locale: Locale,
+    ) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        let _profile = self.profile.update_lock()?;
+        let journal = Journal::read(&self.profile)?;
+        if self.updates.restart_requested.load(Ordering::Acquire)
+            || self.updates.restoring.load(Ordering::Acquire)
+            || journal.trial.is_some()
+            || journal.queued.is_some()
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
+            return Err(locale.text("updates.restartPending").into());
+        }
+        let update = self.updates.selected(sequence, locale)?;
+        if identity != update.candidate.identity() {
+            return Err(locale.text("updates.catalogChanged").into());
+        }
+        update.validate_transition(&journal)?;
+        let downloaded =
+            journal::read_downloaded(&self.profile)?.as_ref() == Some(&update.candidate);
+        let mut skipped = journal::read_skipped(&self.profile)?;
+        if skip && !skipped.contains(&identity) {
+            skipped.push(identity);
+            journal::save_skipped(&self.profile, &skipped)?;
+        } else if !skip && skipped.contains(&identity) {
+            skipped.retain(|pair| pair != &identity);
+            journal::save_skipped(&self.profile, &skipped)?;
+        }
+        self.updates.set_selection(Some(update), downloaded, skip)
+    }
+
+    fn require_unskipped(&self, update: &SelectedUpdate, locale: Locale) -> Result<(), String> {
+        if journal::read_skipped(&self.profile)?.contains(&update.candidate.identity()) {
+            return Err(locale.text("updates.undoSkipRequired").into());
         }
         Ok(())
     }
@@ -393,6 +453,7 @@ impl Manager {
         } else {
             let update = self.updates.selected(sequence, locale)?;
             update.validate_transition(&journal)?;
+            self.require_unskipped(&update, locale)?;
             if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
                 return Err(locale.text("updates.downloadRequired").into());
             }
@@ -554,6 +615,20 @@ pub(crate) async fn download_component_update<R: Runtime>(
 }
 
 #[tauri::command]
+pub(crate) async fn set_component_version_skipped<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    sequence: u64,
+    identity: PairIdentity,
+    skipped: bool,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    running_manager(&app)?
+        .set_skipped(sequence, identity, skipped, i18n::active(&app))
+        .await
+}
+
+#[tauri::command]
 pub(crate) async fn apply_component_update<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
@@ -673,6 +748,183 @@ mod tests {
         assert!(matches!(verified.display.phase, Phase::Verified));
         assert!(verified.offer.unwrap().downloaded);
         assert!(verified.queued.is_none());
+    }
+
+    #[tokio::test]
+    async fn skipped_pair_survives_startup_and_leaves_a_later_lotus_update_available() {
+        use crate::component_channel::tests::{
+            fixture_channel, fixture_channel_with_lotus_only_update, initial_combination,
+        };
+
+        let state = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(state.path()).unwrap();
+        let original = initial_combination().await;
+        Journal {
+            active: Some(original.clone()),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        let locale = Locale::English;
+        let manager = Manager::new(profile.clone()).unwrap();
+        assert!(manager
+            .detect(async { Ok(fixture_channel().await) })
+            .await
+            .unwrap());
+        let offer = manager
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .offer
+            .unwrap();
+
+        assert!(manager
+            .set_skipped(offer.sequence, original.identity(), true, locale)
+            .await
+            .is_err());
+        assert!(journal::read_skipped(&profile).unwrap().is_empty());
+        for _ in 0..2 {
+            manager
+                .set_skipped(offer.sequence, offer.identity.clone(), true, locale)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            journal::read_skipped(&profile).unwrap(),
+            [offer.identity.clone()]
+        );
+        let reopened = Manager::new(profile.clone()).unwrap();
+        assert_eq!(reopened.choose().await.unwrap(), original);
+        assert!(!reopened
+            .detect(async { Ok(fixture_channel().await) })
+            .await
+            .unwrap());
+        let skipped = reopened.snapshot("0.0.0".into(), locale).unwrap();
+        assert!(matches!(skipped.display.phase, Phase::Skipped));
+        assert!(skipped.offer.unwrap().skipped);
+        assert_eq!(
+            reopened.download(offer.sequence, locale).await.unwrap_err(),
+            locale.text("updates.undoSkipRequired")
+        );
+        assert!(journal::read_downloaded(&profile).unwrap().is_none());
+
+        assert!(reopened
+            .detect(async { Ok(fixture_channel_with_lotus_only_update()) })
+            .await
+            .unwrap());
+        let later = reopened
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .offer
+            .unwrap();
+        assert!(!later.skipped);
+        assert!(later.sequence > offer.sequence);
+        assert_eq!(later.versions.bamboo, original.bamboo.version);
+        assert_ne!(later.versions.lotus, original.lotus.version);
+        assert!(reopened
+            .set_skipped(offer.sequence, offer.identity.clone(), false, locale)
+            .await
+            .is_err());
+        reopened
+            .set_skipped(later.sequence, later.identity.clone(), true, locale)
+            .await
+            .unwrap();
+        assert!(!reopened
+            .detect(async { Ok(fixture_channel_with_lotus_only_update()) })
+            .await
+            .unwrap());
+        let still_latest = reopened
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .offer
+            .unwrap();
+        assert!(still_latest.skipped);
+        assert_eq!(still_latest.sequence, later.sequence);
+        reopened
+            .set_skipped(later.sequence, later.identity, false, locale)
+            .await
+            .unwrap();
+
+        assert!(!reopened
+            .detect(async { Ok(fixture_channel().await) })
+            .await
+            .unwrap());
+        reopened
+            .set_skipped(offer.sequence, offer.identity, false, locale)
+            .await
+            .unwrap();
+        assert!(reopened
+            .detect(async { Ok(fixture_channel().await) })
+            .await
+            .unwrap());
+        assert!(journal::read_skipped(&profile).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn skipping_preserves_a_verified_download_and_refuses_to_change_a_queued_restart() {
+        use crate::component_channel::tests::{fixture_channel, initial_combination};
+
+        let state = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(state.path()).unwrap();
+        let locale = Locale::English;
+        let manager = Manager::new(profile.clone()).unwrap();
+        let original = initial_combination().await;
+        Journal {
+            active: Some(original.clone()),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        manager
+            .detect(async { Ok(fixture_channel().await) })
+            .await
+            .unwrap();
+        let offer = manager
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .offer
+            .unwrap();
+        let update = manager.updates.selected(offer.sequence, locale).unwrap();
+        manager.record_download(&update, Ok(())).unwrap();
+        let journal_file = profile.state_dir.join("components-v1.json");
+        let before = std::fs::read(&journal_file).unwrap();
+
+        manager
+            .set_skipped(offer.sequence, offer.identity.clone(), true, locale)
+            .await
+            .unwrap();
+        manager.require_unskipped(&update, locale).unwrap_err();
+        let skipped = manager
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .offer
+            .unwrap();
+        assert!(skipped.downloaded && skipped.skipped);
+        manager
+            .set_skipped(offer.sequence, offer.identity.clone(), false, locale)
+            .await
+            .unwrap();
+        let resumed = manager.snapshot("0.0.0".into(), locale).unwrap();
+        assert!(matches!(resumed.display.phase, Phase::Verified));
+        assert!(resumed.offer.unwrap().downloaded);
+        assert_eq!(std::fs::read(journal_file).unwrap(), before);
+        assert_eq!(
+            journal::read_downloaded(&profile).unwrap().unwrap(),
+            update.candidate
+        );
+
+        manager.queue(&update).unwrap();
+        assert_eq!(
+            manager
+                .set_skipped(offer.sequence, offer.identity, true, locale)
+                .await
+                .unwrap_err(),
+            locale.text("updates.restartPending")
+        );
+        assert!(journal::read_skipped(&profile).unwrap().is_empty());
+        assert_eq!(
+            Journal::read(&profile).unwrap().queued.unwrap(),
+            update.candidate
+        );
     }
 
     #[test]
