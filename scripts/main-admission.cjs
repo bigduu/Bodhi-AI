@@ -285,22 +285,29 @@ function published(value, base, request = readOnly, options = {}) {
       assert.equal(out.workflow(recovery.path), ".github/workflows/recover-release.yml");
       assert.equal(recovery.display_title, `Recover Bodhi v${ctx.version} from ${ctx.runId} attempt ${ctx.attempt}`);
       const recoveryBlob = controller(sha(recovery.head_sha), base, "recover-release.yml",
-        contract.schemaVersion === 4 ? THIN_RECOVERY_BLOB
-          : contract.schemaVersion === 2 ? [RECOVERY_BLOB, ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB]
-          : [ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB], request);
+        contract.schemaVersion === 4 ? [THIN_RECOVERY_BLOB, V37_DEV_RECOVERY_BLOB]
+          : contract.schemaVersion === 2 ? [RECOVERY_BLOB, ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB, V37_DEV_RECOVERY_BLOB]
+          : [ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB, V37_DEV_RECOVERY_BLOB], request);
       const jobName = recoveryBlob === RECOVERY_BLOB ? "recover-v2" : "recover-original";
+      const skippedNames = recoveryBlob === V37_DEV_RECOVERY_BLOB
+        ? ["recover", "Recover original 2026.11.37 installers"] : ["recover"];
       const jobs = out.pages(`actions/runs/${recovery.id}/jobs?filter=all`, "jobs", request);
       assert.equal(new Set(jobs.map(job => job.id)).size, jobs.length);
-      assert.ok(jobs.every(job => ["recover", jobName].includes(job.name)));
+      assert.ok(jobs.every(job => job.name === jobName || skippedNames.includes(job.name)));
       for (const job of jobs) { assert.equal(job.run_id, recovery.id); assert.equal(job.head_sha, recovery.head_sha); assert.ok(id(job.run_attempt) <= recovery.run_attempt); }
       const selected = jobs.filter(job => job.name === jobName && job.run_attempt === recovery.run_attempt);
       assert.equal(selected.length, 1); out.passed(selected[0], ["Verify original immutable outputs and recover publication"]);
       const physical = source.executionOrigin(selected[0], jobs.filter(job => job.name === jobName));
       recoveryReceipt = { run: runReceipt(recovery), controller: recovery.head_sha, jobId: physical.id, attempt: physical.run_attempt,
         logical: { id: selected[0].id, attempt: selected[0].run_attempt } };
-      const legacy = jobs.filter(job => job.name === "recover"); assert.ok(legacy.length);
-      assert.equal(new Set(legacy.map(job => job.run_attempt)).size, legacy.length);
-      for (const job of legacy) { assert.equal(job.status, "completed"); assert.equal(job.conclusion, "skipped"); assert.deepEqual(job.steps, []); }
+      for (const name of skippedNames) {
+        const skipped = jobs.filter(job => job.name === name);
+        assert.ok(skipped.length, `Missing skipped recovery job: ${name}`);
+        assert.equal(new Set(skipped.map(job => job.run_attempt)).size, skipped.length);
+        for (const job of skipped) {
+          assert.equal(job.status, "completed"); assert.equal(job.conclusion, "skipped"); assert.deepEqual(job.steps, []);
+        }
+      }
     }
     const assembler = matches.filter(job => job.id === manifest.finalizer.jobId && job.run_attempt === manifest.finalizer.attempt);
     assert.equal(assembler.length, 1, "Original manifest assembler is missing"); assert.equal(assembler[0].status, "completed");

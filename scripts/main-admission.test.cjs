@@ -274,6 +274,22 @@ test("completed publication-only recovery authenticates original C1, distinct C2
   assert.equal(proof.controller, C); assert.equal(proof.recovery.controller, C2); assert.equal(proof.recovery.jobId, 71);
   assert.equal(proof.assets.length, 7); assert.ok(f.reads.includes(`compare/${C2}...${B}`));
 });
+test("the revised ordinary Main recovery requires the Dev-only v37 job to be skipped", () => {
+  const f = fixture();
+  recover(f);
+  f.onRead = (endpoint, response) => {
+    if (endpoint === `contents/.github/workflows/recover-release.yml?ref=${C2}`) {
+      response.sha = main.V37_DEV_RECOVERY_BLOB;
+    }
+  };
+  f.recoveryJobs[0].name = "recover-original";
+  const skipped = { ...f.recoveryJobs[1], id: 73, name: "Recover original 2026.11.37 installers" };
+  assert.throws(() => f.verify(), /Missing skipped recovery job/);
+  f.recoveryJobs.push(skipped);
+  assert.equal(f.verify().recovery.jobId, 71);
+  skipped.conclusion = "success";
+  assert.throws(() => f.verify());
+});
 test("a copied successful release keeps physical outputs, assembler and publication evidence", () => {
   const f = fixture(); f.value.attempt = f.run.run_attempt = 2; f.body();
   for (const job of [...f.jobs]) f.jobs.push({ ...copy(job), id: job.id + 1000, run_attempt: 2 });

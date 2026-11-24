@@ -64,16 +64,16 @@ test("the retained evidence is bound to the reviewed Dev dispatch workflow", () 
     if (route.startsWith("contents/")) return { sha: "b".repeat(40) };
     assert.fail("An unreviewed workflow must fail before loading evidence");
   };
-  assert.throws(() => recovery.recoveryProof(locator, request), /Unreviewed recovery workflow/);
+  assert.throws(() => recovery.recoveryRun(locator, request), /Unreviewed recovery workflow/);
   const unprotected = (route) => {
     if (route === "actions/runs/12") return run;
     if (route.startsWith("contents/")) return { sha: recovery.WORKFLOW_BLOB };
     if (route === "branches/dev") return { protected: false };
     assert.fail("An unprotected controller must fail before loading evidence");
   };
-  assert.throws(() => recovery.recoveryProof(locator, unprotected), /Dev must be protected/);
+  assert.throws(() => recovery.recoveryRun(locator, unprotected), /Dev must be protected/);
   run.head_branch = "main";
-  assert.throws(() => recovery.recoveryProof(locator, request), /'dev'/);
+  assert.throws(() => recovery.recoveryRun(locator, request), /'dev'/);
 });
 
 test("the recovery controller uses the protected feature admission for its exact source", () => {

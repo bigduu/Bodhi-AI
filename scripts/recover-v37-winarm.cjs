@@ -169,23 +169,6 @@ function checkAssembly(run, evidence, request) {
   assert.ok(Number.isFinite(created) && created >= Date.parse(assembly.started_at) && created <= end,
     "Manifest was uploaded outside its recorded assembly job");
 }
-function recoveryProof(locator, request = out.api, restore = out.download) {
-  const run = recoveryRun(locator, request);
-  assert.equal(run.status, "completed");
-  assert.equal(run.conclusion, "success");
-  const job = jobFor(run, locator.attempt, request);
-  out.passed(job, [ASSEMBLE, EVIDENCE, PUBLISH]);
-  const retained = readEvidence(run, job, request, restore);
-  const actor = retained.evidence.manifest.captureRecovery;
-  const { ctx } = original(request, restore);
-  verifyCaptureManifest(ctx, retained.evidence.manifest);
-  const approved = controllerAdmission(run.head_sha, actor.admission, request);
-  assert.deepEqual(actor.admission, approved, "Recovery controller admission changed");
-  run.controllerAdmission = approved;
-  checkAssembly(run, retained.evidence, request);
-  return { run, job, ...retained };
-}
-
 function controllerAdmission(controller, identity, request, verify = source.verifyAcceptedDev) {
   const proof = verify({ source: controller, pullRequest: identity.pullRequest,
     runId: identity.runId, attempt: identity.attempt }, request);
@@ -298,7 +281,7 @@ function main() {
   if (command === "assemble") assemble(retained, run, file, out.api);
   else publish(retained, run, file, out.api);
 }
-module.exports = { FIXED, WORKFLOW, WORKFLOW_BLOB, JOB, ASSEMBLE, EVIDENCE, PUBLISH, evidenceName, original, recoveryProof,
+module.exports = { FIXED, WORKFLOW, WORKFLOW_BLOB, JOB, ASSEMBLE, EVIDENCE, PUBLISH, evidenceName, original, recoveryRun,
   controllerAdmission, requireExpectedLatest, verifyCaptureManifest };
 if (require.main === module) {
   try { main(); } catch (error) { console.error(`Bodhi 2026.11.37 recovery: ${error.message}`); process.exitCode = 1; }

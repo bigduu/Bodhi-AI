@@ -449,8 +449,9 @@ gh workflow run recover-release.yml -R bigduu/Bodhi-AI --ref dev \
 The controller checks its admitted Git tree and validates the saved Windows
 package, including its ARM64 shell, PE version and installer payload. The
 published manifest records the original build job and archive alongside the
-recovery run and its separate Dev admission evidence. Main promotion uses
-its own read-only admission.
+recovery run and its separate Dev admission evidence. The recovered release's
+Main promotion requires separate read-only admission through the trusted
+Main controller. [Bodhi #350](https://github.com/bigduu/Bodhi-AI/issues/350)
 
 For historical v1 runs, including #116, select `-f evidence_schema=1` with their
 original run/attempt/source/version. The byte-pinned v1 helper and frozen workflow
