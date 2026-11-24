@@ -16,7 +16,7 @@
 
 use std::fs::File;
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -277,6 +277,7 @@ pub(crate) fn command<R: Runtime>(
     data_dir: &Path,
     static_dir: Option<&Path>,
     kernel: Option<&Path>,
+    browser_runtime: Option<[PathBuf; 3]>,
 ) -> Result<Command, String> {
     let command = match kernel {
         Some(path) => app.shell().command(path),
@@ -308,13 +309,26 @@ pub(crate) fn command<R: Runtime>(
         );
     }
 
-    let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let [node, host, browser] = crate::browser_runtime::resolve(&resources)?;
-    log::info!("Managed browser runtime: {}", host.display());
-    command
-        .env("BAMBOO_BROWSER_NODE", node)
-        .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
-        .env("BAMBOO_BROWSER_EXECUTABLE", browser);
+    let browser_paths = match browser_runtime {
+        Some(paths) => Some(paths),
+        None if cfg!(feature = "thin-shell") => None,
+        None => {
+            let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
+            Some(crate::browser_runtime::resolve(&resources)?)
+        }
+    };
+    if let Some([node, host, browser]) = browser_paths {
+        log::info!("Managed browser runtime: {}", host.display());
+        command
+            .env("BAMBOO_BROWSER_NODE", node)
+            .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
+            .env("BAMBOO_BROWSER_EXECUTABLE", browser);
+    } else {
+        command
+            .env_remove("BAMBOO_BROWSER_NODE")
+            .env_remove("BAMBOO_BROWSER_HOST_SCRIPT")
+            .env_remove("BAMBOO_BROWSER_EXECUTABLE");
+    }
 
     Ok(command)
 }

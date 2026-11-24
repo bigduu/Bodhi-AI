@@ -8,6 +8,15 @@ fn main() {
         "cargo:rustc-env=BODHI_BUILD_TARGET={}",
         std::env::var("TARGET").unwrap()
     );
+    if thin_build() {
+        // Keep the historical launcher compilable while excluding its
+        // resources from this assembly profile.
+        for name in ["frontend-receipt.json", "browser-receipt.json"] {
+            std::fs::write(out_dir.join(name), b"null").expect("write unused bundled receipt");
+        }
+        tauri_build::build();
+        return;
+    }
     ensure_sidecar_placeholder();
     pin_frontend_receipt();
     build_support::reset_browser_destination(&out_dir)
@@ -47,6 +56,29 @@ fn main() {
         &std::env::var("TARGET").unwrap(),
     )
     .expect("stage frontend, browser runtime and sidecar beside the final executable");
+}
+
+fn thin_build() -> bool {
+    println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
+    let feature = std::env::var_os("CARGO_FEATURE_THIN_SHELL").is_some();
+    let overlay: serde_json::Value = std::env::var("TAURI_CONFIG")
+        .ok()
+        .map(|json| serde_json::from_str(&json).expect("invalid TAURI_CONFIG"))
+        .unwrap_or_default();
+    let without_components = ["externalBin", "resources"]
+        .into_iter()
+        .all(|key| overlay["bundle"][key].as_array().is_some_and(Vec::is_empty));
+    assert_eq!(
+        feature, without_components,
+        "Use both --features thin-shell and --config src-tauri/tauri.thin.conf.json"
+    );
+    if feature {
+        assert!(
+            overlay["build"]["beforeBuildCommand"].is_null(),
+            "Thin Bodhi cannot run the bundled component staging hook"
+        );
+    }
+    feature
 }
 
 /// Pin the selected assembly in the executable so a missing or changed resource

@@ -1,4 +1,5 @@
 //! Browser executables and dependencies owned by the desktop application.
+use crate::bamboo_profile::is_link;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -34,13 +35,13 @@ fn inventory(root: &Path, dir: &Path, files: &mut BTreeMap<String, String>) -> R
     for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        let kind = entry.file_type().map_err(|e| e.to_string())?;
-        if kind.is_symlink() {
+        let metadata = entry.metadata().map_err(|e| e.to_string())?;
+        if is_link(&metadata) {
             return Err("browser runtime contains a symlink".into());
         }
-        if kind.is_dir() {
+        if metadata.is_dir() {
             inventory(root, &path, files)?;
-        } else if kind.is_file() {
+        } else if metadata.is_file() {
             if path == root.join("receipt.json") {
                 continue;
             }
@@ -75,11 +76,11 @@ fn verify(
     browser_platform: &str,
 ) -> Result<[PathBuf; 3], String> {
     let metadata = std::fs::symlink_metadata(root).map_err(|e| e.to_string())?;
-    if !metadata.is_dir() || metadata.is_symlink() {
+    if !metadata.is_dir() || is_link(&metadata) {
         return Err("browser runtime is not an owned directory".into());
     }
     let root = root.canonicalize().map_err(|e| e.to_string())?;
-    let receipt = std::fs::read(root.join("receipt.json")).map_err(|e| e.to_string())?;
+    let receipt = read_receipt(&root)?;
     if receipt != expected {
         return Err("browser runtime identity does not match this executable".into());
     }
@@ -116,7 +117,7 @@ fn verify(
     for (index, path) in paths.iter().enumerate() {
         let metadata =
             std::fs::symlink_metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        if !metadata.is_file() || metadata.is_symlink() {
+        if !metadata.is_file() || is_link(&metadata) {
             return Err("browser path is not a regular file".into());
         }
         #[cfg(unix)]
@@ -136,6 +137,28 @@ pub fn resolve(resources: &Path) -> Result<[PathBuf; 3], String> {
     let (target, browser_platform) = platform()?;
     verify(&resources.join("browser-runtime"), COMPILED_RECEIPT, target, browser_platform)
         .map_err(|e| format!("Browser runtime is unavailable or damaged: {e}. Rebuild with npm run tauri:dev or npm run tauri:build."))
+}
+
+fn read_receipt(root: &Path) -> Result<Vec<u8>, String> {
+    let receipt = root.join("receipt.json");
+    let metadata = std::fs::symlink_metadata(&receipt).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || is_link(&metadata) || metadata.len() > 64 * 1024 {
+        return Err("Invalid browser runtime receipt".into());
+    }
+    std::fs::read(receipt).map_err(|error| error.to_string())
+}
+
+pub(crate) fn verify_published(root: &Path, receipt_sha256: &str) -> Result<[PathBuf; 3], String> {
+    let metadata = std::fs::symlink_metadata(root).map_err(|error| error.to_string())?;
+    if !metadata.is_dir() || is_link(&metadata) {
+        return Err("Published browser runtime is not an owned directory".into());
+    }
+    let receipt = read_receipt(root)?;
+    if crate::frontend::hash_bytes(&receipt) != receipt_sha256 {
+        return Err("Browser runtime receipt differs from the component catalog".into());
+    }
+    let (target, browser_platform) = platform()?;
+    verify(root, &receipt, target, browser_platform)
 }
 
 #[cfg(test)]

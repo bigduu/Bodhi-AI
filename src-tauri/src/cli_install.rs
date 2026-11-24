@@ -26,6 +26,7 @@
 //! NATIVE-ONLY: a native menu item + native dialogs. The lotus web frontend
 //! stays Tauri-free, so this module exposes no webview commands.
 
+use crate::i18n::{self, Locale};
 use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Runtime};
@@ -33,10 +34,6 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 /// Menu item id matched in `on_menu_event`.
 pub const MENU_ID: &str = "install-bamboo-cli";
-/// Menu item label (Help menu).
-pub const MENU_LABEL: &str = "安装 bamboo 命令行工具…";
-
-const DIALOG_TITLE: &str = "bamboo 命令行工具";
 
 /// File name of the sidecar binary as staged next to the shell executable.
 #[cfg(windows)]
@@ -95,10 +92,11 @@ pub enum InstallError {
 
 /// Resolve the real bundled `bamboo` binary next to the running executable.
 pub fn resolve_bundled_bamboo() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("无法确定当前可执行文件路径:{e}"))?;
+    let exe =
+        std::env::current_exe().map_err(|e| format!("Cannot locate the Bodhi executable: {e}"))?;
     let dir = exe
         .parent()
-        .ok_or_else(|| "无法确定当前可执行文件所在目录".to_string())?;
+        .ok_or_else(|| "Cannot locate the Bodhi installation directory".to_string())?;
     resolve_bundled_bamboo_in(dir)
 }
 
@@ -127,7 +125,7 @@ pub fn resolve_bundled_bamboo_in(exe_dir: &Path) -> Result<PathBuf, String> {
     }
 
     Err(format!(
-        "未找到内置的 bamboo 可执行文件(应位于 {})。\n开发模式下请先运行 `npm run build:sidecar:dev`;发布包若出现此错误属于打包问题,请反馈。",
+        "Could not find a bundled Bamboo executable at {}.\nIn development, run `npm run build:sidecar:dev` first.",
         candidates[0].display()
     ))
 }
@@ -311,7 +309,7 @@ pub fn install_symlink(link: &Path, desired_target: &Path) -> Result<InstallOutc
         if is_permission_error(&e) {
             InstallError::NeedsPrivilege(e.to_string())
         } else {
-            InstallError::Io(format!("检查 {} 失败:{e}", link.display()))
+            InstallError::Io(format!("Cannot inspect {}: {e}", link.display()))
         }
     })?;
 
@@ -319,14 +317,14 @@ pub fn install_symlink(link: &Path, desired_target: &Path) -> Result<InstallOutc
         LinkSite::AlreadyInstalled => return Ok(InstallOutcome::AlreadyInstalled),
         LinkSite::ForeignSymlink { current_target } => {
             return Err(InstallError::Conflict(format!(
-                "{} 已指向 {},不是 Bodhi 创建的链接。为安全起见未做任何修改;请手动处理后重试。",
+                "The existing link {} points to {}. Move it before trying again.",
                 link.display(),
                 current_target.display()
             )));
         }
         LinkSite::Occupied => {
             return Err(InstallError::Conflict(format!(
-                "{} 已存在且是普通文件/目录。为安全起见未做任何修改;请手动处理后重试。",
+                "A file or directory already exists at {}. Move it before trying again.",
                 link.display()
             )));
         }
@@ -338,7 +336,7 @@ pub fn install_symlink(link: &Path, desired_target: &Path) -> Result<InstallOutc
         if is_permission_error(&e) {
             InstallError::NeedsPrivilege(e.to_string())
         } else {
-            InstallError::Io(format!("创建 {} 失败:{e}", link.display()))
+            InstallError::Io(format!("Cannot create {}: {e}", link.display()))
         }
     })?;
 
@@ -380,28 +378,20 @@ pub fn default_link_path() -> Result<PathBuf, String> {
 pub fn default_link_path() -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|home| home.join(".local").join("bin").join("bamboo"))
-        .ok_or_else(|| "无法确定用户主目录".to_string())
+        .ok_or_else(|| "Cannot locate the home directory".to_string())
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn report_from_outcome(outcome: InstallOutcome, link: &Path) -> InstallReport {
-    let message = match outcome {
-        InstallOutcome::AlreadyInstalled => format!(
-            "已安装,指向当前版本。\n可在终端运行 `bamboo --help` / `bamboo tui`。\n({})",
-            link.display()
-        ),
-        InstallOutcome::Installed => format!(
-            "已安装:{} → 内置的 bamboo。\n在终端运行 `bamboo --help` / `bamboo tui`。",
-            link.display()
-        ),
-        InstallOutcome::ReplacedStale => format!(
-            "已将旧版链接更新为当前版本:{}。\n在终端运行 `bamboo --help` / `bamboo tui`。",
-            link.display()
-        ),
+fn report_from_outcome(outcome: InstallOutcome, link: &Path, locale: Locale) -> InstallReport {
+    let key = match outcome {
+        InstallOutcome::AlreadyInstalled => "cli.already",
+        InstallOutcome::Installed => "cli.installed",
+        InstallOutcome::ReplacedStale => "cli.replaced",
     };
+    let message = locale.format(key, &[("path", &link.to_string_lossy())]);
     InstallReport {
         success: true,
-        message,
+        message: format!("{message}\n{}", locale.text("cli.terminal")),
     }
 }
 
@@ -409,9 +399,13 @@ fn report_from_outcome(outcome: InstallOutcome, link: &Path) -> InstallReport {
 // Per-OS entry points
 // ---------------------------------------------------------------------------
 
+pub fn perform_install() -> InstallReport {
+    perform_install_in(Locale::default())
+}
+
 /// macOS: `/usr/local/bin/bamboo` symlink, single osascript escalation.
 #[cfg(target_os = "macos")]
-pub fn perform_install() -> InstallReport {
+fn perform_install_in(locale: Locale) -> InstallReport {
     let target = match resolve_bundled_bamboo() {
         Ok(t) => t,
         Err(e) => return InstallReport::failure(e),
@@ -421,13 +415,13 @@ pub fn perform_install() -> InstallReport {
         Err(e) => return InstallReport::failure(e),
     };
     match install_symlink(&link, &target) {
-        Ok(outcome) => report_from_outcome(outcome, &link),
+        Ok(outcome) => report_from_outcome(outcome, &link, locale),
         Err(InstallError::NeedsPrivilege(_)) => {
             // Single escalation. The conflict check above already passed
             // unprivileged, so the admin `ln -sfn` can only fill a vacant
             // slot or refresh our own stale link.
-            match escalate_install_macos(&link, &target) {
-                Ok(()) => report_from_outcome(InstallOutcome::Installed, &link),
+            match escalate_install_macos(&link, &target, locale) {
+                Ok(()) => report_from_outcome(InstallOutcome::Installed, &link, locale),
                 Err(e) => InstallReport::failure(e),
             }
         }
@@ -438,38 +432,44 @@ pub fn perform_install() -> InstallReport {
 }
 
 #[cfg(target_os = "macos")]
-fn escalate_install_macos(link: &Path, target: &Path) -> Result<(), String> {
+fn escalate_install_macos(link: &Path, target: &Path, locale: Locale) -> Result<(), String> {
     let script = build_admin_install_applescript(target, link);
     let output = std::process::Command::new("/usr/bin/osascript")
         .arg("-e")
         .arg(&script)
         .output()
-        .map_err(|e| format!("无法运行 osascript:{e}"))?;
+        .map_err(|e| format!("Cannot run osascript: {e}"))?;
 
     if output.status.success() {
         // Verify the admin command actually produced the link we asked for.
         match classify_link_site(link, target) {
             Ok(LinkSite::AlreadyInstalled) => Ok(()),
             Ok(other) => Err(format!(
-                "授权命令已执行,但 {} 的状态异常({other:?})。",
+                "The installer returned successfully, but {} has an unexpected state ({other:?}).",
                 link.display()
             )),
-            Err(e) => Err(format!("授权后校验 {} 失败:{e}", link.display())),
+            Err(e) => Err(format!(
+                "Cannot verify {} after installation: {e}",
+                link.display()
+            )),
         }
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // osascript reports a dismissed auth dialog as error -128.
         if stderr.contains("-128") || stderr.to_ascii_lowercase().contains("cancel") {
-            Err("已取消授权,未安装。".to_string())
+            Err(locale.text("cli.canceled").into())
         } else {
-            Err(format!("管理员安装失败:{}", stderr.trim()))
+            Err(format!(
+                "Administrator installation failed: {}",
+                stderr.trim()
+            ))
         }
     }
 }
 
 /// Linux: `~/.local/bin/bamboo` symlink + PATH hint when needed.
 #[cfg(target_os = "linux")]
-pub fn perform_install() -> InstallReport {
+fn perform_install_in(locale: Locale) -> InstallReport {
     let target = match resolve_bundled_bamboo() {
         Ok(t) => t,
         Err(e) => return InstallReport::failure(e),
@@ -480,20 +480,23 @@ pub fn perform_install() -> InstallReport {
     };
     match install_symlink(&link, &target) {
         Ok(outcome) => {
-            let mut report = report_from_outcome(outcome, &link);
+            let mut report = report_from_outcome(outcome, &link, locale);
             let path_var = std::env::var("PATH").unwrap_or_default();
             if let Some(dir) = link.parent() {
                 if !path_var_contains(&path_var, dir) {
-                    report.message.push_str(
-                        "\n\n注意:~/.local/bin 当前不在 $PATH。请在 shell 配置(如 ~/.bashrc)中加入:\nexport PATH=\"$HOME/.local/bin:$PATH\"",
-                    );
+                    report.message.push_str("\n\n");
+                    report.message.push_str(locale.text("cli.pathHint"));
+                    report
+                        .message
+                        .push_str("\nexport PATH=\"$HOME/.local/bin:$PATH\"");
                 }
             }
             report
         }
-        Err(InstallError::NeedsPrivilege(msg)) => {
-            InstallReport::failure(format!("没有权限写入 {}:{msg}", link.display()))
-        }
+        Err(InstallError::NeedsPrivilege(msg)) => InstallReport::failure(format!(
+            "Permission denied writing {}: {msg}",
+            link.display()
+        )),
         Err(InstallError::Conflict(msg)) | Err(InstallError::Io(msg)) => {
             InstallReport::failure(msg)
         }
@@ -503,13 +506,13 @@ pub fn perform_install() -> InstallReport {
 /// Windows: append the install dir to the user PATH (HKCU) and broadcast the
 /// change. `bamboo.exe` already sits next to `bodhi.exe`, so no files move.
 #[cfg(windows)]
-pub fn perform_install() -> InstallReport {
+fn perform_install_in(locale: Locale) -> InstallReport {
     let target = match resolve_bundled_bamboo() {
         Ok(t) => t,
         Err(e) => return InstallReport::failure(e),
     };
     let Some(dir) = target.parent() else {
-        return InstallReport::failure("无法确定 bamboo.exe 所在目录".to_string());
+        return InstallReport::failure("Cannot locate the directory containing bamboo.exe");
     };
     let dir_str = dir.to_string_lossy().into_owned();
 
@@ -521,7 +524,9 @@ pub fn perform_install() -> InstallReport {
         None => InstallReport {
             success: true,
             message: format!(
-                "已安装,指向当前版本。\n安装目录已在用户 PATH 中({dir_str})。\n可在终端运行 `bamboo --help` / `bamboo tui`。"
+                "{}\n{}",
+                locale.format("cli.windowsAlready", &[("path", &dir_str)]),
+                locale.text("cli.terminal")
             ),
         },
         Some(new_value) => {
@@ -532,7 +537,9 @@ pub fn perform_install() -> InstallReport {
             InstallReport {
                 success: true,
                 message: format!(
-                    "已将 {dir_str} 加入用户 PATH。\n请打开新的终端窗口,运行 `bamboo --help` / `bamboo tui`。"
+                    "{}\n{}",
+                    locale.format("cli.windowsInstalled", &[("path", &dir_str)]),
+                    locale.text("cli.terminal")
                 ),
             }
         }
@@ -550,11 +557,11 @@ fn read_user_path() -> Result<(String, winreg::enums::RegType), String> {
 
     let env = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags("Environment", KEY_READ)
-        .map_err(|e| format!("读取 HKCU\\Environment 失败:{e}"))?;
+        .map_err(|e| format!("Cannot read HKCU\\Environment: {e}"))?;
     match env.get_raw_value("Path") {
         Ok(raw) => {
-            let value =
-                String::from_reg_value(&raw).map_err(|e| format!("解析用户 PATH 失败:{e}"))?;
+            let value = String::from_reg_value(&raw)
+                .map_err(|e| format!("Cannot parse the user PATH: {e}"))?;
             // NOTE: moves `vtype` out of `raw`, so it must come after the
             // decode above borrows `raw` (RegType is Clone, not Copy).
             Ok((value, raw.vtype))
@@ -562,7 +569,7 @@ fn read_user_path() -> Result<(String, winreg::enums::RegType), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok((String::new(), winreg::enums::RegType::REG_EXPAND_SZ))
         }
-        Err(e) => Err(format!("读取用户 PATH 失败:{e}")),
+        Err(e) => Err(format!("Cannot read the user PATH: {e}")),
     }
 }
 
@@ -574,13 +581,13 @@ fn write_user_path(value: &str, vtype: winreg::enums::RegType) -> Result<(), Str
 
     let env = RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags("Environment", KEY_SET_VALUE)
-        .map_err(|e| format!("打开 HKCU\\Environment 失败:{e}"))?;
+        .map_err(|e| format!("Cannot open HKCU\\Environment: {e}"))?;
     let mut bytes: Vec<u8> = Vec::with_capacity((value.len() + 1) * 2);
     for unit in value.encode_utf16().chain(std::iter::once(0u16)) {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
     env.set_raw_value("Path", &RegValue { bytes, vtype })
-        .map_err(|e| format!("写入用户 PATH 失败:{e}"))
+        .map_err(|e| format!("Cannot update the user PATH: {e}"))
 }
 
 /// Tell running apps (Explorer, new consoles) the environment changed so new
@@ -608,8 +615,8 @@ fn broadcast_environment_change() {
 
 /// Fallback for platforms Bodhi does not ship on.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-pub fn perform_install() -> InstallReport {
-    InstallReport::failure("此平台暂不支持安装命令行工具。".to_string())
+fn perform_install_in(locale: Locale) -> InstallReport {
+    InstallReport::failure(locale.text("cli.unsupported"))
 }
 
 // ---------------------------------------------------------------------------
@@ -661,12 +668,13 @@ fn installed_state(_target: &Path) -> bool {
 pub fn run_from_menu<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     std::thread::spawn(move || {
-        let report = perform_install();
+        let report = perform_install_in(i18n::active(&app));
         show_report(&app, &report);
     });
 }
 
 fn show_report<R: Runtime>(app: &AppHandle<R>, report: &InstallReport) {
+    let locale = i18n::active(app);
     if report.success {
         log::info!("cli-install: {}", report.message);
     } else {
@@ -674,7 +682,14 @@ fn show_report<R: Runtime>(app: &AppHandle<R>, report: &InstallReport) {
     }
     app.dialog()
         .message(&report.message)
-        .title(DIALOG_TITLE)
+        .title(locale.text(if report.success {
+            "cli.title"
+        } else {
+            "cli.failed"
+        }))
+        .buttons(MessageDialogButtons::OkCustom(
+            locale.text("dialog.ok").into(),
+        ))
         .kind(if report.success {
             MessageDialogKind::Info
         } else {
@@ -722,23 +737,22 @@ pub fn maybe_offer_on_startup<R: Runtime>(app: &AppHandle<R>) {
         return;
     }
 
+    let locale = i18n::active(app);
     let app = app.clone();
     app.clone()
         .dialog()
-        .message(
-            "是否将 bamboo 命令行工具安装到 PATH?\n\n安装后可在任意终端运行 `bamboo --help` / `bamboo tui`。\n之后也可以随时通过菜单「Help → 安装 bamboo 命令行工具…」安装。",
-        )
-        .title(DIALOG_TITLE)
+        .message(locale.text("cli.offer"))
+        .title(locale.text("cli.title"))
         .kind(MessageDialogKind::Info)
         .buttons(MessageDialogButtons::OkCancelCustom(
-            "安装".to_string(),
-            "以后再说".to_string(),
+            locale.text("cli.install").into(),
+            locale.text("cli.later").into(),
         ))
         .show(move |install| {
             record_offer(&marker, if install { "accepted" } else { "declined" });
             if install {
                 std::thread::spawn(move || {
-                    let report = perform_install();
+                    let report = perform_install_in(i18n::active(&app));
                     show_report(&app, &report);
                 });
             }

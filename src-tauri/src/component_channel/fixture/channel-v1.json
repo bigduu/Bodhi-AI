@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "shellProtocol": 1,
+  "combinations": [
+    {
+      "sequence": 1,
+      "bootstrap": true,
+      "accepts": [],
+      "bamboo": {
+        "version": "2026.11.37",
+        "sourceRevision": "abd2dbf54cc81b8c0eb75c6d62e3c623d882fa70",
+        "manifest": {
+          "sha256": "7c0ff706e372bd32e4a605cb7371f7d1e410af90b6ba2ed86de453787d7ffa48",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "50c9be4d8c5bc82b1237873db91a30cbff2463bfe14d1913d371eeae3563414b",
+              "sizeBytes": 269785552
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "27b3dac332cb20766cfef3497f1becf3fa300c7340dce7003c5bd0ed935e17df",
+              "sizeBytes": 218164224
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "a498c51cfc5324f780ef48b0df6d8aebc1219506fea3d75f04c877dc9817d54b",
+              "sizeBytes": 295392960
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "1416e1ac083534c07bd9d718f77b7028fa4f5c4dde30525f864da3104567b812",
+              "sizeBytes": 263769088
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "6032bdeac61cdf526ec7df2219a519811c73e96c0ccae1c1d7cd9188d49c8a4d",
+              "sizeBytes": 309752784
+            }
+          }
+        ]
+      },
+      "lotus": {
+        "version": "2026.11.25",
+        "sourceRevision": "e7216f11be9526ffbd56e3fa2f0c0dee8902eb03",
+        "manifestSha256": "86b548adadf6fe3cd443644ee6d05269b049c4d5a2adeb2178301f11c1b9ff85",
+        "resourcesSha256": "6f395932d1e7cc14e5ea66724eb40be1d15c04ed99c5458c90062dfe0a1268d8",
+        "tarball": {
+          "sha256": "07ad0b54249efd4322ae5f82fb72b20d03673bc97dc8d7773324f7622b299712",
+          "sizeBytes": 4325700
+        }
+      },
+      "changes": {
+        "bamboo": [],
+        "lotus": []
+      }
+    },
+    {
+      "sequence": 2,
+      "bootstrap": true,
+      "accepts": [
+        {
+          "bambooManifestSha256": "7c0ff706e372bd32e4a605cb7371f7d1e410af90b6ba2ed86de453787d7ffa48",
+          "lotusManifestSha256": "86b548adadf6fe3cd443644ee6d05269b049c4d5a2adeb2178301f11c1b9ff85"
+        }
+      ],
+      "bamboo": {
+        "version": "2026.11.39",
+        "sourceRevision": "73b0d4d9696e36b2ca1d39319805cda517c031a1",
+        "manifest": {
+          "sha256": "97735c89506603d295a41bd6db1a4d77432e5d344c9b1cb44fc0573feeb98e03",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "f949115414a45bd54d550e0a369eb3a954f2ec6bbc9b0e718a79806c0001be0a",
+              "sizeBytes": 269655072
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "b4ca9eff9578ac9c113efc73ae1b08c423ae91f44534494142f1d2de018b9d80",
+              "sizeBytes": 218388992
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "9ac074a8f7da0fe140d7e1290196518dad958c338207386476883d84db0332b1",
+              "sizeBytes": 295649064
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "554017202c80757ec24ef830ee1ab29994cc850b842aa69a11d65cd996be22c1",
+              "sizeBytes": 263685120
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "17a937a8e8cef9c6db3e8d0fb3bdef0bf3c174ad41995fd494d6a6d80440d287",
+              "sizeBytes": 309752464
+            }
+          }
+        ]
+      },
+      "lotus": {
+        "version": "2026.11.26",
+        "sourceRevision": "00e1fe1c8e615ba689810d159ad139a0d9f418e9",
+        "manifestSha256": "44c5ceee9ddb73563722663299adcd7d5ed79c10aa36f64ce661066a38a22b37",
+        "resourcesSha256": "8ebe07d62703ca6f15e323a2bd2716ce9bdd5501137a10fb020184805539d23d",
+        "tarball": {
+          "sha256": "951dadf86ded25e63e3b16d07e9cb2e6aac88e2ece45c9d873acfb1bcd081e2b",
+          "sizeBytes": 4325897
+        }
+      },
+      "changes": {
+        "bamboo": [],
+        "lotus": []
+      }
+    }
+  ]
+}

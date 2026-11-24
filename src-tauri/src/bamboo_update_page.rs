@@ -1,18 +1,32 @@
+use crate::i18n::{self, Locale};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{Runtime, Url, WebviewWindow};
+use tauri::{Manager, Runtime, Url, WebviewWindow};
 use tokio::sync::oneshot;
 
 pub(crate) const SCHEME: &str = "bodhi-update";
 
-pub(crate) fn response() -> tauri::http::Response<&'static [u8]> {
+pub(crate) fn response(locale: Locale) -> tauri::http::Response<Vec<u8>> {
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let page = include_str!("../../bodhi-splash/bamboo-update.html")
+        .replace("{{locale}}", locale.tag())
+        .replace("{{title}}", &escape(locale.text("kernel.title")))
+        .replace(
+            "{{heading}}",
+            &escape(locale.text("kernel.transitionHeading")),
+        )
+        .replace("{{hint}}", &escape(locale.text("kernel.transitionHint")));
     tauri::http::Response::builder()
         .header("Content-Type", "text/html; charset=utf-8")
         .header(
             "Content-Security-Policy",
             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
         )
-        .body(include_bytes!("../../bodhi-splash/bamboo-update.html").as_slice())
+        .body(page.into_bytes())
         .expect("valid bundled update page response")
 }
 
@@ -98,7 +112,9 @@ impl UpdatePage {
             .map_err(|error| error.to_string())?;
         let committed = tokio::time::timeout(Duration::from_secs(10), committed).await;
         if !matches!(committed, Ok(Ok(()))) || !window.url().is_ok_and(|current| current == url) {
-            return Err("Bodhi 未能切换到本地过渡页。请从帮助菜单重试应用。".into());
+            return Err(i18n::active(window.app_handle())
+                .text("kernel.transitionFailed")
+                .into());
         }
         log::info!("Bodhi update page committed before Bamboo handoff");
         Ok(())
@@ -124,6 +140,19 @@ impl UpdatePage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_transition_has_translated_text_and_no_script_access() {
+        let response = response(Locale::TraditionalChinese);
+        let html = std::str::from_utf8(response.body()).unwrap();
+        assert!(html.contains("lang=\"zh-TW\""));
+        assert!(html.contains("正在切換 Bamboo 核心"));
+        assert!(!html.contains("{{"));
+        assert!(response.headers()["Content-Security-Policy"]
+            .to_str()
+            .unwrap()
+            .starts_with("default-src 'none'"));
+    }
 
     #[test]
     fn only_the_current_local_page_can_load_until_the_frontend_is_restored() {

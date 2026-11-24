@@ -102,6 +102,95 @@ fn bamboo_command(
 }
 
 #[tokio::test]
+async fn signed_lotus_update_reuses_the_same_owned_bamboo_and_profile() {
+    let native_assembly = std::env::var("BAMBOO_SIDECAR_SOURCE").as_deref() == Ok("release")
+        && std::env::var("LOTUS_SOURCE").as_deref() == Ok("package");
+    if !native_assembly {
+        return;
+    }
+    let [old, new] = crate::component_channel::tests::lotus_fixtures().await;
+    let scratch = tempfile::tempdir().unwrap();
+    let data = scratch.path().join("profile");
+    fs::create_dir(&data).unwrap();
+    let profile = Profile::open(&data).unwrap();
+    let executable = std::env::current_exe().unwrap();
+    let assembly = executable.parent().unwrap().parent().unwrap();
+    let bamboo = assembly.join(format!("bamboo{}", std::env::consts::EXE_SUFFIX));
+    let port = TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let runtime = DesktopRuntime(SidecarState::default());
+
+    let frontend = crate::frontend::prepare_release(&profile.data, &old, |_, _| {})
+        .await
+        .unwrap();
+    let status = runtime
+        .0
+        .start(
+            bamboo_command(
+                &profile,
+                &bamboo,
+                frontend.static_dir.as_deref().unwrap(),
+                scratch.path(),
+                port,
+            ),
+            profile.writer().unwrap(),
+            port,
+        )
+        .unwrap();
+    sidecar::wait_for_health(port, 45, Some(&status), frontend.index_hash.as_deref())
+        .await
+        .unwrap();
+    let bamboo_version = sidecar::owned_version(port, &status).await.unwrap();
+
+    let mut progress = 0;
+    let candidate = crate::frontend::prepare_release(&profile.data, &new, |bytes, total| {
+        assert_eq!(total, Some(new.tarball.size_bytes));
+        assert!(bytes >= progress && bytes <= new.tarball.size_bytes);
+        progress = bytes;
+    })
+    .await
+    .unwrap();
+    assert_eq!(progress, new.tarball.size_bytes);
+    assert_ne!(frontend.static_dir, candidate.static_dir);
+    let cached = crate::frontend::prepare_release(&profile.data, &new, |_, _| {
+        panic!("a verified Lotus Next cache should need no download");
+    })
+    .await
+    .unwrap();
+    assert_eq!(cached.index_hash, candidate.index_hash);
+    sidecar::wait_for_health(port, 3, Some(&status), frontend.index_hash.as_deref())
+        .await
+        .unwrap();
+
+    runtime.0.stop().await.unwrap();
+    let status = runtime
+        .0
+        .start(
+            bamboo_command(
+                &profile,
+                &bamboo,
+                cached.static_dir.as_deref().unwrap(),
+                scratch.path(),
+                port,
+            ),
+            profile.writer().unwrap(),
+            port,
+        )
+        .unwrap();
+    sidecar::wait_for_health(port, 45, Some(&status), cached.index_hash.as_deref())
+        .await
+        .unwrap();
+    assert_eq!(
+        sidecar::owned_version(port, &status).await.unwrap(),
+        bamboo_version
+    );
+    runtime.0.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn published_kernel_update_preserves_profile_on_native_assembly() {
     // The canonical native feature jobs set both variables, stage verified
     // resources, and run this in the usual debug/test compilation. Bare Rust
@@ -120,8 +209,18 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     let profile = Profile::open(&profile).unwrap();
     let executable = std::env::current_exe().unwrap();
     let assembly = executable.parent().unwrap().parent().unwrap();
-    let frontend = assembly.join("frontend/dist");
-    let index = crate::frontend::hash_bytes(&fs::read(frontend.join("index.html")).unwrap());
+    let receipt = fs::read(assembly.join("frontend/receipt.json")).unwrap();
+    let empty_bundle = scratch.path().join("without-bundled-frontend");
+    let cached = crate::frontend::resolve_or_download(&empty_bundle, &receipt, &profile)
+        .await
+        .unwrap();
+    let reused = crate::frontend::resolve_profile(&empty_bundle, &receipt, &profile).unwrap();
+    assert_eq!(reused.static_dir, cached.static_dir);
+    assert_eq!(reused.index_hash, cached.index_hash);
+    let frontend = cached.static_dir.unwrap();
+    let index = cached.index_hash.unwrap();
+    let lotus = cached.manifest_sha256.unwrap();
+    assert!(frontend.starts_with(&profile.state_dir));
 
     let client = release_client().unwrap();
     let base = format!("{RELEASES}/v{}", transition.baseline);
@@ -186,14 +285,11 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     assert_eq!(status, reqwest::StatusCode::CREATED, "{session}");
     let session_id = session["session"]["id"].as_str().unwrap();
 
-    let receipt: Value =
-        serde_json::from_slice(&fs::read(assembly.join("frontend/receipt.json")).unwrap()).unwrap();
-    let lotus = receipt["artifactManifestSha256"].as_str().unwrap();
     let updates = Updates {
         profile: profile.clone(),
         root: scratch.path().join("kernels/profile"),
         bodhi_version: "0.0.0".into(),
-        lotus_manifest_sha256: lotus.into(),
+        lotus_manifest_sha256: lotus.clone(),
         bundled_version: old_version.clone(),
         bundled_binary: baseline,
         running_version: Mutex::new(None),
@@ -222,15 +318,19 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         updates.prepare_launch().await.unwrap().is_none(),
         "staging alone must not activate even on relaunch"
     );
-    let candidate = updates.activation_target(&staged).unwrap();
+    let context = ActivationContext {
+        port,
+        index_hash: Some(&index),
+        locale: Locale::English,
+    };
+    let candidate = updates.activation_target(&staged, context.locale).unwrap();
     let mut stale = candidate.clone();
     stale.upgrade.manifest_sha256 = "d".repeat(64);
     assert!(updates
         .activate(
             &stale,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |_| panic!("stale approval reached process setup"),
             |_| panic!("stale approval reached page restore"),
         )
@@ -240,8 +340,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .activate(
             candidate,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |_| Err("update page did not commit".into()),
             |_| panic!("failed page transition reached page restore"),
         )
@@ -272,8 +371,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .activate(
             candidate,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |kernel| command(kernel),
             |_| panic!("writer conflict reached page restore"),
         )
@@ -292,8 +390,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
         .activate(
             candidate,
             &runtime.0,
-            port,
-            Some(&index),
+            context,
             async |kernel| command(kernel),
             |version| {
                 assert_eq!(version, transition.candidate);
@@ -311,7 +408,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
     assert!(state.pending.is_none());
     assert_eq!(state.started_version.as_deref(), Some(active.as_str()));
     assert!(
-        updates.activation_target(&state).is_err(),
+        updates.activation_target(&state, context.locale).is_err(),
         "successful activation clears the pending update"
     );
     let list = http

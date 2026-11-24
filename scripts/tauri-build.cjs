@@ -42,7 +42,7 @@ if (require.main === module) {
   const productRoot = process.cwd();
   const args = process.argv.slice(3);
   const target = process.env.BAMBOO_SIDECAR_TARGET;
-  const releaseTarget = process.env.BAMBOO_SIDECAR_SOURCE === "release" && TARGETS.has(target) ? target : undefined;
+  const releaseTarget = (process.env.BAMBOO_SIDECAR_SOURCE === "release" || process.env.BODHI_RELEASE_SCHEMA === "4") && TARGETS.has(target) ? target : undefined;
   if (appImageTarget(args)) {
     const patchelf = path.join(__dirname, "appimage-patchelf.sh");
     fs.accessSync("/usr/bin/patchelf", fs.constants.X_OK);

@@ -6,14 +6,26 @@ const { pathToFileURL } = require("node:url");
 const { randomUUID } = require("node:crypto");
 const { ROOT, resolveSource, sourceIdentity, localBuildEnvironment } = require("./lotus-dist.cjs");
 
-// These are startup-only routes. No frontend module or API request runs while
-// the native shell is waiting for its existing managed-sidecar readiness proof.
+const COMPONENT_ASSETS = new Map([
+  ["/component-updates.html", "text/html"],
+  ["/component-updates.js", "text/javascript"],
+  ["/component-bootstrap.js", "text/javascript"],
+  ["/i18n.js", "text/javascript"],
+]);
+
+// Serve the shell's startup and update UI independently of the Lotus Vite root.
 function startupPlugin(identity, splash, requireRunId = true) {
   return {
     name: "bodhi-owned-development-frontend",
     configureServer(server) {
       server.middlewares.use((request, response, next) => {
         const url = new URL(request.url, "http://127.0.0.1");
+        const componentType = COMPONENT_ASSETS.get(url.pathname);
+        if (componentType && ["GET", "HEAD"].includes(request.method)) {
+          response.writeHead(200, { "Content-Type": componentType, "Cache-Control": "no-store" });
+          response.end(fs.readFileSync(path.join(ROOT, "bodhi-splash", url.pathname.slice(1))));
+          return;
+        }
         if (!["/__bodhi_dev_identity", "/__bodhi_startup"].includes(url.pathname)) return next();
         if (url.searchParams.get("run") !== identity.runId && (requireRunId || url.pathname !== "/__bodhi_startup" || url.searchParams.has("run"))) {
           // A stale run must not serve the SPA fallback for another run's splash.
