@@ -13,3 +13,5 @@ Use `--from <previous-bamboo> <previous-lotus>` to collect the producers' commit
 `changeHistory` preserves every commit identity and subject with the full comparison link. For long histories, the app-facing notes retain recent changes and direct readers to the complete comparison.
 
 The `Prepare published components` workflow runs this preflight from Main after its source is promoted. Its artifact has kind `bodhi-component-candidate/v1`. The preflight matches Bamboo's desktop browser companion manifest to the exact executable manifest and the runtime archive digests at the same tag. A nonempty `missingBrowserRuntime` list identifies the targets that still need browser runtime assets. The signed channel requires complete native compatibility evidence, production role keys and an authenticated publication step. The candidate workflow supplies identity evidence for that step.
+
+The signed catalog owns the component versions. Each shell release declares its supported protocol and embeds the public trust root. Publishing another compatible Bamboo and Lotus pair uses the existing shell installer.

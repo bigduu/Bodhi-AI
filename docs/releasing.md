@@ -16,7 +16,9 @@ the first v3 version from that accepted source. Historical v1 runs, including
 
 ## Thin installer contract
 
-The thin controller recognizes v4 from the frozen source's `src-tauri/component-bootstrap.json`. The record names the initial signed component pair by sequence and producer manifest hashes and binds the embedded public TUF root by SHA-256. A thin cut requires an admitted production root, a complete published component catalog and a native bootstrap witness from each of the five original feature jobs. The witness records the tested root and pair identity after the owned Bamboo process and Lotus entry page are healthy.
+The thin controller recognizes v4 from the frozen source's `src-tauri/component-bootstrap.json`. The `bodhi-component-bootstrap/v2` record declares the shell protocol and binds the embedded public TUF root by SHA-256. At startup the shell selects a compatible Bamboo and Lotus pair from the signed catalog, which supplies the component versions and manifest hashes.
+
+A thin cut requires an admitted production root, a complete published component catalog and a native bootstrap witness from each of the five original feature jobs. Each witness records its target and the catalog sequence and manifest hashes observed after the owned Bamboo process and Lotus entry page are healthy. Admission checks the trust root, shell protocol and target for every witness, even if the catalog advanced between jobs.
 
 The v4 native builders use `--features thin-shell --config src-tauri/tauri.thin.conf.json`. Reservations bind the root, bootstrap record and configuration bytes instead of the bundled Bamboo and Lotus locks. Each native builder verifies the installed shell and records its original payload and architecture. Finalization retains those receipts and publishes `bodhi-release-v4.json`. Recovery selects the original evidence schema and reuses its bytes. Main promotion verifies the original outputs and bootstrap witnesses with read-only access.
 

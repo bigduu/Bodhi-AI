@@ -21,7 +21,10 @@ use crate::sidecar::{self, SidecarState, StartupStatus};
 pub const MENU_ID: &str = "install-bamboo-update";
 pub const APPLY_MENU_ID: &str = "apply-bamboo-update";
 pub(crate) const RELEASES: &str = "https://github.com/bigduu/Bamboo-agent/releases/download";
-const BUNDLED_LOCK: &str = include_str!("../../scripts/bamboo-sidecar-lock.json");
+#[cfg(not(feature = "thin-shell"))]
+const BUNDLED_LOCK: Option<&str> = Some(include_str!("../../scripts/bamboo-sidecar-lock.json"));
+#[cfg(feature = "thin-shell")]
+const BUNDLED_LOCK: Option<&str> = None;
 const MAX_JSON: u64 = 1024 * 1024;
 const MAX_BINARY: u64 = 1024 * 1024 * 1024;
 const TARGET: &str = env!("BODHI_BUILD_TARGET");
@@ -326,8 +329,10 @@ impl Updates {
         profile: Profile,
         lotus_manifest_sha256: String,
     ) -> Result<Self, String> {
+        let bundled_lock =
+            BUNDLED_LOCK.ok_or("Bundled Bamboo updates are unavailable in the thin shell.")?;
         let bundled_lock: serde_json::Value =
-            serde_json::from_str(BUNDLED_LOCK).map_err(|e| e.to_string())?;
+            serde_json::from_str(bundled_lock).map_err(|e| e.to_string())?;
         let bundled_version = bundled_lock["version"]
             .as_str()
             .ok_or("Missing bundled Bamboo version.")?;
