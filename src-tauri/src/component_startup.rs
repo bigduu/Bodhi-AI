@@ -230,20 +230,12 @@ impl Manager {
         crate::sidecar::require_available_port(port)
     }
 
-    fn queue(&self, update: &PreparedUpdate) -> Result<(), String> {
+    fn queue(&self, update: &SelectedUpdate) -> Result<(), String> {
         let _update = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
-        let active = journal
-            .active
-            .as_ref()
-            .ok_or("The current component pair is unavailable")?;
-        if journal.trial.is_some()
-            || journal.queued.is_some()
-            || active.sequence != update.current_sequence
-            || active.identity() != update.current
-            || update.candidate.sequence <= active.sequence
-        {
-            return Err("This component update is no longer applicable".into());
+        update.validate_transition(&journal)?;
+        if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
+            return Err("Download and verify this component update before applying it".into());
         }
         check_component_floor(&self.profile, &update.candidate.bamboo.version)?;
         journal.queued = Some(update.candidate.clone());
@@ -251,10 +243,26 @@ impl Manager {
     }
 }
 
-struct PreparedUpdate {
+struct SelectedUpdate {
     current_sequence: u64,
     current: PairIdentity,
     candidate: Combination,
+}
+
+impl SelectedUpdate {
+    fn validate_transition(&self, journal: &Journal) -> Result<(), String> {
+        if journal.trial.is_none()
+            && journal.queued.is_none()
+            && journal.active.as_ref().is_some_and(|active| {
+                active.sequence == self.current_sequence
+                    && active.identity() == self.current
+                    && self.candidate.sequence > active.sequence
+            })
+        {
+            return Ok(());
+        }
+        Err("This component update is no longer applicable".into())
+    }
 }
 
 #[cfg(test)]

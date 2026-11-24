@@ -646,6 +646,9 @@ pub fn run() {
             component_startup::updates::shell_translations,
             component_startup::updates::component_snapshot,
             component_startup::updates::check_components,
+            component_startup::updates::download_component_update,
+            component_startup::updates::apply_component_update,
+            component_startup::updates::retry_component_startup,
             component_startup::updates::open_component_updates,
             component_startup::updates::set_component_download_settings,
         ])

@@ -20,8 +20,10 @@ Review catalog changes on the publication branch. The shell fetches its fixed of
 
 ## Applying an update in Bodhi
 
-Bodhi verifies the new components before offering **Restart and update**.
-Finish long-running work before confirming. Bodhi requests Bamboo's normal
+Automatic and manual checks only read the official catalog. Open **Versions
+and Updates**, review the available versions and choose **Download update**.
+The verified download stays available for later. Choose **Restart and update**
+after your long-running work finishes. Bodhi requests Bamboo's normal
 shutdown, waits for the owned process and its profile lease and port to be
 released, then reopens and checks the new Bamboo and Lotus pair.
 

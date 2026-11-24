@@ -126,11 +126,14 @@ async fn ready_history_and_data_floor_survive_a_failed_start() {
     manager.finish(&original, Ok(())).unwrap();
     assert_eq!(Journal::read(&profile).unwrap().history.len(), 1);
 
-    let update = PreparedUpdate {
+    let update = SelectedUpdate {
         current: original.identity(),
         current_sequence: original.sequence,
         candidate: next.clone(),
     };
+    assert!(manager.queue(&update).is_err());
+    journal::save_downloaded(&profile, &next).unwrap();
+    assert_eq!(manager.choose().await.unwrap(), original);
     manager.queue(&update).unwrap();
     assert!(manager.queue(&update).is_err());
     assert_eq!(manager.choose().await.unwrap(), next);
