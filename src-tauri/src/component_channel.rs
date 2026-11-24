@@ -1,14 +1,10 @@
-//! Authentication and selection of independently published components.
-mod transport;
-
-use futures_util::TryStreamExt;
-use reqwest::Url;
+//! Selection from the official catalog of independently published components.
+use reqwest::{redirect::Policy, Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use tough::{Limits, RepositoryLoader, TargetName, Transport};
+use std::time::Duration;
 
-const REPOSITORY: &str = "https://raw.githubusercontent.com/bigduu/Bodhi-AI/components-stable/";
-const TARGET_FILE: &str = "channel-v1.json";
+pub const STABLE_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/bigduu/Bodhi-AI/components-stable/channel-v1.json";
 const MAX_CHANNEL_BYTES: usize = 1024 * 1024;
 pub const SHELL_PROTOCOL: u32 = 1;
 pub const NATIVE_TARGETS: [&str; 5] = [
@@ -168,56 +164,34 @@ impl VerifiedChannel {
     }
 }
 
-/// The root comes from the desktop publisher and the directory belongs to the
-/// native updater. Keep the datastore between checks to detect metadata rollback.
-pub async fn load_stable(trusted_root: &[u8], datastore: &Path) -> Result<VerifiedChannel, String> {
-    let base = Url::parse(REPOSITORY).expect("stable channel URL");
-    load(trusted_root, datastore, &base, transport::Https::new()?).await
-}
-
-async fn load(
-    trusted_root: &[u8],
-    datastore: &Path,
-    base: &Url,
-    transport: impl Transport + 'static,
-) -> Result<VerifiedChannel, String> {
-    let metadata = base.join("metadata/").map_err(|e| e.to_string())?;
-    let targets = base.join("targets/").map_err(|e| e.to_string())?;
-    let limits = Limits {
-        max_root_size: 128 * 1024,
-        max_targets_size: MAX_CHANNEL_BYTES as u64,
-        max_snapshot_size: 128 * 1024,
-        max_timestamp_size: 32 * 1024,
-        max_root_updates: 32,
-    };
-    let repository = RepositoryLoader::new(&trusted_root, metadata, targets)
-        .transport(transport)
-        .datastore(datastore)
-        .limits(limits)
-        .load()
+/// The catalog comes from the official repository over HTTPS. Download
+/// mirrors apply to archives whose size and digest the catalog already fixes.
+pub async fn load_stable() -> Result<VerifiedChannel, String> {
+    let client = Client::builder()
+        .https_only(true)
+        .redirect(Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut response = client
+        .get(STABLE_CATALOG_URL)
+        .send()
         .await
-        .map_err(|e| e.to_string())?;
-    if !repository.root().signed.consistent_snapshot {
-        return Err("The component channel requires consistent snapshots".into());
+        .map_err(|error| error.to_string())?;
+    if response.status() != StatusCode::OK {
+        return Err(format!(
+            "The component catalog returned HTTP {}",
+            response.status()
+        ));
     }
-    let name = TargetName::new(TARGET_FILE).expect("component channel target");
-    let stream = repository
-        .read_target(&name)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or("The signed targets do not contain the component channel")?;
-    let bytes = stream
-        .map_err(|error| error.to_string())
-        .try_fold(Vec::new(), |mut data, part| async move {
-            // tough validates the final hash when the stream terminates. A
-            // separate cap keeps even a correctly signed catalog bounded.
-            if part.len() > MAX_CHANNEL_BYTES - data.len() {
-                return Err("The signed component channel exceeds its size limit".to_string());
-            }
-            data.extend_from_slice(&part);
-            Ok(data)
-        })
-        .await?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if chunk.len() > MAX_CHANNEL_BYTES - bytes.len() {
+            return Err("The component catalog exceeds its size limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     parse(&bytes)
 }
 

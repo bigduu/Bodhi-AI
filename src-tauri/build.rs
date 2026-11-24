@@ -8,12 +8,7 @@ fn main() {
         "cargo:rustc-env=BODHI_BUILD_TARGET={}",
         std::env::var("TARGET").unwrap()
     );
-    let root_present = pin_component_root(&out_dir);
     if thin_build() {
-        assert!(
-            root_present,
-            "A thin Bodhi installer requires src-tauri/component-update-root.json"
-        );
         // Keep the historical launcher compilable while excluding its
         // resources from this assembly profile.
         for name in ["frontend-receipt.json", "browser-receipt.json"] {
@@ -84,36 +79,6 @@ fn thin_build() -> bool {
         );
     }
     feature
-}
-
-fn pin_component_root(out_dir: &std::path::Path) -> bool {
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    let path = manifest.join("component-update-root.json");
-    println!("cargo:rerun-if-changed={}", path.display());
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => {
-            assert!(
-                bytes.len() <= 128 * 1024 && !bytes.is_empty(),
-                "Invalid component update root size"
-            );
-            let root: serde_json::Value =
-                serde_json::from_slice(&bytes).expect("invalid component trust root JSON");
-            assert_eq!(
-                root["signed"]["_type"], "root",
-                "expected TUF root metadata"
-            );
-            assert_eq!(
-                root["signed"]["consistent_snapshot"], true,
-                "component updates require consistent snapshots"
-            );
-            bytes
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => panic!("Cannot read the published component update root: {error}"),
-    };
-    std::fs::write(out_dir.join("component-update-root.json"), &bytes)
-        .expect("pin component update root");
-    !bytes.is_empty()
 }
 
 /// Pin the selected assembly in the executable so a missing or changed resource

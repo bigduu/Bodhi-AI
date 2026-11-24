@@ -242,7 +242,7 @@ async fn download(
         progress(source, length, expected.size_bytes);
     }
     if length != expected.size_bytes || format!("{:x}", digest.finalize()) != expected.sha256 {
-        return Err("Bamboo executable differs from the signed component release".into());
+        return Err("Bamboo executable differs from the component catalog".into());
     }
     file.rewind().map_err(|error| error.to_string())?;
     file.as_file()

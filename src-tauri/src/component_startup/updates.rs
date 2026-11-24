@@ -2,7 +2,7 @@ use super::{
     journal::{History, Journal, Versions},
     Manager, PreparedUpdate,
 };
-use crate::component_channel::{Changes, Combination};
+use crate::component_channel::{self, Changes, Combination};
 use crate::component_kernel::DownloadSource;
 use crate::i18n::{self, Locale};
 use chrono::Utc;
@@ -194,7 +194,7 @@ impl Manager {
             display.offer = None;
         }
         self.updates.status(Phase::Checking, None);
-        let channel = self.channel().await?;
+        let channel = component_channel::load_stable().await?;
         self.record_check()?;
         let identity = current.identity();
         let Some(candidate) = channel.select(Some((current.sequence, &identity)))? else {
@@ -263,7 +263,7 @@ impl Manager {
     }
 
     async fn reconfirm(&self, update: &PreparedUpdate, locale: Locale) -> Result<(), String> {
-        let channel = self.channel().await?;
+        let channel = component_channel::load_stable().await?;
         let current = Some((update.current_sequence, &update.current));
         if channel
             .select(current)?

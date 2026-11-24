@@ -5,7 +5,7 @@ use std::fs;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Bootstrap {
     kind: String,
-    root_sha256: String,
+    catalog_url: String,
     shell_protocol: u32,
 }
 
@@ -19,11 +19,8 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
         Err(error) => panic!("Cannot read the thin bootstrap record: {error}"),
     };
     let bootstrap: Bootstrap = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(bootstrap.kind, "bodhi-component-bootstrap/v2");
-    assert_eq!(
-        bootstrap.root_sha256,
-        crate::frontend::hash_bytes(TRUSTED_ROOT)
-    );
+    assert_eq!(bootstrap.kind, "bodhi-component-bootstrap/v3");
+    assert_eq!(bootstrap.catalog_url, component_channel::STABLE_CATALOG_URL);
     assert_eq!(bootstrap.shell_protocol, component_channel::SHELL_PROTOCOL);
     let dir = tempfile::tempdir().unwrap();
     let profile_path = dir.path().join("component-profile");
@@ -44,14 +41,17 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
             .into_iter()
             .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
     );
+    if let Some([node, host, browser]) = prepared.browser {
+        child
+            .env("BAMBOO_BROWSER_NODE", node)
+            .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
+            .env("BAMBOO_BROWSER_EXECUTABLE", browser);
+    }
     child
         .current_dir(dir.path())
         .env("RUST_LOG", "info")
         .env("BAMBOO_JIANDU_DATA_DIR", dir.path().join("jiandu"))
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
-        .env("BAMBOO_BROWSER_NODE", &prepared.browser[0])
-        .env("BAMBOO_BROWSER_HOST_SCRIPT", &prepared.browser[1])
-        .env("BAMBOO_BROWSER_EXECUTABLE", &prepared.browser[2])
         .args([
             "serve",
             "--parent-pid",
@@ -89,7 +89,7 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
     assert_eq!(manager.choose().await.unwrap(), pair);
     let evidence = format!(
         "\nBodhi component bootstrap: {} {} {} {} {} {}\n",
-        bootstrap.root_sha256,
+        bootstrap.catalog_url,
         bootstrap.shell_protocol,
         pair.sequence,
         identity.bamboo_manifest_sha256,

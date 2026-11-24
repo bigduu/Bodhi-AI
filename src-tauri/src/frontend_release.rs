@@ -59,7 +59,7 @@ pub async fn prepare_release(
         if bytes.len() as u64 != release.tarball.size_bytes
             || hash_bytes(&bytes) != release.tarball.sha256
         {
-            return Err("The Lotus Next tarball differs from the signed component release".into());
+            return Err("The Lotus Next tarball differs from the component catalog".into());
         }
         let scratch =
             tempfile::tempdir_in(&profile.state_dir).map_err(|error| error.to_string())?;
@@ -88,7 +88,7 @@ fn verify_release(root: &Path, release: &LotusRelease) -> Result<VerifiedFronten
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_MANIFEST || hash_bytes(&bytes) != release.manifest_sha256 {
-        return Err("The Lotus Next manifest differs from the signed component release".into());
+        return Err("The Lotus Next manifest differs from the component catalog".into());
     }
     let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     if manifest.schema_version != 1
@@ -132,7 +132,7 @@ fn verify_release(root: &Path, release: &LotusRelease) -> Result<VerifiedFronten
     let mut actual = BTreeMap::new();
     file_inventory(&dist, &dist, &mut actual)?;
     if actual != expected {
-        return Err("The Lotus Next resources differ from the signed release".into());
+        return Err("The Lotus Next resources differ from the component catalog".into());
     }
     Ok(VerifiedFrontend {
         static_dir: Some(dist),

@@ -309,18 +309,26 @@ pub(crate) fn command<R: Runtime>(
         );
     }
 
-    let [node, host, browser] = match browser_runtime {
-        Some(paths) => paths,
+    let browser_paths = match browser_runtime {
+        Some(paths) => Some(paths),
+        None if cfg!(feature = "thin-shell") => None,
         None => {
             let resources = app.path().resource_dir().map_err(|e| e.to_string())?;
-            crate::browser_runtime::resolve(&resources)?
+            Some(crate::browser_runtime::resolve(&resources)?)
         }
     };
-    log::info!("Managed browser runtime: {}", host.display());
-    command
-        .env("BAMBOO_BROWSER_NODE", node)
-        .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
-        .env("BAMBOO_BROWSER_EXECUTABLE", browser);
+    if let Some([node, host, browser]) = browser_paths {
+        log::info!("Managed browser runtime: {}", host.display());
+        command
+            .env("BAMBOO_BROWSER_NODE", node)
+            .env("BAMBOO_BROWSER_HOST_SCRIPT", host)
+            .env("BAMBOO_BROWSER_EXECUTABLE", browser);
+    } else {
+        command
+            .env_remove("BAMBOO_BROWSER_NODE")
+            .env_remove("BAMBOO_BROWSER_HOST_SCRIPT")
+            .env_remove("BAMBOO_BROWSER_EXECUTABLE");
+    }
 
     Ok(command)
 }
