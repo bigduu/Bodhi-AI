@@ -9,6 +9,12 @@ const out = require("./release-output.cjs");
 const source = require("./release-source.cjs");
 const inputs = require("./thin-release-inputs.cjs");
 
+test("recovery routes v4 to the original-output finalizer", () => {
+  const workflow = fs.readFileSync(path.resolve(__dirname, "../.github/workflows/recover-release.yml"), "utf8");
+  assert.match(workflow, /^  recover:\n    if: inputs\.evidence_schema == '1'$/m);
+  assert.match(workflow, /^  recover-original:\n    if: inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3' \|\| inputs\.evidence_schema == '4'$/m);
+});
+
 test("the reviewed dispatcher and immutable product marker select v4", () => {
   const real = execFileSync("git", ["hash-object", ".github/workflows/release.yml"], {
     cwd: path.resolve(__dirname, ".."), encoding: "utf8",
