@@ -16,6 +16,21 @@ const TARGET: &str = env!("BODHI_BUILD_TARGET");
 const MAX_ARCHIVE: u64 = 768 * 1024 * 1024;
 const MAX_UNPACKED: u64 = 2 * 1024 * 1024 * 1024;
 
+pub(crate) fn reopen_runtime(
+    profile: &Profile,
+    candidate: &Candidate<'_>,
+) -> Result<Option<[PathBuf; 3]>, String> {
+    candidate
+        .artifact
+        .browser_runtime
+        .as_ref()
+        .map(|artifact| {
+            validate_artifact(&candidate.artifact.target, artifact)?;
+            verify_published(&cache_slot(profile, artifact), &artifact.receipt_sha256)
+        })
+        .transpose()
+}
+
 pub(crate) async fn prepare_runtime(
     profile_data: &Path,
     candidate: &Candidate<'_>,

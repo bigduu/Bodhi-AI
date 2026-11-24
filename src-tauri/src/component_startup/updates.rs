@@ -184,7 +184,13 @@ impl Manager {
             bodhi,
             active: journal.active.as_ref().map(Versions::from),
             running: self.updates.ready.load(Ordering::Acquire),
-            queued: journal.queued.as_ref().map(|candidate| candidate.sequence),
+            queued: journal
+                .queued
+                .as_ref()
+                .map(|candidate| candidate.sequence)
+                .or(super::PlannedRestart::read(&self.profile)?
+                    .filter(|plan| journal.active.as_ref() != Some(&plan.candidate))
+                    .map(|plan| plan.candidate.sequence)),
             settings: self.settings.borrow().clone(),
             last_check: journal.last_check,
             display,
@@ -246,7 +252,10 @@ impl Manager {
         let Some(current) = journal.active else {
             return Ok(false);
         };
-        if journal.trial.is_some() || journal.queued.is_some() {
+        if journal.trial.is_some()
+            || journal.queued.is_some()
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
             return Ok(false);
         }
         self.updates.status(Phase::Checking, None);
@@ -358,10 +367,22 @@ impl Manager {
         }
         let locale = i18n::active(app);
         let journal = Journal::read(&self.profile)?;
-        if let Some(queued) = &journal.queued {
+        let runtime = app.state::<crate::sidecar::SidecarState>();
+        let port = crate::web_service_port();
+        let plan = super::PlannedRestart::read(&self.profile)?;
+        let restart = if let Some(plan) = plan {
+            if plan.candidate.sequence != sequence
+                || journal.active.as_ref() == Some(&plan.candidate)
+            {
+                return Err(locale.text("updates.catalogChanged").into());
+            }
+            self.updates.status(Phase::ShuttingDown, None);
+            self.prepare_planned_restart(&runtime, port, plan).await
+        } else if let Some(queued) = &journal.queued {
             if queued.sequence != sequence {
                 return Err(locale.text("updates.catalogChanged").into());
             }
+            self.prepare_restart(&runtime, port).await
         } else {
             let update = self.updates.selected(sequence, locale)?;
             update.validate_transition(&journal)?;
@@ -373,14 +394,26 @@ impl Manager {
                 self.updates.status(Phase::SaveFailed, Some(error));
                 return Ok(());
             }
-        }
-        if let Err(error) = self
-            .prepare_restart(
-                &app.state::<crate::sidecar::SidecarState>(),
-                crate::web_service_port(),
-            )
-            .await
-        {
+            let active = journal
+                .active
+                .as_ref()
+                .ok_or("Bamboo has no active component release")?;
+            match self.use_planned_restart(&runtime, active).await {
+                Ok(true) => match self.plan_restart(&runtime, &update).await {
+                    Ok(plan) => {
+                        self.updates.status(Phase::ShuttingDown, None);
+                        self.prepare_planned_restart(&runtime, port, plan).await
+                    }
+                    Err(error) => Err(error),
+                },
+                Ok(false) => match self.queue(&update) {
+                    Ok(()) => self.prepare_restart(&runtime, port).await,
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            }
+        };
+        if let Err(error) = restart {
             self.updates.status(Phase::RestartFailed, Some(error));
             return Ok(());
         }
@@ -401,7 +434,7 @@ impl Manager {
         {
             return Err(locale.text("updates.catalogChanged").into());
         }
-        self.queue(update)
+        Ok(())
     }
 }
 

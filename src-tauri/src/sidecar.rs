@@ -14,6 +14,8 @@
 //!    is the half a naive sidecar misses — the reason a backend can outlive a
 //!    force-quit.
 
+pub(crate) mod planned_update;
+
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -43,6 +45,8 @@ struct ManagedChild {
     startup: StartupStatus,
     shutdown: Option<TempDir>,
     shutdown_requested: Mutex<bool>,
+    update_sequence: tokio::sync::Mutex<u64>,
+    committing_update: AtomicBool,
 }
 
 impl ManagedChild {
@@ -131,6 +135,8 @@ impl SidecarState {
             startup: status.clone(),
             shutdown,
             shutdown_requested: Mutex::new(false),
+            update_sequence: tokio::sync::Mutex::new(0),
+            committing_update: AtomicBool::new(false),
         }));
         Ok(status)
     }
@@ -148,6 +154,31 @@ impl SidecarState {
 
     /// Stop this exact child through the server's normal cleanup path.
     pub(crate) async fn stop_for_update(&self, timeout: Duration) -> Result<(), String> {
+        self.wait_for_update_exit(timeout, true).await
+    }
+
+    pub(crate) fn set_committing_update(&self, committing: bool) -> Result<(), String> {
+        self.owned_child()?
+            .committing_update
+            .store(committing, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub(crate) fn update_requires_process(&self) -> bool {
+        self.owned_child().is_ok_and(|child| {
+            child.committing_update.load(Ordering::SeqCst)
+                && !child
+                    .process
+                    .try_wait()
+                    .is_ok_and(|status| status.is_some())
+        })
+    }
+
+    pub(crate) async fn wait_for_update_exit(
+        &self,
+        timeout: Duration,
+        request_shutdown: bool,
+    ) -> Result<(), String> {
         let child = self.owned_child()?;
         let exited = match child
             .process
@@ -156,7 +187,9 @@ impl SidecarState {
         {
             Some(exited) => exited,
             None => {
-                child.request_shutdown()?;
+                if request_shutdown {
+                    child.request_shutdown()?;
+                }
                 let process = child.process.clone();
                 tokio::task::spawn_blocking(move || process.wait_timeout(timeout))
                     .await

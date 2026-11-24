@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::sync::watch;
 
 const MANIFEST: &str = "lotus-next-manifest.json";
@@ -38,6 +38,24 @@ struct Resource {
     sha256: String,
 }
 
+fn release_slot(profile: &Profile, release: &LotusRelease) -> Result<PathBuf, String> {
+    if !valid_sha256(&release.tarball.sha256)
+        || !(1..=download::MAX_DOWNLOAD as u64).contains(&release.tarball.size_bytes)
+    {
+        return Err("Invalid Lotus Next tarball identity".into());
+    }
+    Ok(profile
+        .state_dir
+        .join(format!("lotus-npm-{}", release.tarball.sha256)))
+}
+
+pub(crate) fn reopen_release(
+    profile: &Profile,
+    release: &LotusRelease,
+) -> Result<VerifiedFrontend, String> {
+    verify_release(&release_slot(profile, release)?, release)
+}
+
 /// Reuse a verified local frontend or acquire the approved release from npm.
 /// The caller supplies a release identity from the authenticated channel.
 pub(crate) async fn prepare_release(
@@ -46,15 +64,8 @@ pub(crate) async fn prepare_release(
     settings: watch::Receiver<DownloadSettings>,
     progress: impl FnMut(Option<DownloadSource>, u64, u64) + Send,
 ) -> Result<VerifiedFrontend, String> {
-    if !valid_sha256(&release.tarball.sha256)
-        || !(1..=download::MAX_DOWNLOAD as u64).contains(&release.tarball.size_bytes)
-    {
-        return Err("Invalid Lotus Next tarball identity".into());
-    }
     let profile = Profile::open(profile_data).map_err(|error| error.to_string())?;
-    let slot = profile
-        .state_dir
-        .join(format!("lotus-npm-{}", release.tarball.sha256));
+    let slot = release_slot(&profile, release)?;
     if let Ok(frontend) = verify_release(&slot, release) {
         return Ok(frontend);
     }
