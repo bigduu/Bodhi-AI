@@ -176,6 +176,7 @@ test("Main accepts only a reviewed release workflow producer", () => {
   assert.equal(newBlob, out.THIN_RELEASE_WORKFLOW_BLOB);
   const devRecovery = execFileSync("git", ["hash-object", ".github/workflows/recover-release.yml"], { encoding: "utf8" }).trim();
   assert.equal(devRecovery, require("./recover-v37-winarm.cjs").WORKFLOW_BLOB);
+  assert.equal(devRecovery, main.V37_DEV_RECOVERY_BLOB);
   assert.notEqual(devRecovery, main.THIN_RECOVERY_BLOB, "Dev capture recovery does not change the reviewed Main recovery blob");
   f.run.display_title = `Bodhi original v${f.value.version} @ ${S}`;
   f.onRead = (endpoint, response) => {
@@ -189,6 +190,28 @@ test("Main accepts only a reviewed release workflow producer", () => {
 });
 test("Main may retain the whole trusted controller closure while its complete product/locks remain S", () => {
   const f = fixture(); f.overlay(); const proof = f.verify(); assert.equal(proof.postimage, "retained-main-controls"); assert.equal(proof.mainTree, MT);
+});
+test("a controller carrying fixed Dev recovery retains its complete helper closure across older products", () => {
+  const f = fixture(true);
+  const entries = tree => new Map(f.trees[tree].map(({ path, ...entry }) => [path, entry]));
+  const older = { hash: ST, entries: entries(ST) };
+  const controller = { entries: entries("7".repeat(40)) };
+  controller.entries.get(".github/workflows/release.yml").sha = out.THIN_RELEASE_WORKFLOW_BLOB;
+  controller.entries.get(".github/workflows/recover-release.yml").sha = main.V37_DEV_RECOVERY_BLOB;
+  const helpers = ["scripts/recover-v37-winarm.cjs", "scripts/recover-v37-winarm.test.cjs",
+    "scripts/v37-winarm-original.cjs", "scripts/v37-winarm-original.test.cjs", "scripts/thin-release-inputs.test.cjs"];
+  const thin = ["scripts/thin-release-inputs.cjs", "scripts/verify-thin-bundle.cjs"];
+  for (const file of [...thin, ...helpers]) controller.entries.set(file, { sha: blob(file), mode: "100644", type: "blob" });
+  const actual = { hash: MT, entries: new Map(older.entries) };
+  for (const file of [...main.CONTROLS, "scripts/bamboo-sidecar.cjs", "scripts/installer-payload.cjs", ...thin, ...helpers]) {
+    actual.entries.set(file, controller.entries.get(file));
+  }
+  assert.equal(main.postimage(controller, older, actual, f.featureBlob), "retained-main-controls");
+  const missing = { hash: MT, entries: new Map(actual.entries) };
+  missing.entries.delete(helpers[0]);
+  assert.throws(() => main.postimage(controller, older, missing, f.featureBlob), /complete source\/controller postimage/);
+  controller.entries.delete(helpers[1]);
+  assert.throws(() => main.postimage(controller, older, actual, f.featureBlob), /Missing regular controller file: scripts\/recover-v37-winarm\.test\.cjs/);
 });
 function alphaSource(f) {
   f.featureBlob = f.reservation.admission.workflowBlob = source.CONTEXT_WORKFLOW_BLOB;

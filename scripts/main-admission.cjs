@@ -20,6 +20,7 @@ const LEGACY_TREE = "41baf69faf3b4c3da5f649a80b58b7283ed90400";
 const RECOVERY_BLOB = "bebaa01d241bc33c3f968cac5292735845876c78";
 const ARM64_RECOVERY_BLOB = "dd95b26ff82a25c77628579861ee715eca2e76ee";
 const THIN_RECOVERY_BLOB = "e52aaed4ff24f3186199ccdccd4fa26a7c6db1b7";
+const V37_DEV_RECOVERY_BLOB = "86225399ee6083f4bcb9ab6bcaa3fc0c22987368";
 const RECOVERY31_BLOB = "3f201b9725f5e1da751841569f41f174db8f00e2";
 const FINALIZER31_BLOB = "0fc7de135db1718c7fa5147a3a4512e2db191583";
 const FINALIZER31_RUN = 40796552747;
@@ -41,6 +42,8 @@ const CONTROLS = Object.freeze([".github/workflows/ci.yml", ".github/workflows/r
   "scripts/stage-release-frontend.py", "scripts/stage-release-frontend.test.py"]);
 const ARM64_CONTROLS = Object.freeze([...CONTROLS, "scripts/bamboo-sidecar.cjs", "scripts/installer-payload.cjs"]);
 const THIN_CONTROLS = Object.freeze([...ARM64_CONTROLS, "scripts/thin-release-inputs.cjs", "scripts/verify-thin-bundle.cjs"]);
+const V37_CONTROLS = Object.freeze(["scripts/recover-v37-winarm.cjs", "scripts/recover-v37-winarm.test.cjs",
+  "scripts/v37-winarm-original.cjs", "scripts/v37-winarm-original.test.cjs", "scripts/thin-release-inputs.test.cjs"]);
 const LOCKS = ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"];
 function id(value) { assert.match(String(value), /^[1-9][0-9]*$/); assert.ok(Number.isSafeInteger(Number(value))); return Number(value); }
 function sha(value) { assert.match(value || "", SHA); return value; }
@@ -102,8 +105,10 @@ function projection(value) { return [...value.entries].filter(([file]) => !ances
 function overlay(base, controls) {
   const entries = new Map(base.entries);
   const blob = controls.entries.get(".github/workflows/release.yml")?.sha;
-  const files = blob === out.THIN_RELEASE_WORKFLOW_BLOB ? THIN_CONTROLS
+  const ordinary = blob === out.THIN_RELEASE_WORKFLOW_BLOB ? THIN_CONTROLS
     : blob === out.ARM64_RELEASE_WORKFLOW_BLOB ? ARM64_CONTROLS : CONTROLS;
+  const recoveryBlob = controls.entries.get(".github/workflows/recover-release.yml")?.sha;
+  const files = recoveryBlob === V37_DEV_RECOVERY_BLOB ? [...ordinary, ...V37_CONTROLS] : ordinary;
   for (const file of files) {
     const entry = controls.entries.get(file);
     assert.ok(entry && entry.type === "blob" && entry.mode === "100644", `Missing regular controller file: ${file}`);
@@ -415,6 +420,6 @@ function main() {
   assert.deepEqual(runtime(), identity, "Main execution changed while admitting source");
   console.log(JSON.stringify({ ...proof, runtime: identity }, null, 2));
 }
-module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage,
+module.exports = { LEGACY_BASE, LEGACY_TREE, RELEASE_BLOB, RECOVERY_BLOB, ARM64_RECOVERY_BLOB, THIN_RECOVERY_BLOB, V37_DEV_RECOVERY_BLOB, CONTROLS, locator, readOnly, mainHead, tree, postimage,
   sourceReceipt, recovered31Targets, published31, published, bootstrap, verifyMain };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi main admission: ${error.message}`); process.exitCode = 1; } }
