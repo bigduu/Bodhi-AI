@@ -116,7 +116,17 @@ pub(super) fn save_downloaded(profile: &Profile, pair: &Combination) -> Result<(
     save_json(profile, VERIFIED_DOWNLOAD, pair)
 }
 
-fn read_json<T: DeserializeOwned>(profile: &Profile, name: &str) -> Result<Option<T>, String> {
+pub(super) fn clear_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
+    if read_downloaded(profile)?.as_ref() == Some(pair) {
+        fs::remove_file(profile.state_dir.join(VERIFIED_DOWNLOAD)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub(super) fn read_json<T: DeserializeOwned>(
+    profile: &Profile,
+    name: &str,
+) -> Result<Option<T>, String> {
     let path = profile.state_dir.join(name);
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -140,7 +150,11 @@ fn read_json<T: DeserializeOwned>(profile: &Profile, name: &str) -> Result<Optio
         .map_err(|error| error.to_string())
 }
 
-fn save_json(profile: &Profile, name: &str, state: &impl Serialize) -> Result<(), String> {
+pub(super) fn save_json(
+    profile: &Profile,
+    name: &str,
+    state: &impl Serialize,
+) -> Result<(), String> {
     let bytes = serde_json::to_vec(state).map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_STATE {
         return Err("The component profile state exceeds its size limit".into());

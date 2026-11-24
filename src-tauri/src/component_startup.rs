@@ -1,5 +1,6 @@
 //! Plan and record startup of an authenticated component combination.
 mod journal;
+mod planned_restart;
 pub(crate) mod updates;
 
 use crate::bamboo_profile::Profile;
@@ -9,6 +10,7 @@ use crate::component_download::{while_selected, DownloadSettings};
 use crate::component_kernel::{self, VerifiedKernel};
 use crate::frontend::VerifiedFrontend;
 use journal::Journal;
+use planned_restart::PlannedRestart;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -110,6 +112,24 @@ impl Manager {
         })
     }
 
+    async fn reopen_prepared(&self, pair: &Combination) -> Result<Prepared, String> {
+        check_component_floor(&self.profile, &pair.bamboo.version)?;
+        let kernel = component_kernel::reopen_kernel(&self.profile, &pair.candidate()?).await?;
+        let profile = self.profile.clone();
+        let pair = pair.clone();
+        tokio::task::spawn_blocking(move || {
+            let frontend = crate::frontend::reopen_release(&profile, &pair.lotus)?;
+            let browser = crate::component_browser::reopen_runtime(&profile, &pair.candidate()?)?;
+            Ok(Prepared {
+                kernel,
+                frontend,
+                browser,
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
     fn begin(&self, pair: &Combination) -> Result<(), String> {
         let _update = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
@@ -159,6 +179,20 @@ impl Manager {
     async fn launch_once<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
         let port = crate::web_service_port();
         crate::sidecar::require_available_port(port)?;
+        let (handoff, unconfirmed) = {
+            let _writer = self.profile.writer()?;
+            let handoff = self.arm_authorized_restart()?;
+            let mut unconfirmed = false;
+            if handoff.is_none() {
+                if let Some(abandoned) = PlannedRestart::read(&self.profile)? {
+                    unconfirmed = abandoned.has_intent(&self.profile)?;
+                    if !unconfirmed {
+                        abandoned.clear(&self.profile)?;
+                    }
+                }
+            }
+            (handoff, unconfirmed)
+        };
         let pair = self.choose().await?;
         let prepared = self.prepare(&pair).await?;
         self.updates.status(updates::Phase::Starting, None);
@@ -206,7 +240,34 @@ impl Manager {
                 log::warn!("Cannot stop Bamboo after a failed component launch: {error}");
             }
         } else {
-            self.updates.status(updates::Phase::Ready, None);
+            if unconfirmed {
+                self.updates.status(updates::Phase::RestartFailed, Some(
+                    "The prior Bamboo did not confirm a safe shutdown. Your current version is running, and the saved sessions are still pending recovery.".into(),
+                ));
+            } else {
+                self.updates.status(updates::Phase::Ready, None);
+            }
+            if let Some(handoff) = handoff {
+                self.updates.restoring.store(true, Ordering::Release);
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let manager = handle.state::<Self>();
+                    let runtime = handle.state::<crate::sidecar::SidecarState>();
+                    loop {
+                        match manager.resume_planned_restart(&runtime, &handoff).await {
+                            Ok(()) => {
+                                manager.updates.restoring.store(false, Ordering::Release);
+                                manager.updates.status(updates::Phase::Ready, None);
+                                break;
+                            }
+                            Err(error) => {
+                                manager.updates.status(updates::Phase::Ready, Some(error));
+                                tokio::time::sleep(Duration::from_secs(10)).await;
+                            }
+                        }
+                    }
+                });
+            }
         }
         result
     }

@@ -655,6 +655,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(move |app_handle, event| match &event {
+            tauri::RunEvent::ExitRequested { api, .. }
+                if app_handle
+                    .try_state::<sidecar::SidecarState>()
+                    .is_some_and(|state| state.update_requires_process()) =>
+            {
+                api.prevent_exit();
+            }
             // App is exiting (incl. after `app_handle.exit(0)` below): make sure the
             // bamboo sidecar goes with us. Its parent-pid guard is the crash-safe
             // backstop; this is the clean path.
@@ -686,6 +693,15 @@ pub fn run() {
                 let is_close_requested =
                     matches!(window_event, tauri::WindowEvent::CloseRequested { .. });
                 if should_exit_on_main_window_close(label, is_close_requested) {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = window_event {
+                        if app_handle
+                            .try_state::<sidecar::SidecarState>()
+                            .is_some_and(|state| state.update_requires_process())
+                        {
+                            api.prevent_close();
+                            return;
+                        }
+                    }
                     log::info!("Main window close requested, exiting application...");
                     app_handle.exit(0);
                 }
