@@ -1,5 +1,4 @@
 const assert = require("node:assert/strict");
-const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -8,6 +7,12 @@ const { test } = require("node:test");
 const out = require("./release-output.cjs");
 const source = require("./release-source.cjs");
 const inputs = require("./thin-release-inputs.cjs");
+
+test("recovery routes v4 to the original-output finalizer", () => {
+  const workflow = fs.readFileSync(path.resolve(__dirname, "../.github/workflows/recover-release.yml"), "utf8");
+  assert.match(workflow, /^  recover:\n    if: inputs\.evidence_schema == '1'$/m);
+  assert.match(workflow, /^  recover-original:\n    if: inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3' \|\| inputs\.evidence_schema == '4'$/m);
+});
 
 test("the reviewed dispatcher and immutable product marker select v4", () => {
   const real = execFileSync("git", ["hash-object", ".github/workflows/release.yml"], {
@@ -35,13 +40,11 @@ test("thin inputs bind the shell while native witnesses can observe different co
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "bodhi-thin-inputs-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "src-tauri"));
-  const trusted = Buffer.from(JSON.stringify({ signed: { _type: "root", consistent_snapshot: true } }));
   const record = {
-    kind: "bodhi-component-bootstrap/v2",
-    rootSha256: crypto.createHash("sha256").update(trusted).digest("hex"),
+    kind: "bodhi-component-bootstrap/v3",
+    catalogUrl: inputs.CATALOG_URL,
     shellProtocol: 1,
   };
-  fs.writeFileSync(path.join(root, inputs.ROOT_FILE), trusted);
   fs.writeFileSync(path.join(root, inputs.BOOTSTRAP_FILE), JSON.stringify(record));
   fs.writeFileSync(path.join(root, inputs.CONFIG_FILE), JSON.stringify({
     build: { beforeBuildCommand: null }, bundle: { externalBin: [], resources: [] },
@@ -52,28 +55,29 @@ test("thin inputs bind the shell while native witnesses can observe different co
   assert.deepEqual(Object.keys(accepted.lockHashes).sort(), inputs.INPUTS);
   assert.throws(() => inputs.verifyBootstrap({ ...record, sequence: 2 }, accepted.lockHashes));
   assert.throws(() => inputs.verifyBootstrap({ ...record, shellProtocol: 0 }, accepted.lockHashes), /Invalid shell protocol/);
+  assert.throws(() => inputs.verifyBootstrap({ ...record, catalogUrl: "https://example.com/channel-v1.json" }, accepted.lockHashes), /official component catalog/);
   const targets = source.featureTargets(source.ARM64_FEATURE_WORKFLOW_BLOB);
   const proof = { jobs: targets.map((target, id) => ({ id, name: `Unit and E2E (${target})` })) };
   const marker = (id, {
-    rootSha256 = record.rootSha256,
+    catalogUrl = record.catalogUrl,
     protocol = record.shellProtocol,
     sequence = id + 2,
     bamboo = String(id).repeat(64),
     lotus = "b".repeat(64),
     target = targets[id],
-  } = {}) => `2026-11-24T00:00:00Z Bodhi component bootstrap: ${rootSha256} ${protocol} ${sequence} ${bamboo} ${lotus} ${target}`;
+  } = {}) => `2026-11-24T00:00:00Z Bodhi component bootstrap: ${catalogUrl} ${protocol} ${sequence} ${bamboo} ${lotus} ${target}`;
   assert.doesNotThrow(() => inputs.verifyNativeBootstrap(proof, record, marker));
   for (const [badMarker, error] of [
     ["", /Missing or ambiguous/],
     [`${marker(0)}\n${marker(0)}`, /Missing or ambiguous/],
-    [marker(0, { rootSha256: "f".repeat(64) }), /wrong trust root/],
+    [marker(0, { catalogUrl: "https://example.com/channel-v1.json" }), /wrong catalog URL/],
     [marker(0, { protocol: 2 }), /wrong shell protocol/],
     [marker(0, { target: targets[1] }), /wrong native target/],
     [marker(0, { bamboo: "invalid" }), /Invalid native bootstrap check/],
-    [marker(0, { sequence: 0x10000000000000000n }), /Invalid signed catalog sequence/],
+    [marker(0, { sequence: 0x10000000000000000n }), /Invalid catalog sequence/],
   ]) {
     assert.throws(() => inputs.verifyNativeBootstrap(proof, record, (id) => id === 0 ? badMarker : marker(id)), error);
   }
-  fs.appendFileSync(path.join(root, inputs.ROOT_FILE), "\n");
+  fs.writeFileSync(path.join(root, inputs.BOOTSTRAP_FILE), JSON.stringify({ ...record, catalogUrl: "http://example.com" }));
   assert.throws(() => inputs.read(root));
 });

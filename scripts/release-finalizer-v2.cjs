@@ -236,7 +236,7 @@ function publicationNotes(ctx, releaseId, reservation, request) {
   if (ctx.thin) {
     lines.push("", "## 组件分发 / Component delivery", "",
       "Bodhi 通过签名组件通道独立获取 Bamboo、Lotus Next 和适用平台的浏览器运行时。",
-      "Bodhi obtains Bamboo, Lotus Next and the platform browser runtime independently through the signed component channel.");
+      "Bodhi downloads Bamboo and Lotus Next from the official component catalog and verifies their SHA-256 digests. It installs the managed browser when the catalog lists a runtime for your platform.");
     return lines.join("\n");
   }
 

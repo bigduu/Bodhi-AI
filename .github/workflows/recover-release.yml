@@ -71,7 +71,7 @@ jobs:
         run: node scripts/release-finalizer.cjs recover "${{ runner.temp }}/bodhi-original-release/bodhi-release-evidence.json"
 
   recover-original:
-    if: inputs.evidence_schema == '2' || inputs.evidence_schema == '3'
+    if: inputs.evidence_schema == '2' || inputs.evidence_schema == '3' || inputs.evidence_schema == '4'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
