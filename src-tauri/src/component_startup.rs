@@ -11,6 +11,7 @@ use crate::frontend::VerifiedFrontend;
 use journal::Journal;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tauri::{AppHandle, Manager as _, Runtime};
 use tokio::sync::watch;
 
@@ -176,7 +177,7 @@ impl Manager {
             .ok_or("Bodhi's main window is unavailable")?;
         self.begin(&pair)?;
         let outcome = async {
-            let status = runtime.start(command, writer, port)?;
+            let status = runtime.start(command, writer, port, Some(&self.profile.state_dir))?;
             crate::sidecar::wait_for_health(
                 port,
                 60,
@@ -208,6 +209,25 @@ impl Manager {
             self.updates.status(updates::Phase::Ready, None);
         }
         result
+    }
+
+    async fn prepare_restart(
+        &self,
+        runtime: &crate::sidecar::SidecarState,
+        port: u16,
+    ) -> Result<(), String> {
+        let _update = self.profile.update_lock()?;
+        let journal = Journal::read(&self.profile)?;
+        if journal.queued.is_none() || journal.active.is_none() || journal.trial.is_some() {
+            return Err("There is no approved component update to restart into.".into());
+        }
+
+        self.updates.status(updates::Phase::ShuttingDown, None);
+        runtime.stop_for_update(Duration::from_secs(90)).await?;
+        // Take the writer lease again to prove the old runtime and anything
+        // inheriting its handle have released the profile.
+        let _writer = self.profile.writer()?;
+        crate::sidecar::require_available_port(port)
     }
 
     fn queue(&self, update: &PreparedUpdate) -> Result<(), String> {

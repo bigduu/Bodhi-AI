@@ -22,6 +22,7 @@ const INTERVAL: Duration = Duration::from_secs(30 * 60);
 pub(super) struct Updates {
     display: Mutex<Display>,
     check: tokio::sync::Mutex<()>,
+    restart_requested: tokio::sync::Mutex<bool>,
     dialog_open: AtomicBool,
     pub(super) boot: tokio::sync::Mutex<()>,
     pub(super) ready: AtomicBool,
@@ -49,7 +50,9 @@ pub(super) enum Phase {
     Checking,
     Current,
     Verified,
-    Queued,
+    ShuttingDown,
+    Restarting,
+    RestartFailed,
     Deferred,
     SaveFailed,
 }
@@ -246,20 +249,43 @@ impl Manager {
             .show(move |approved| {
                 tauri::async_runtime::spawn(async move {
                     let manager = handle.state::<Manager>();
-                    let result = if approved {
-                        manager.reconfirm(&update, i18n::active(&handle)).await
+                    if approved {
+                        match manager.reconfirm(&update, i18n::active(&handle)).await {
+                            Ok(()) => manager.apply_queued(&handle).await,
+                            Err(error) => manager.updates.status(Phase::SaveFailed, Some(error)),
+                        }
                     } else {
-                        manager.snooze()
-                    };
-                    manager.updates.dialog_open.store(false, Ordering::Release);
-                    match result {
-                        Ok(()) if approved => manager.updates.status(Phase::Queued, None),
-                        Ok(()) => manager.updates.status(Phase::Deferred, None),
-                        Err(error) => manager.updates.status(Phase::SaveFailed, Some(error)),
+                        match manager.snooze() {
+                            Ok(()) => manager.updates.status(Phase::Deferred, None),
+                            Err(error) => manager.updates.status(Phase::SaveFailed, Some(error)),
+                        }
                     }
+                    manager.updates.dialog_open.store(false, Ordering::Release);
                 });
             });
         Ok(())
+    }
+
+    async fn apply_queued<R: Runtime>(&self, app: &AppHandle<R>) {
+        let Ok(mut requested) = self.updates.restart_requested.try_lock() else {
+            return;
+        };
+        if *requested {
+            return;
+        }
+        if let Err(error) = self
+            .prepare_restart(
+                &app.state::<crate::sidecar::SidecarState>(),
+                crate::web_service_port(),
+            )
+            .await
+        {
+            self.updates.status(Phase::RestartFailed, Some(error));
+            return;
+        }
+        *requested = true;
+        self.updates.status(Phase::Restarting, None);
+        app.request_restart();
     }
 
     async fn reconfirm(&self, update: &PreparedUpdate, locale: Locale) -> Result<(), String> {
@@ -407,7 +433,11 @@ pub(crate) fn check_components<R: Runtime>(
     tauri::async_runtime::spawn(async move {
         let manager = app.state::<Manager>();
         if manager.updates.ready.load(Ordering::Acquire) {
-            manager.check(&app).await;
+            match Journal::read(&manager.profile) {
+                Ok(journal) if journal.queued.is_some() => manager.apply_queued(&app).await,
+                Ok(_) => manager.check(&app).await,
+                Err(error) => manager.updates.status(Phase::CheckFailed, Some(error)),
+            }
         } else if matches!(manager.launch(&app).await, Ok(true)) {
             manager.poll(&app).await;
         }

@@ -43,9 +43,10 @@ function render(snapshot) {
   get("bamboo").textContent = active?.bamboo || "—";
   get("lotus").textContent = active?.lotus || "—";
   renderSettings(snapshot.settings);
-  get("check").textContent = i18n.text(snapshot.running ? "updates.check" : "updates.retry");
-  get("check").disabled = (snapshot.running && !!queued) || !!display.progress || ["checking", "starting"].includes(display.phase);
-  get("phase").textContent = i18n.text(queued && snapshot.running ? "updates.queued" : `phase.${display.phase}`);
+  const action = !snapshot.running ? "updates.retry" : queued ? "updates.retryRestart" : "updates.check";
+  get("check").textContent = i18n.text(action);
+  get("check").disabled = !!display.progress || ["checking", "starting", "shuttingDown", "restarting"].includes(display.phase);
+  get("phase").textContent = i18n.text(`phase.${display.phase}`);
   get("error").hidden = !(actionError || display.error);
   get("error").textContent = actionError || display.error || "";
   get("last-check").textContent = snapshot.lastCheck

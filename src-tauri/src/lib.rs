@@ -316,7 +316,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 selected.as_ref().map(|kernel| kernel.executable.as_path()),
                 None,
             )?;
-            let status = runtime.start(command, writer, port)?;
+            let status = runtime.start(command, writer, port, None)?;
             Ok::<_, String>((Some(status), selected))
         };
         let (owned, selected) = match launch.await {

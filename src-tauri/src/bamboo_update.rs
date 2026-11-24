@@ -606,7 +606,7 @@ impl Updates {
         state.started_version = Some(kernel.version.clone());
         state.save(&self.profile)?;
 
-        let startup = runtime.start(command, writer, port)?;
+        let startup = runtime.start(command, writer, port, None)?;
         if let Err(error) =
             verify_ready_kernel(port, 60, index_hash, &startup, &kernel.version).await
         {

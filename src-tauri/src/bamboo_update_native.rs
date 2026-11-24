@@ -141,6 +141,7 @@ async fn signed_lotus_update_reuses_the_same_owned_bamboo_and_profile() {
             ),
             profile.writer().unwrap(),
             port,
+            None,
         )
         .unwrap();
     sidecar::wait_for_health(port, 45, Some(&status), frontend.index_hash.as_deref())
@@ -186,6 +187,7 @@ async fn signed_lotus_update_reuses_the_same_owned_bamboo_and_profile() {
             ),
             profile.writer().unwrap(),
             port,
+            None,
         )
         .unwrap();
     sidecar::wait_for_health(port, 45, Some(&status), cached.index_hash.as_deref())
@@ -265,6 +267,7 @@ async fn published_kernel_update_preserves_profile_on_native_assembly() {
             bamboo_command(&profile, &baseline, &frontend, scratch.path(), port),
             writer,
             port,
+            None,
         )
         .unwrap();
     sidecar::wait_for_health(port, 45, Some(&old_status), Some(&index))
