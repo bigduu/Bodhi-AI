@@ -188,6 +188,34 @@ test("Main accepts only a reviewed release workflow producer", () => {
 test("Main may retain the whole trusted controller closure while its complete product/locks remain S", () => {
   const f = fixture(); f.overlay(); const proof = f.verify(); assert.equal(proof.postimage, "retained-main-controls"); assert.equal(proof.mainTree, MT);
 });
+test("v37 capture recovery requires the original product and the complete active Main controller", () => {
+  const files = [...main.CONTROLS, "scripts/bamboo-sidecar.cjs", "scripts/installer-payload.cjs",
+    "scripts/thin-release-inputs.cjs", "scripts/verify-thin-bundle.cjs"];
+  const recoveryFiles = [".github/workflows/recover-v37-winarm.yml", "scripts/recover-v37-winarm.cjs", "scripts/recover-v37-winarm.test.cjs",
+    "scripts/v37-winarm-original.cjs", "scripts/v37-winarm-original.test.cjs"];
+  const control = (file, owner) => [file, { sha: file === ".github/workflows/release.yml" ? out.THIN_RELEASE_WORKFLOW_BLOB : blob(owner + file),
+    mode: "100644", type: "blob" }];
+  const base = { hash: B, entries: new Map([...files, ...recoveryFiles].map(file => control(file, "base"))) };
+  const productFile = control("src-tauri/src/main.rs", "published");
+  const product = { hash: ST, entries: new Map([...files.map(file => control(file, "source")), productFile]) };
+  const full = { hash: MT, entries: new Map([...base.entries, productFile]) };
+  const producer = source.ARM64_FEATURE_WORKFLOW_BLOB;
+  assert.equal(main.postimage(base, product, full, producer, true), "retained-main-controls");
+  assert.throws(() => main.postimage(base, product, product, producer, true), /complete source\/controller postimage/);
+  for (const file of recoveryFiles) {
+    const missing = { ...full, entries: new Map(full.entries) };
+    missing.entries.delete(file);
+    assert.throws(() => main.postimage(base, product, missing, producer, true), /complete source\/controller postimage/);
+  }
+  const rewritten = { ...full, entries: new Map([...full.entries, control(productFile[0], "unpublished")]) };
+  assert.throws(() => main.postimage(base, product, rewritten, producer, true), /complete source\/controller postimage/);
+});
+test("an ordinary release cannot claim Windows capture recovery metadata", () => {
+  const f = fixture();
+  f.manifest.captureRecovery = { kind: "bodhi-v37-winarm-capture/v1", runId: 77, attempt: 1, controller: C2, jobId: 71 };
+  refreshManifest(f);
+  assert.throws(() => f.verify(), /Capture recovery requires its fixed original run and trusted recovery evidence/);
+});
 function alphaSource(f) {
   f.featureBlob = f.reservation.admission.workflowBlob = source.CONTEXT_WORKFLOW_BLOB;
   f.featureJobs = f.featureJobs.filter(job => job.name !== source.MAIN_GATE);

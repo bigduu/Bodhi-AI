@@ -41,6 +41,10 @@ const CONTROLS = Object.freeze([".github/workflows/ci.yml", ".github/workflows/r
   "scripts/stage-release-frontend.py", "scripts/stage-release-frontend.test.py"]);
 const ARM64_CONTROLS = Object.freeze([...CONTROLS, "scripts/bamboo-sidecar.cjs", "scripts/installer-payload.cjs"]);
 const THIN_CONTROLS = Object.freeze([...ARM64_CONTROLS, "scripts/thin-release-inputs.cjs", "scripts/verify-thin-bundle.cjs"]);
+const V37_RECOVERY_WORKFLOW = ".github/workflows/recover-v37-winarm.yml";
+const V37_RECOVERY_CONTROLS = Object.freeze([V37_RECOVERY_WORKFLOW, "scripts/recover-v37-winarm.cjs", "scripts/recover-v37-winarm.test.cjs",
+  "scripts/v37-winarm-original.cjs", "scripts/v37-winarm-original.test.cjs"]);
+const V37_PROMOTION = "bodhi-main-promotion/v37-winarm-recovery";
 const LOCKS = ["scripts/bamboo-sidecar-lock.json", "scripts/frontend-package-lock.json"];
 function id(value) { assert.match(String(value), /^[1-9][0-9]*$/); assert.ok(Number.isSafeInteger(Number(value))); return Number(value); }
 function sha(value) { assert.match(value || "", SHA); return value; }
@@ -104,15 +108,17 @@ function overlay(base, controls) {
   const blob = controls.entries.get(".github/workflows/release.yml")?.sha;
   const files = blob === out.THIN_RELEASE_WORKFLOW_BLOB ? THIN_CONTROLS
     : blob === out.ARM64_RELEASE_WORKFLOW_BLOB ? ARM64_CONTROLS : CONTROLS;
-  for (const file of files) {
+  const closure = controls.entries.has(V37_RECOVERY_WORKFLOW) ? [...files, ...V37_RECOVERY_CONTROLS] : files;
+  for (const file of closure) {
     const entry = controls.entries.get(file);
     assert.ok(entry && entry.type === "blob" && entry.mode === "100644", `Missing regular controller file: ${file}`);
     entries.set(file, entry);
   }
   return { entries };
 }
-function postimage(base, product, actual, producer) {
-  if (actual.hash === product.hash) {
+function postimage(base, product, actual, producer, retainedRecovery = false) {
+  if (retainedRecovery) assert.ok(base.entries.has(V37_RECOVERY_WORKFLOW), "Main must retain the v37 recovery controller");
+  if (!retainedRecovery && actual.hash === product.hash) {
     assert.equal(source.FEATURE_PRODUCERS.get(producer), true, "Complete S requires a recognized Main-capable producer");
     overlay(product, product); // Require every ordinary control file, including this entrypoint.
     assert.equal(product.entries.get(".github/workflows/ci.yml").sha, producer, "Source controller workflow differs");
@@ -234,10 +240,74 @@ function published31(value, base, request = readOnly, options = {}) {
     recovery31: runReceipt(build.run), windows31: runReceipt(windowsProof.run), linux31: runReceipt(linuxProof.run),
     finalizer31: runReceipt(assembler), publisher31: runReceipt(run), manifestSha256: out.sha256(out.bytes(manifest)), assets: identities };
 }
+function artifactReceipt({ id, name, digest }) {
+  return { id, name, digest };
+}
+function publishedV37(value, base, request = readOnly, options = {}) {
+  const recovery = require("./recover-v37-winarm.cjs");
+  const fixed = recovery.FIXED;
+  assert.deepEqual(value, { mode: "promotion", source: fixed.source, version: fixed.version, releaseId: fixed.releaseId,
+    runId: fixed.runId, attempt: fixed.attempt, recovery: { runId: id(value.recovery?.runId), attempt: id(value.recovery?.attempt) } },
+  "v37 capture recovery is limited to its original release");
+  const destinations = [];
+  const restore = (artifact, entries, directory) => {
+    assert.equal(fs.existsSync(directory), false); destinations.push(directory);
+    return (options.restore || out.download)(artifact, entries, directory);
+  };
+  try {
+    const readLog = options.readLog || jobLog;
+    const original = recovery.original(request, restore, readLog);
+    const { ctx, release, reservation, windowsJob, emergency } = original;
+    const originalRun = request(`actions/runs/${ctx.runId}`);
+    out.runIdentity(ctx, originalRun);
+    assert.equal(originalRun.status, "completed"); assert.equal(originalRun.conclusion, "failure");
+    ancestor(ctx.controller, base, request);
+    const { run, job, evidence } = recovery.recoveryProof(value.recovery, request, restore);
+    assert.notEqual(run.head_sha, ctx.controller);
+    ancestor(run.head_sha, base, request);
+    assert.equal(release.id, fixed.releaseId); assert.equal(release.draft, false);
+    const contract = out.releaseContract(ctx);
+    assert.equal(contract.schemaVersion, 4);
+    finalizer.verifyEvidence({ ...ctx, attempt: job.run_attempt }, evidence, release);
+    const manifests = release.assets.filter(asset => asset.name === contract.manifest);
+    assert.equal(manifests.length, 1);
+    const manifest = (options.readManifest || finalizer.readManifest)(manifests[0].id);
+    assert.deepEqual(manifest, evidence.manifest, "Public manifest differs from the retained recovery evidence");
+    assert.deepEqual(manifest.reservation, reservation);
+    assert.deepEqual(manifest.reservationArtifact, artifactReceipt(original.artifact));
+    const assembly = manifest.captureRecovery;
+    assert.deepEqual(assembly, { kind: "bodhi-v37-winarm-capture/v1", runId: run.id, attempt: id(assembly?.attempt),
+      controller: run.head_sha, jobId: id(assembly?.jobId) });
+    assert.ok(assembly.attempt <= run.run_attempt);
+    assert.notEqual(assembly.jobId, fixed.buildJobId);
+    sourceReceipt(reservation, request, readLog);
+    assert.equal(windowsJob.id, fixed.buildJobId); assert.equal(windowsJob.run_attempt, fixed.attempt);
+    assert.equal(emergency.id, fixed.emergencyId); assert.equal(emergency.digest, fixed.emergencyDigest);
+    assert.equal(emergency.name, `bodhi-v4-emergency-${fixed.runId}-${fixed.attempt}-${fixed.target}`);
+    for (const item of manifest.targets) {
+      const target = item.receipt.target;
+      if (target === fixed.target) {
+        assert.deepEqual(item.artifact, artifactReceipt(emergency));
+        out.verifyReceipt(item.receipt, ctx, reservation, target, windowsJob);
+      } else {
+        const saved = out.selectTarget(ctx, reservation, target, request, restore, true);
+        assert.ok(saved, `Missing original installer for ${target}`);
+        assert.deepEqual(item, { receipt: saved.receipt, artifact: saved.artifact });
+      }
+    }
+    assert.equal(request(`git/ref/tags/${ctx.finalTag}`)?.object?.sha, ctx.source);
+    return { kind: V37_PROMOTION, source: ctx.source, controller: ctx.controller, runId: ctx.runId, attempt: ctx.attempt,
+      version: ctx.version, releaseId: release.id, reservation, originalRun: runReceipt(originalRun),
+      recovery: { run: runReceipt(run), controller: run.head_sha, jobId: job.id, attempt: job.run_attempt, assembly },
+      manifestSha256: evidence.manifestSha256, assets: evidence.assets };
+  } finally { for (const directory of destinations) fs.rmSync(directory, { recursive: true, force: true }); }
+}
 function published(value, base, request = readOnly, options = {}) {
   assert.equal(value.mode, "promotion");
   if (value.version === recovery31.FIXED.version && value.runId === recovery31.FIXED.runId)
     return published31(value, base, request, options);
+  if (value.version === "2026.11.37" && value.runId === 45432961380)
+    return publishedV37(value, base, request, options);
   const original = request(`actions/runs/${id(value.runId)}`), parsed = releaseContext(value, original);
   ancestor(parsed.controller, base, request);
   const ctx = out.originalContext(parsed, parsed.controller, request), contract = out.releaseContract(ctx);
@@ -247,6 +317,7 @@ function published(value, base, request = readOnly, options = {}) {
   const read = options.readManifest || finalizer.readManifest;
   const assets = release.assets.filter(asset => asset.name === contract.manifest); assert.equal(assets.length, 1);
   finalizer.validateAsset(assets[0], ctx); const manifest = read(assets[0].id);
+  assert.equal(manifest.captureRecovery, undefined, "Capture recovery requires its fixed original run and trusted recovery evidence");
   finalizer.verifyPublished(ctx, release, manifest);
   const destinations = [];
   const restore = (artifact, entries, directory) => {
@@ -348,7 +419,8 @@ function verifyMain({ pullRequest, snapshot }, request = readOnly, options = {})
   else {
     assert.equal(mainHead(branch), pr.base.sha);
     proof = published(value, pr.base.sha, request, options);
-    proof.postimage = postimage(tree(pr.base.sha, request), tree(value.source, request), actual, proof.reservation.admission.workflowBlob);
+    proof.postimage = postimage(tree(pr.base.sha, request), tree(value.source, request), actual, proof.reservation.admission.workflowBlob,
+      proof.kind === V37_PROMOTION);
   }
   const fresh = mainPR(pullRequest, snapshot, request);
   assert.equal(fresh.base.sha, pr.base.sha); assert.equal(fresh.head.sha, pr.head.sha);
