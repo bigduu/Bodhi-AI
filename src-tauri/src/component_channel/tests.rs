@@ -10,6 +10,19 @@ pub(crate) async fn initial_combination() -> Combination {
     fixture_channel().await.0.combinations.remove(0)
 }
 
+pub(crate) fn fixture_channel_with_lotus_only_update() -> VerifiedChannel {
+    let mut catalog: serde_json::Value = serde_json::from_slice(CATALOG).unwrap();
+    let combinations = catalog["combinations"].as_array_mut().unwrap();
+    let mut later = combinations[1].clone();
+    later["sequence"] = 3.into();
+    later["bamboo"] = combinations[0]["bamboo"].clone();
+    later["lotus"]["version"] = "2026.11.27".into();
+    later["lotus"]["manifestSha256"] = "ac".repeat(32).into();
+    later["changes"]["bamboo"] = serde_json::json!([]);
+    combinations.push(later);
+    parse(&serde_json::to_vec(&catalog).unwrap()).unwrap()
+}
+
 pub(crate) async fn lotus_fixtures() -> [LotusRelease; 2] {
     let channel = fixture_channel().await;
     [

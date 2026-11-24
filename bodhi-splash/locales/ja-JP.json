@@ -61,6 +61,7 @@
   "phase.current": "最新の状態です",
   "phase.downloadFailed": "ダウンロードに失敗しました",
   "phase.downloading": "ダウンロード中…",
+  "phase.skipped": "このバージョンをスキップしました",
   "phase.preparing": "準備中…",
   "phase.shuttingDown": "Bamboo の終了を待っています…",
   "phase.restarting": "Bodhi を再起動しています…",
@@ -108,6 +109,10 @@
   "updates.retryRestart": "再起動を再試行",
   "updates.remindLater": "あとで通知",
   "updates.retry": "起動を再試行",
+  "updates.skipVersion": "このバージョンをスキップ",
+  "updates.undoSkip": "スキップを取り消す",
+  "updates.undoSkipRequired": "スキップを取り消してから、このバージョンをダウンロードまたは適用してください。",
+  "updates.restartPending": "コンポーネントの再起動が保留中です。再起動が完了してから変更してください。",
   "updates.view": "アップデートを表示",
   "updates.title": "Bodhi のバージョンとアップデート"
 }

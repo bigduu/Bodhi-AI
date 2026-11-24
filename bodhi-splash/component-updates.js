@@ -44,11 +44,12 @@ function renderActions({ running, queued, offer, display }) {
     "checking", "preparing", "downloading", "starting", "saving", "shuttingDown", "restarting",
   ].includes(display.phase);
   const pendingRestart = queued != null;
-  const canDownload = running && !pendingRestart && !!offer && !offer.downloaded;
-  const canApply = running && (pendingRestart || !!offer?.downloaded);
+  const canSkip = running && !pendingRestart && !!offer;
+  const canDownload = canSkip && !offer.skipped && !offer.downloaded;
+  const canApply = running && (pendingRestart || (!!offer?.downloaded && !offer.skipped));
   get("check").textContent = i18n.text(running ? "updates.check" : "updates.retry");
   get("check").disabled = busy || (running ? pendingRestart : display.phase !== "startupFailed");
-  get("update-actions").hidden = !(canDownload || canApply);
+  get("update-actions").hidden = !(canSkip || canApply);
   get("download-update").hidden = !canDownload;
   get("download-update").disabled = busy;
   get("download-update").textContent = i18n.text(
@@ -57,6 +58,9 @@ function renderActions({ running, queued, offer, display }) {
   get("apply-update").hidden = !canApply;
   get("apply-update").disabled = busy;
   get("apply-update").textContent = i18n.text(pendingRestart ? "updates.retryRestart" : "updates.confirmApply");
+  get("skip-version").hidden = !canSkip;
+  get("skip-version").disabled = busy;
+  get("skip-version").textContent = i18n.text(offer?.skipped ? "updates.undoSkip" : "updates.skipVersion");
   get("restart-hint").hidden = !canApply;
 }
 
@@ -154,6 +158,17 @@ get("download-update").addEventListener("click", () => {
 get("apply-update").addEventListener("click", () => {
   const sequence = currentSnapshot?.queued ?? currentSnapshot?.offer?.sequence;
   if (sequence != null) void runAction("apply_component_update", { sequence });
+});
+
+get("skip-version").addEventListener("click", () => {
+  const offer = currentSnapshot?.offer;
+  if (offer && currentSnapshot.queued == null) {
+    void runAction("set_component_version_skipped", {
+      sequence: offer.sequence,
+      identity: offer.identity,
+      skipped: !offer.skipped,
+    });
+  }
 });
 
 function editSettings() {

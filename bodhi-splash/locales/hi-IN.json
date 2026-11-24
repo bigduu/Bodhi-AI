@@ -61,6 +61,7 @@
   "phase.current": "सबसे नया वर्शन चल रहा है",
   "phase.downloadFailed": "डाउनलोड विफल रहा",
   "phase.downloading": "डाउनलोड हो रहा है…",
+  "phase.skipped": "यह संस्करण छोड़ दिया गया है",
   "phase.preparing": "तैयारी हो रही है…",
   "phase.shuttingDown": "Bamboo के बंद होने का इंतज़ार है…",
   "phase.restarting": "Bodhi फिर शुरू हो रहा है…",
@@ -108,6 +109,10 @@
   "updates.retryRestart": "फिर शुरू करने की कोशिश करें",
   "updates.remindLater": "बाद में याद दिलाएँ",
   "updates.retry": "फिर से शुरू करें",
+  "updates.skipVersion": "यह संस्करण छोड़ें",
+  "updates.undoSkip": "संस्करण को फिर दिखाएँ",
+  "updates.undoSkipRequired": "इस संस्करण को डाउनलोड करने या लागू करने से पहले इसे फिर दिखाएँ।",
+  "updates.restartPending": "घटक अपडेट के लिए पुनः प्रारंभ करना बाकी है। पहले ऐप को पुनः प्रारंभ करें।",
   "updates.view": "अपडेट देखें",
   "updates.title": "Bodhi के वर्शन और अपडेट"
 }

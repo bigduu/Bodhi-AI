@@ -61,6 +61,7 @@
   "phase.current": "À jour",
   "phase.downloadFailed": "Échec du téléchargement",
   "phase.downloading": "Téléchargement…",
+  "phase.skipped": "Version ignorée",
   "phase.preparing": "Préparation…",
   "phase.shuttingDown": "Attente de l’arrêt de Bamboo…",
   "phase.restarting": "Redémarrage de Bodhi…",
@@ -108,6 +109,10 @@
   "updates.retryRestart": "Réessayer le redémarrage",
   "updates.remindLater": "Me le rappeler plus tard",
   "updates.retry": "Réessayer le démarrage",
+  "updates.skipVersion": "Ignorer cette version",
+  "updates.undoSkip": "Annuler l’exclusion",
+  "updates.undoSkipRequired": "Réactivez cette version avant de la télécharger ou de l’appliquer.",
+  "updates.restartPending": "Un redémarrage est en attente. Terminez-le avant de gérer les versions ignorées.",
   "updates.view": "Voir la mise à jour",
   "updates.title": "Versions et mises à jour de Bodhi"
 }
