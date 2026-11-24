@@ -78,13 +78,19 @@ a fake release cut merely to inspect an accepted Dev source.
   not authorize a new locator. Candidate P/S/M code is never executed by Target.
 - Normal promotion requires the completed original release for its contract, original
   controller/run/jobs, retained reservation/target/publication evidence, actual
-  immutable ZIP/file hashes and accepted source/locks. Recovery uses the existing
-  publication-only failure route and authenticates original C1 and recovery C2.
-  One user-authorized exception replaces the lost 2026.10.31 macOS output;
-  its manifest preserves the original failed run, the lost build's real job,
-  and the separate replacement run and artifact identities.
-  Missing originals, a latest logical failure, replacement bytes or unknown API
-  state stop admission. Main never compiles, tests, packages or republishes.
+  immutable ZIP/file hashes and accepted source/locks. The standard recovery
+  route requires a publication-only failure and authenticates original C1 and
+  recovery C2.
+  - The 2026.10.31 exception replaces the lost macOS output. The manifest
+    preserves the failed run, original job, replacement run and artifact.
+  - The 2026.11.37 exception covers the Windows ARM64 capture failure in
+    release run 45432961380 attempt 1 only. Require the exact retained Windows
+    archive and installer, all four other original target outputs, and a
+    successful recovery on protected Main with its own job and evidence.
+    Preserve the original draft, source, and build identities for all targets.
+  Outside these fixed cases, missing originals, a latest logical failure or
+  replacement bytes stop admission. Reject unknown API state in all cases.
+  Main never compiles, tests, packages or republishes during admission.
 - Main's actual merge M must equal complete S, or complete S overlaid by the
   entire literal controller closure from its current base B. Complete S requires
   an admitted Main-capable producer and the entire controller closure; an
