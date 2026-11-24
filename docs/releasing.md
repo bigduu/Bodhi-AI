@@ -415,7 +415,7 @@ second physical build or missing original output cannot use this exception.
 
 A finalizer failure before publication evidence is retained can rerun that
 failed finalizer in the same run. Partial uploads keep their original asset IDs.
-After the evidence upload, use the original schema (2 or 3) if **Publish the
+After the evidence upload, use the original schema (2, 3 or 4) if **Publish the
 original draft** was the sole failing finalizer step:
 
 ```sh
@@ -431,6 +431,27 @@ hashes. It downloads the retained publication evidence by ID and promotes only
 the unchanged original release. If GitHub published it after a lost response,
 recovery confirms it without another PATCH. A newer recovery controller keeps
 its own actual GitHub identity and never impersonates the original controller.
+
+For 2026.11.37 only, the Windows ARM64 installer was built and saved before
+PowerShell crashed while reading its version. Recover its exact archive and
+the four other verified targets from the original run. Dispatch from protected
+Dev after the recovery controller is admitted there through its feature PR:
+
+```sh
+gh workflow run recover-release.yml -R bigduu/Bodhi-AI --ref dev \
+  -f evidence_schema=4 -f release_run_id=45432961380 -f release_attempt=1 \
+  -f expected_source_sha=84a0181d5875a6b91cd847e060e9255a56a378bf \
+  -f bodhi_version=2026.11.37 -f expected_controller_sha=<ACCEPTED_DEV_MERGE> \
+  -f controller_pull_request=<DEV_PR> -f controller_ci_run=<FEATURE_RUN> \
+  -f controller_ci_attempt=<SUCCESSFUL_FEATURE_ATTEMPT>
+```
+
+The controller checks its admitted Git tree and validates the saved Windows
+package, including its ARM64 shell, PE version and installer payload. The
+published manifest records the original build job and archive alongside the
+recovery run and its separate Dev admission evidence. The recovered release's
+Main promotion requires separate read-only admission through the trusted
+Main controller. [Bodhi #350](https://github.com/bigduu/Bodhi-AI/issues/350)
 
 For historical v1 runs, including #116, select `-f evidence_schema=1` with their
 original run/attempt/source/version. The byte-pinned v1 helper and frozen workflow

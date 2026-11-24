@@ -135,6 +135,8 @@ function nativeAssets(release, ctx) {
 }
 function verifyManifest(manifest, ctx, release) {
   const contract = releaseContract(ctx);
+  const captureTarget = manifest.captureRecovery === undefined ? null
+    : require("./recover-v37-winarm.cjs").verifyCaptureManifest(ctx, manifest);
   assert.equal(manifest.schemaVersion, contract.schemaVersion); assert.equal(manifest.kind, "bodhi-original-installers");
   assert.equal(manifest.releaseId, release.id); out.verifyReservation(manifest.reservation, ctx);
   assert.deepEqual(out.releaseReservation(release, ctx), manifest.reservation, "Release reservation changed");
@@ -146,7 +148,7 @@ function verifyManifest(manifest, ctx, release) {
   for (const target of manifest.targets) {
     const { receipt, artifact } = target;
     out.verifyReceipt(receipt, ctx, manifest.reservation, receipt.target, { id: receipt.jobId, run_attempt: receipt.attempt });
-    assert.equal(artifact.name, out.artifactName(ctx, receipt.target, receipt.attempt));
+    if (receipt.target !== captureTarget) assert.equal(artifact.name, out.artifactName(ctx, receipt.target, receipt.attempt));
     assert.ok(Number.isSafeInteger(artifact.id) && artifact.id > 0); assert.match(artifact.digest || "", out.DIGEST);
     for (const file of receipt.files) {
       assert.ok(!fileNames.has(file.name)); fileNames.add(file.name);
@@ -235,7 +237,7 @@ function publicationNotes(ctx, releaseId, reservation, request) {
   lines.push("", "[完整 Git 提交记录 / Full Git history](" + history + ")");
   if (ctx.thin) {
     lines.push("", "## 组件分发 / Component delivery", "",
-      "Bodhi 通过签名组件通道独立获取 Bamboo、Lotus Next 和适用平台的浏览器运行时。",
+      "Bodhi 从官方组件目录独立下载 Bamboo 和 Lotus Next，并校验 SHA-256 摘要。目录提供当前平台的浏览器运行时时，Bodhi 会一并安装。",
       "Bodhi downloads Bamboo and Lotus Next from the official component catalog and verifies their SHA-256 digests. It installs the managed browser when the catalog lists a runtime for your platform.");
     return lines.join("\n");
   }
@@ -258,12 +260,16 @@ function assemble(ctx, output, request = api, restore = out.download, send = upl
   const contract = releaseContract(ctx);
   const original = out.loadReservation(ctx, request, restore), { reservation } = original;
   available(ctx, request, original.release);
-  const releaseNotes = contract.schemaVersion >= 3 && original.release.draft
-    ? publicationNotes(ctx, original.release.id, reservation, request) : undefined;
   const targets = contract.targets.map(target => {
     const selected = out.selectTarget(ctx, reservation, target, request, restore, true);
     assert.ok(selected, `Missing original target: ${target}`); return selected;
   });
+  return retainAssembly(ctx, output, original, targets, request, send, read);
+}
+function retainAssembly(ctx, output, original, targets, request = api, send = upload, read = readManifest, captureRecovery) {
+  const contract = releaseContract(ctx), { reservation } = original;
+  const releaseNotes = contract.schemaVersion >= 3 && original.release.draft
+    ? publicationNotes(ctx, original.release.id, reservation, request) : undefined;
   const allowed = [...expectedNativeNames(ctx, contract), contract.manifest];
   assert.ok(original.release.assets.every(asset => allowed.includes(asset.name)), "Foreign asset on the reserved release");
   const assets = [];
@@ -279,15 +285,20 @@ function assemble(ctx, output, request = api, restore = out.download, send = upl
     const originalCtx = { ...ctx, attempt: stored.finalizer.attempt };
     verifyManifest(stored, originalCtx, request(`releases/${original.release.id}`));
     assert.deepEqual(stored.reservationArtifact, { id: original.artifact.id, name: original.artifact.name, digest: original.artifact.digest });
-    assert.ok(out.jobs(ctx, request).some(job => job.id === stored.finalizer.jobId && job.name === "Publish original release" && job.run_attempt === stored.finalizer.attempt), "Original assembler job differs");
+    if (captureRecovery) assert.deepEqual(stored.captureRecovery, captureRecovery, "Recovery assembler differs");
+    else {
+      assert.equal(stored.captureRecovery, undefined, "Original assembly cannot adopt recovery evidence");
+      assert.ok(out.jobs(ctx, request).some(job => job.id === stored.finalizer.jobId && job.name === "Publish original release" && job.run_attempt === stored.finalizer.attempt), "Original assembler job differs");
+    }
     assert.deepEqual(stored.assets, assets);
     assert.deepEqual(stored.targets, targets.map(({ receipt, artifact }) => ({ receipt, artifact })));
     manifest = stored;
   } else {
-    const job = out.currentJob(ctx, "Publish original release", request);
+    const jobId = captureRecovery ? captureRecovery.jobId : out.currentJob(ctx, "Publish original release", request).id;
     manifest = { schemaVersion: contract.schemaVersion, kind: "bodhi-original-installers", releaseId: original.release.id, reservation,
       reservationArtifact: { id: original.artifact.id, name: original.artifact.name, digest: original.artifact.digest },
-      finalizer: { jobId: job.id, attempt: ctx.attempt }, targets: targets.map(({ receipt, artifact }) => ({ receipt, artifact })), assets };
+      finalizer: { jobId, attempt: ctx.attempt }, ...(captureRecovery === undefined ? {} : { captureRecovery }),
+      targets: targets.map(({ receipt, artifact }) => ({ receipt, artifact })), assets };
   }
   const manifestFile = path.join(path.dirname(output), contract.manifest); write(manifestFile, manifest);
   const retainedManifest = retainAsset(original.release.id, manifestFile, contract.manifest, ctx, request, send);
@@ -384,7 +395,9 @@ function publicationEvidence(ctx, job, release, request = api, restore = out.dow
   const directory = path.join(temporary, "original");
   try {
     restore(artifact, ["evidence.json"], directory);
-    const evidence = readJson(path.join(directory, "evidence.json")); verifyEvidence(ctx, evidence, release);
+    const evidence = readJson(path.join(directory, "evidence.json"));
+    assert.equal(evidence.manifest.captureRecovery, undefined, "Original finalizer cannot authenticate capture recovery");
+    verifyEvidence(ctx, evidence, release);
     return { evidence, artifact };
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
@@ -448,5 +461,5 @@ function main() {
   assert.equal(command, "publish"); const evidence = readJson(file); retainedEvidence(ctx, evidence); publish(ctx, evidence);
 }
 module.exports = { ASSEMBLE, EVIDENCE, PUBLISH, available, reserve, originalRun, recoverContext, validateAsset, nativeAssets, verifyManifest,
-  retainAsset, assemble, verifyEvidence, refreshSource, publish, recoveryArtifact, retainedEvidence, readManifest, publicationEvidence, verifyPublished };
+  retainAsset, assemble, retainAssembly, verifyEvidence, refreshSource, publish, recoveryArtifact, retainedEvidence, readManifest, publicationEvidence, verifyPublished };
 if (require.main === module) { try { main(); } catch (error) { console.error(`Bodhi original release: ${error.message}`); process.exitCode = 1; } }

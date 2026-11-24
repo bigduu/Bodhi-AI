@@ -10,8 +10,9 @@ const inputs = require("./thin-release-inputs.cjs");
 
 test("recovery routes v4 to the original-output finalizer", () => {
   const workflow = fs.readFileSync(path.resolve(__dirname, "../.github/workflows/recover-release.yml"), "utf8");
-  assert.match(workflow, /^  recover:\n    if: inputs\.evidence_schema == '1'$/m);
-  assert.match(workflow, /^  recover-original:\n    if: inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3' \|\| inputs\.evidence_schema == '4'$/m);
+  assert.match(workflow, /^  recover:\n    if: github\.ref == 'refs\/heads\/main' && inputs\.evidence_schema == '1'$/m);
+  assert.match(workflow, /^  recover-original:\n    if: github\.ref == 'refs\/heads\/main' && \(inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3' \|\| inputs\.evidence_schema == '4'\)$/m);
+  assert.match(workflow, /^  recover-v37-windows-arm64:\n[\s\S]*?github\.ref == 'refs\/heads\/dev' && github\.ref_protected/m);
 });
 
 test("the reviewed dispatcher and immutable product marker select v4", () => {

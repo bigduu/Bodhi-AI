@@ -26,6 +26,18 @@ on:
         description: "Original YYYY.M.N Bodhi app version"
         required: true
         type: string
+      expected_controller_sha:
+        description: "Exact protected Dev merge for the fixed v37 capture recovery"
+        type: string
+      controller_pull_request:
+        description: "Protected Dev PR admitting that v37 recovery controller"
+        type: string
+      controller_ci_run:
+        description: "Successful feature CI run admitting the v37 recovery controller"
+        type: string
+      controller_ci_attempt:
+        description: "Exact successful feature CI attempt for the v37 recovery controller"
+        type: string
 
 # This is the same version lock as release.yml, including across workflows.
 concurrency:
@@ -38,7 +50,7 @@ permissions:
 
 jobs:
   recover:
-    if: inputs.evidence_schema == '1'
+    if: github.ref == 'refs/heads/main' && inputs.evidence_schema == '1'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -71,7 +83,7 @@ jobs:
         run: node scripts/release-finalizer.cjs recover "${{ runner.temp }}/bodhi-original-release/bodhi-release-evidence.json"
 
   recover-original:
-    if: inputs.evidence_schema == '2' || inputs.evidence_schema == '3' || inputs.evidence_schema == '4'
+    if: github.ref == 'refs/heads/main' && (inputs.evidence_schema == '2' || inputs.evidence_schema == '3' || inputs.evidence_schema == '4')
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,3 +104,44 @@ jobs:
       - name: Verify original immutable outputs and recover publication
         working-directory: controller
         run: node scripts/release-finalizer-v2.cjs recover "${{ runner.temp }}/evidence.json"
+
+  recover-v37-windows-arm64:
+    name: Recover original 2026.11.37 installers
+    if: >-
+      github.ref == 'refs/heads/dev' && github.ref_protected &&
+      inputs.evidence_schema == '4' && inputs.bodhi_version == '2026.11.37' &&
+      inputs.release_run_id == '45432961380' && inputs.release_attempt == '1' &&
+      inputs.expected_source_sha == '84a0181d5875a6b91cd847e060e9255a56a378bf' &&
+      inputs.expected_controller_sha == github.workflow_sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      CONTROLLER_PR: ${{ inputs.controller_pull_request }}
+      CONTROLLER_CI_RUN: ${{ inputs.controller_ci_run }}
+      CONTROLLER_CI_ATTEMPT: ${{ inputs.controller_ci_attempt }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - name: Check installer inspection tools
+        run: command -v 7z && command -v unzip
+      - name: Verify and assemble retained installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/recover-v37-winarm.cjs assemble "$RUNNER_TEMP/bodhi-v37/evidence.json"
+      - name: Retain verified recovery evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: bodhi-v37-winarm-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bodhi-v37/evidence.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Publish the original draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/recover-v37-winarm.cjs publish "$RUNNER_TEMP/bodhi-v37/evidence.json"
