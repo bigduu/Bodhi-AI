@@ -63,7 +63,7 @@ fn validate_artifact(target: &str, artifact: &BrowserRuntimeArtifact) -> Result<
         || !valid_sha256(&artifact.archive.sha256)
         || !valid_sha256(&artifact.receipt_sha256)
     {
-        return Err("The signed browser runtime does not match the current platform".into());
+        return Err("The browser runtime does not match the current platform".into());
     }
     Ok(())
 }
@@ -88,7 +88,7 @@ fn install(
     if length != artifact.archive.size_bytes
         || format!("{:x}", digest.finalize()) != artifact.archive.sha256
     {
-        return Err("Browser runtime archive differs from the signed component release".into());
+        return Err("Browser runtime archive differs from the component catalog".into());
     }
     file.rewind().map_err(|error| error.to_string())?;
     let directory = tempfile::tempdir_in(&profile.state_dir).map_err(|error| error.to_string())?;

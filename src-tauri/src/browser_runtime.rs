@@ -155,7 +155,7 @@ pub(crate) fn verify_published(root: &Path, receipt_sha256: &str) -> Result<[Pat
     }
     let receipt = read_receipt(root)?;
     if crate::frontend::hash_bytes(&receipt) != receipt_sha256 {
-        return Err("Browser runtime receipt differs from the signed component release".into());
+        return Err("Browser runtime receipt differs from the component catalog".into());
     }
     let (target, browser_platform) = platform()?;
     verify(root, &receipt, target, browser_platform)

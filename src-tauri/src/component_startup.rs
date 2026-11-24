@@ -2,22 +2,19 @@
 mod journal;
 pub(crate) mod updates;
 
-use crate::bamboo_profile::{create_directory, Profile};
+use crate::bamboo_profile::Profile;
 use crate::bamboo_update::{check_component_floor, record_component_launch};
-use crate::component_channel::{self, Combination, PairIdentity, VerifiedChannel};
+use crate::component_channel::{self, Combination, PairIdentity};
 use crate::component_kernel::{self, DownloadSource, VerifiedKernel};
 use crate::frontend::VerifiedFrontend;
 use journal::Journal;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 use tauri::{AppHandle, Manager as _, Runtime};
 use tokio::sync::watch;
 
-const TRUSTED_ROOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/component-update-root.json"));
-
 pub(crate) fn enabled() -> bool {
-    cfg!(feature = "thin-shell") && !TRUSTED_ROOT.is_empty()
+    cfg!(feature = "thin-shell")
 }
 
 pub(crate) struct Manager {
@@ -29,7 +26,7 @@ pub(crate) struct Manager {
 struct Prepared {
     kernel: VerifiedKernel,
     frontend: VerifiedFrontend,
-    browser: [PathBuf; 3],
+    browser: Option<[PathBuf; 3]>,
 }
 
 impl Manager {
@@ -42,23 +39,11 @@ impl Manager {
         })
     }
 
-    async fn channel(&self) -> Result<VerifiedChannel, String> {
-        let _update = self.profile.update_lock()?;
-        let metadata = self.profile.state_dir.join("component-metadata-v1");
-        create_directory(&metadata).map_err(|e| e.to_string())?;
-        tokio::time::timeout(
-            Duration::from_secs(90),
-            component_channel::load_stable(TRUSTED_ROOT, &metadata),
-        )
-        .await
-        .map_err(|_| "The component catalog check timed out".to_owned())?
-    }
-
     async fn choose(&self) -> Result<Combination, String> {
         if let Some(pair) = Journal::read(&self.profile)?.next() {
             return Ok(pair.clone());
         }
-        self.channel()
+        component_channel::load_stable()
             .await?
             .select(None)?
             .map(|candidate| candidate.combination.clone())
@@ -88,20 +73,26 @@ impl Manager {
                 self.updates.progress(&lotus_archive, None, received, total)
             })
             .await?;
-        let browser = crate::component_browser::prepare_runtime(
-            &self.profile.data,
-            &candidate,
-            self.sources.subscribe(),
-            |source, received, total| {
-                self.updates.progress(
-                    "Bamboo Browser Runtime",
-                    Some(source),
-                    received,
-                    Some(total),
+        let browser = if candidate.artifact.browser_runtime.is_some() {
+            Some(
+                crate::component_browser::prepare_runtime(
+                    &self.profile.data,
+                    &candidate,
+                    self.sources.subscribe(),
+                    |source, received, total| {
+                        self.updates.progress(
+                            "Bamboo Browser Runtime",
+                            Some(source),
+                            received,
+                            Some(total),
+                        )
+                    },
                 )
-            },
-        )
-        .await?;
+                .await?,
+            )
+        } else {
+            None
+        };
         Ok(Prepared {
             kernel,
             frontend,
@@ -167,7 +158,7 @@ impl Manager {
             &self.profile.data,
             prepared.frontend.static_dir.as_deref(),
             Some(&prepared.kernel.executable),
-            Some(prepared.browser),
+            prepared.browser,
         )?;
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let window = app
