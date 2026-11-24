@@ -97,6 +97,10 @@ pub(crate) fn publish_directory<T>(
 }
 
 fn exclusive_file(path: &Path) -> io::Result<File> {
+    open_state_file(path, true)
+}
+
+pub(crate) fn open_state_file(path: &Path, exclusive: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
@@ -110,19 +114,23 @@ fn exclusive_file(path: &Path) -> io::Result<File> {
         use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
         // The share restriction stays in force for the lifetime of the file
         // object, including when the child inherits the same handle as stdin.
-        options
-            .share_mode(0)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+        if exclusive {
+            options.share_mode(0);
+        }
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || is_link(&metadata) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "expected a regular lock file",
+            "expected a regular state file",
         ));
     }
     #[cfg(unix)]
-    file.try_lock().map_err(io::Error::from)?;
+    if exclusive {
+        file.try_lock().map_err(io::Error::from)?;
+    }
     Ok(file)
 }
 

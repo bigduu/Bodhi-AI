@@ -26,6 +26,7 @@ pub mod cli_install;
 pub mod command;
 pub mod component_browser;
 pub mod component_channel;
+mod component_download;
 pub mod component_kernel;
 mod component_startup;
 pub mod frontend;
@@ -248,7 +249,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
             match manager.launch(&handle).await {
                 Ok(true) => manager.poll(&handle).await,
                 Ok(false) => (),
-                Err(error) => show_startup_failure(&handle, &error),
+                Err(error) => log::error!("Bodhi failed to start: {error}"),
             }
         });
         return Ok(());
@@ -645,7 +646,8 @@ pub fn run() {
             component_startup::updates::shell_translations,
             component_startup::updates::component_snapshot,
             component_startup::updates::check_components,
-            component_startup::updates::set_component_source,
+            component_startup::updates::open_component_updates,
+            component_startup::updates::set_component_download_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

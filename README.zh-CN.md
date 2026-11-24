@@ -58,6 +58,25 @@ brew install --cask bigduu/tap/bodhi
 
 **当前 macOS 签名方式：** 已发布的 DMG 使用 ad-hoc 签名，尚未取得 Developer ID 公证。通过 Homebrew 安装时，cask 会自动移除已安装应用的 quarantine 标记，在保留 hardened runtime 的同时进行本机 ad-hoc 自签，并校验签名；此安装方式无需手动执行自签脚本。这不等于获得 Developer ID 信任或公证，升级后也可能需要重新授予 macOS 隐私权限。直接安装 DMG 时可使用[自签脚本](./scripts/self-sign-macos-app.sh)；正式签名与公证进度见 [Bodhi #75](https://github.com/bigduu/Bodhi-AI/issues/75)。
 
+### 轻量版组件下载
+
+在 **版本与更新** 中配置下载，也可从启动页点击 **下载设置**。下载源可选
+GitHub、预设 GitHub 镜像或 **自定义镜像**。代理支持 HTTP、HTTPS、SOCKS5
+和 SOCKS5H，例如 `http://127.0.0.1:7890`。留空时使用环境变量中的代理
+设置。保存后，若下载已经停止，可点击 **重试启动** 或 **检查更新**。
+
+自定义镜像使用 HTTPS 基础地址，并按原始下载地址的域名和路径提供文件。
+例如，镜像地址为 `https://mirror.example.com/bodhi/` 时，Bamboo 发布文件应
+放在 `/bodhi/github.com/bigduu/Bamboo-agent/releases/download/` 下，
+Lotus Next 安装包应放在 `/bodhi/registry.npmjs.org/@bigduu/lotus-next/-/`
+下。填写代理 URL 时请省略账号和密码。Bodhi 通过配置的代理从官方仓库读取
+发布目录。
+
+Bamboo、Lotus Next 和浏览器运行时的下载进度在重启后仍保留。来源支持 HTTP
+Range 时，同一文件会从中断处继续。来源返回完整文件时，Bodhi 会重新下载。
+安装前会根据官方目录校验文件大小和 SHA-256。
+
+
 ## 它如何帮助你工作
 
 - **快速回到工作窗口：** macOS 使用 `Cmd+Shift+Space`，Windows/Linux 使用 `Ctrl+Shift+Space` 显示或隐藏窗口，需操作系统允许注册该快捷键。

@@ -66,6 +66,28 @@ brew install --cask bigduu/tap/bodhi
 
 **Current macOS signing:** the published DMG is ad-hoc signed and is not Developer ID notarized. During Homebrew installation, the cask automatically removes quarantine from the installed app, re-signs it locally with an ad-hoc signature while preserving the hardened runtime, and verifies the signature. No manual self-sign step is needed for this installation path. This does not provide Developer ID trust or notarization, and macOS privacy permissions may need to be granted again after upgrades. Direct DMG installations can use [the self-sign script](./scripts/self-sign-macos-app.sh); formal signing is tracked in [Bodhi #75](https://github.com/bigduu/Bodhi-AI/issues/75).
 
+### Thin-shell component downloads
+
+Open **Versions and Updates** or select **Download settings** on the
+startup screen. Choose GitHub, an existing GitHub mirror or **Custom mirror**.
+Set an optional HTTP, HTTPS, SOCKS5 or SOCKS5H forward proxy such as
+`http://127.0.0.1:7890`. With the field empty, Bodhi uses environment proxy
+settings. Save the settings, then choose **Retry startup** or **Check for
+updates** if a transfer has already stopped.
+
+A custom mirror at `https://mirror.example.com/bodhi/` serves the original
+asset host and path under that base. For example, serve GitHub release files
+under `/bodhi/github.com/bigduu/Bamboo-agent/releases/download/` and Lotus
+Next tarballs under `/bodhi/registry.npmjs.org/@bigduu/lotus-next/-/`.
+Use an HTTPS base URL and a proxy URL without embedded credentials. Bodhi
+reads the release catalog from the official repository through the configured proxy.
+
+Bodhi keeps partial Bamboo, Lotus Next and browser runtime files across
+restarts and resumes the same assets when the source supports HTTP Range.
+A source serving a full copy restarts the transfer. Bodhi verifies the
+catalog size and SHA-256 before installing any component.
+
+
 ## Work with it
 
 - **Return to your work quickly:** `Cmd+Shift+Space` on macOS or `Ctrl+Shift+Space` on Windows/Linux toggles the main window, when the OS allows the shortcut.

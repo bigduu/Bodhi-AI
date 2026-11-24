@@ -15,10 +15,14 @@
     dt, small, label { color: #adb6c2; }
     dd { margin: 0; font-variant-numeric: tabular-nums; }
     section { margin: 0 0 16px; padding: 16px; border: 1px solid #353a44; border-radius: 10px; background: #202328; }
-    button, select { font: inherit; border: 1px solid #454c57; border-radius: 7px; padding: 7px 10px; background: #2b3038; color: inherit; }
+    button, select, input { font: inherit; border: 1px solid #454c57; border-radius: 7px; padding: 7px 10px; background: #2b3038; color: inherit; }
     button { background: #c2dcff; color: #132642; border-color: transparent; font-weight: 600; }
     button:disabled { opacity: .55; }
-    button:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 3px; }
+    button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 3px; }
+    fieldset { display: grid; gap: 12px; border: 0; margin: 0; padding: 0; min-width: 0; }
+    .setting { display: grid; gap: 4px; }
+    .setting[hidden] { display: none; }
+    .settings-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
     p { margin: 9px 0; overflow-wrap: anywhere; }
     progress { width: 100%; accent-color: #8ab4f8; }
     .error { color: #ffb8ae; }
@@ -41,14 +45,35 @@
     <div><dt>Lotus Next</dt><dd id="lotus">—</dd></div>
   </dl>
   <section>
-    <div class="row">
-      <label for="source" data-i18n="source.label">Download source</label>
-      <select id="source">
-        <option value="github" data-i18n="source.github">GitHub (direct)</option>
-        <option value="gh-proxy">gh-proxy.com</option>
-        <option value="gh-fast">ghfast.top</option>
-      </select>
-    </div>
+    <form id="download-settings">
+      <fieldset id="settings-fields" disabled>
+        <div class="row">
+          <label for="source" data-i18n="source.label">Download source</label>
+          <select id="source">
+            <option value="github" data-i18n="source.github">GitHub</option>
+            <option value="gh-proxy">gh-proxy.com</option>
+            <option value="gh-fast">ghfast.top</option>
+            <option value="custom" data-i18n="source.custom">Custom mirror</option>
+          </select>
+        </div>
+        <div class="setting" id="mirror-settings" hidden>
+          <label for="mirror-url" data-i18n="source.mirrorUrl">Mirror base URL</label>
+          <input type="url" id="mirror-url" placeholder="https://mirror.example.com/bodhi/"
+            maxlength="2048" spellcheck="false" aria-describedby="mirror-hint" disabled>
+          <small id="mirror-hint" data-i18n="source.mirrorHint">The mirror serves each file under the original hostname and path.</small>
+        </div>
+        <div class="setting">
+          <label for="proxy-url" data-i18n="source.proxyUrl">Proxy URL</label>
+          <input type="url" id="proxy-url" placeholder="http://127.0.0.1:7890"
+            maxlength="2048" spellcheck="false" aria-describedby="proxy-hint">
+          <small id="proxy-hint" data-i18n="source.proxyHint">HTTP, HTTPS, SOCKS5 or SOCKS5H. Leave blank to use environment proxy settings.</small>
+        </div>
+        <div class="settings-footer">
+          <button id="save-settings" type="submit" data-i18n="source.save" disabled>Save download settings</button>
+          <small id="settings-status" role="status"></small>
+        </div>
+      </fieldset>
+    </form>
     <p id="phase" role="status"></p>
     <div id="download" hidden>
       <progress id="progress" aria-label="Download progress" data-i18n-label="progress.label"></progress>
