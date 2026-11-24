@@ -30,7 +30,6 @@ const WORKFLOW_BLOB = "86225399ee6083f4bcb9ab6bcaa3fc0c22987368";
 const JOB = "Recover original 2026.11.37 installers";
 const ASSEMBLE = "Verify and assemble retained installers";
 const EVIDENCE = "Retain verified recovery evidence";
-const PUBLISH = "Publish the original draft";
 const KIND = "bodhi-v37-winarm-capture/v1";
 const emergencyName = `bodhi-v4-emergency-${FIXED.runId}-${FIXED.attempt}-${FIXED.target}`;
 const evidenceName = (runId, attempt) => `bodhi-v37-winarm-recovery-${runId}-${attempt}`;
@@ -136,14 +135,14 @@ function jobFor(run, attempt, request) {
   assert.equal(job.head_sha, run.head_sha);
   return job;
 }
-function readEvidence(run, job, request, restore, active = false) {
+function readEvidence(run, job, request) {
   const artifact = out.artifact(out.pages(`actions/runs/${run.id}/artifacts`, "artifacts", request),
-    evidenceName(run.id, job.run_attempt), { runId: run.id, attempt: job.run_attempt, controller: run.head_sha }, job, active);
+    evidenceName(run.id, job.run_attempt), { runId: run.id, attempt: job.run_attempt, controller: run.head_sha }, job, true);
   assert.ok(artifact.size_in_bytes <= 1024 ** 2, "Recovery evidence archive is too large");
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bodhi-v37-recovery-proof-"));
   try {
     const directory = path.join(temporary, "original");
-    restore(artifact, ["evidence.json"], directory);
+    out.download(artifact, ["evidence.json"], directory);
     const evidence = out.readJson(path.join(directory, "evidence.json"));
     return { artifact, evidence };
   } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
@@ -261,7 +260,7 @@ function publish(originalRelease, run, file, request) {
     assert.ok(retry < 4, "Recovery upload gate did not become visible");
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000 * 2 ** retry);
   }
-  const retained = readEvidence(run, job, request, out.download, true);
+  const retained = readEvidence(run, job, request);
   assert.deepEqual(retained.evidence, evidence);
   checkAssembly(run, evidence, request);
   return finalizer.publish({ ...originalRelease.ctx, attempt: run.run_attempt }, evidence, (endpoint, method, body) => {
@@ -281,7 +280,7 @@ function main() {
   if (command === "assemble") assemble(retained, run, file, out.api);
   else publish(retained, run, file, out.api);
 }
-module.exports = { FIXED, WORKFLOW, WORKFLOW_BLOB, JOB, ASSEMBLE, EVIDENCE, PUBLISH, evidenceName, original, recoveryRun,
+module.exports = { FIXED, WORKFLOW, WORKFLOW_BLOB, JOB, ASSEMBLE, EVIDENCE, evidenceName, original, recoveryRun,
   controllerAdmission, requireExpectedLatest, verifyCaptureManifest };
 if (require.main === module) {
   try { main(); } catch (error) { console.error(`Bodhi 2026.11.37 recovery: ${error.message}`); process.exitCode = 1; }
