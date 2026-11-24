@@ -31,14 +31,16 @@ test("the reviewed dispatcher and immutable product marker select v4", () => {
   assert.equal(out.releaseContract(original).schemaVersion, 3);
 });
 
-test("thin inputs bind the root and all original native bootstrap witnesses", (t) => {
+test("thin inputs bind the shell while native witnesses can observe different component pairs", (t) => {
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "bodhi-thin-inputs-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "src-tauri"));
   const trusted = Buffer.from(JSON.stringify({ signed: { _type: "root", consistent_snapshot: true } }));
-  const record = { kind: "bodhi-component-bootstrap/v1", sequence: 2,
+  const record = {
+    kind: "bodhi-component-bootstrap/v2",
     rootSha256: crypto.createHash("sha256").update(trusted).digest("hex"),
-    bambooManifestSha256: "a".repeat(64), lotusManifestSha256: "b".repeat(64) };
+    shellProtocol: 1,
+  };
   fs.writeFileSync(path.join(root, inputs.ROOT_FILE), trusted);
   fs.writeFileSync(path.join(root, inputs.BOOTSTRAP_FILE), JSON.stringify(record));
   fs.writeFileSync(path.join(root, inputs.CONFIG_FILE), JSON.stringify({
@@ -47,11 +49,31 @@ test("thin inputs bind the root and all original native bootstrap witnesses", (t
   const accepted = inputs.read(root);
   assert.equal(accepted.frontend, null);
   assert.deepEqual(accepted.bootstrap, record);
+  assert.deepEqual(Object.keys(accepted.lockHashes).sort(), inputs.INPUTS);
+  assert.throws(() => inputs.verifyBootstrap({ ...record, sequence: 2 }, accepted.lockHashes));
+  assert.throws(() => inputs.verifyBootstrap({ ...record, shellProtocol: 0 }, accepted.lockHashes), /Invalid shell protocol/);
   const targets = source.featureTargets(source.ARM64_FEATURE_WORKFLOW_BLOB);
   const proof = { jobs: targets.map((target, id) => ({ id, name: `Unit and E2E (${target})` })) };
-  const marker = (id) => `2026-11-24T00:00:00Z Bodhi component bootstrap: ${record.rootSha256} 2 ${record.bambooManifestSha256} ${record.lotusManifestSha256} ${targets[id]}`;
+  const marker = (id, {
+    rootSha256 = record.rootSha256,
+    protocol = record.shellProtocol,
+    sequence = id + 2,
+    bamboo = String(id).repeat(64),
+    lotus = "b".repeat(64),
+    target = targets[id],
+  } = {}) => `2026-11-24T00:00:00Z Bodhi component bootstrap: ${rootSha256} ${protocol} ${sequence} ${bamboo} ${lotus} ${target}`;
   assert.doesNotThrow(() => inputs.verifyNativeBootstrap(proof, record, marker));
-  assert.throws(() => inputs.verifyNativeBootstrap(proof, record, (id) => id === 0 ? "" : marker(id)), /Missing or ambiguous/);
+  for (const [badMarker, error] of [
+    ["", /Missing or ambiguous/],
+    [`${marker(0)}\n${marker(0)}`, /Missing or ambiguous/],
+    [marker(0, { rootSha256: "f".repeat(64) }), /wrong trust root/],
+    [marker(0, { protocol: 2 }), /wrong shell protocol/],
+    [marker(0, { target: targets[1] }), /wrong native target/],
+    [marker(0, { bamboo: "invalid" }), /Invalid native bootstrap check/],
+    [marker(0, { sequence: 0x10000000000000000n }), /Invalid signed catalog sequence/],
+  ]) {
+    assert.throws(() => inputs.verifyNativeBootstrap(proof, record, (id) => id === 0 ? badMarker : marker(id)), error);
+  }
   fs.appendFileSync(path.join(root, inputs.ROOT_FILE), "\n");
   assert.throws(() => inputs.read(root));
 });

@@ -6,9 +6,7 @@ use std::fs;
 struct Bootstrap {
     kind: String,
     root_sha256: String,
-    sequence: u64,
-    bamboo_manifest_sha256: String,
-    lotus_manifest_sha256: String,
+    shell_protocol: u32,
 }
 
 #[tokio::test]
@@ -20,9 +18,13 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
         Err(error) => panic!("Cannot read the thin bootstrap record: {error}"),
     };
-    let lock: Bootstrap = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(lock.kind, "bodhi-component-bootstrap/v1");
-    assert_eq!(lock.root_sha256, crate::frontend::hash_bytes(TRUSTED_ROOT));
+    let bootstrap: Bootstrap = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(bootstrap.kind, "bodhi-component-bootstrap/v2");
+    assert_eq!(
+        bootstrap.root_sha256,
+        crate::frontend::hash_bytes(TRUSTED_ROOT)
+    );
+    assert_eq!(bootstrap.shell_protocol, component_channel::SHELL_PROTOCOL);
     let dir = tempfile::tempdir().unwrap();
     let profile_path = dir.path().join("component-profile");
     fs::create_dir(&profile_path).unwrap();
@@ -30,9 +32,6 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
     let manager = Manager::new(profile.clone()).unwrap();
     let pair = manager.choose().await.unwrap();
     let identity = pair.identity();
-    assert_eq!(pair.sequence, lock.sequence);
-    assert_eq!(identity.bamboo_manifest_sha256, lock.bamboo_manifest_sha256);
-    assert_eq!(identity.lotus_manifest_sha256, lock.lotus_manifest_sha256);
     let prepared = manager.prepare(&pair).await.unwrap();
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
@@ -89,11 +88,12 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
     manager.finish(&pair, Ok(())).unwrap();
     assert_eq!(manager.choose().await.unwrap(), pair);
     let evidence = format!(
-        "\nBodhi component bootstrap: {} {} {} {} {}\n",
-        lock.root_sha256,
-        lock.sequence,
-        lock.bamboo_manifest_sha256,
-        lock.lotus_manifest_sha256,
+        "\nBodhi component bootstrap: {} {} {} {} {} {}\n",
+        bootstrap.root_sha256,
+        bootstrap.shell_protocol,
+        pair.sequence,
+        identity.bamboo_manifest_sha256,
+        identity.lotus_manifest_sha256,
         env!("BODHI_BUILD_TARGET")
     );
     std::io::Write::write_all(&mut std::io::stdout().lock(), evidence.as_bytes()).unwrap();

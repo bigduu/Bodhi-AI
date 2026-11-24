@@ -8,6 +8,8 @@ const BOOTSTRAP_FILE = "src-tauri/component-bootstrap.json";
 const CONFIG_FILE = "src-tauri/tauri.thin.conf.json";
 const INPUTS = Object.freeze([BOOTSTRAP_FILE, ROOT_FILE, CONFIG_FILE].sort());
 const SHA256 = /^[0-9a-f]{64}$/;
+const LOG_PREFIX = /^\S+Z Bodhi component bootstrap: /;
+const WITNESS = /^([0-9a-f]{64}) ([1-9][0-9]{0,9}) ([1-9][0-9]{0,19}) [0-9a-f]{64} [0-9a-f]{64} ([-a-z0-9_]+)$/;
 const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 
 function read(root) {
@@ -31,11 +33,10 @@ function read(root) {
 }
 
 function verifyBootstrap(bootstrap, lockHashes) {
-  assert.deepEqual(Object.keys(bootstrap).sort(), ["bambooManifestSha256", "kind", "lotusManifestSha256", "rootSha256", "sequence"]);
-  assert.equal(bootstrap.kind, "bodhi-component-bootstrap/v1");
-  assert.ok(Number.isSafeInteger(bootstrap.sequence) && bootstrap.sequence > 0);
-  assert.match(bootstrap.bambooManifestSha256, SHA256);
-  assert.match(bootstrap.lotusManifestSha256, SHA256);
+  assert.deepEqual(Object.keys(bootstrap).sort(), ["kind", "rootSha256", "shellProtocol"]);
+  assert.equal(bootstrap.kind, "bodhi-component-bootstrap/v2");
+  assert.ok(Number.isInteger(bootstrap.shellProtocol) && bootstrap.shellProtocol > 0 &&
+    bootstrap.shellProtocol <= 0xffffffff, "Invalid shell protocol");
   assert.deepEqual(Object.keys(lockHashes).sort(), INPUTS);
   assert.equal(bootstrap.rootSha256, lockHashes[ROOT_FILE]);
   for (const hash of Object.values(lockHashes)) assert.match(hash, SHA256);
@@ -45,13 +46,18 @@ function verifyBootstrap(bootstrap, lockHashes) {
 function verifyNativeBootstrap(proof, bootstrap, readLog) {
   const jobs = proof.jobs.filter((job) => job.name.startsWith("Unit and E2E ("));
   assert.equal(jobs.length, 5);
-  const prefix = `Bodhi component bootstrap: ${bootstrap.rootSha256} ${bootstrap.sequence} ${bootstrap.bambooManifestSha256} ${bootstrap.lotusManifestSha256}`;
   for (const job of jobs) {
     const target = /^Unit and E2E \(([-a-z0-9_]+)\)$/.exec(job.name)?.[1];
     assert.ok(target, "Invalid bootstrap feature job name");
-    const markers = readLog(job.id).split(/\r?\n/).filter((line) => /^\S+Z Bodhi component bootstrap: /.test(line));
+    const markers = readLog(job.id).split(/\r?\n/).filter((line) => LOG_PREFIX.test(line));
     assert.equal(markers.length, 1, `Missing or ambiguous native bootstrap check for ${target}`);
-    assert.equal(markers[0].replace(/^\S+Z /, ""), `${prefix} ${target}`);
+    const witness = WITNESS.exec(markers[0].replace(LOG_PREFIX, ""));
+    assert.ok(witness, `Invalid native bootstrap check for ${target}`);
+    const [, rootSha256, shellProtocol, sequence, observedTarget] = witness;
+    assert.equal(rootSha256, bootstrap.rootSha256, "Bootstrap witness has the wrong trust root");
+    assert.equal(shellProtocol, String(bootstrap.shellProtocol), "Bootstrap witness has the wrong shell protocol");
+    assert.ok(BigInt(sequence) <= 0xffffffffffffffffn, "Invalid signed catalog sequence");
+    assert.equal(observedTarget, target, "Bootstrap witness has the wrong native target");
   }
 }
 
