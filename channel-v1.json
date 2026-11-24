@@ -74,6 +74,189 @@
       "sequence": 1,
       "bootstrap": true,
       "accepts": []
+    },
+    {
+      "bamboo": {
+        "version": "2026.11.41",
+        "sourceRevision": "3cde33b110e965116e7fdcfce57cb08c0fe2f09c",
+        "manifest": {
+          "sha256": "44517b32708b01bd8e1b0ec3283148b2e8a9680f10d0199873768faab49b7d3f",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "7bd378ff382a74437cc38f5e59b4991340e68529c38fbf877d6b137f4aeb9462",
+              "sizeBytes": 271326192
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "bfbbcb373a332e68de8cde0124c86c8eb1e8dc5bb7c2d4fe4b1500c0edd65876",
+                "sizeBytes": 135224497
+              },
+              "receiptSha256": "1f567a634d2115dc9bea89c6215f38f1a473d7a612a0e5980384e49dc9f97be7"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "ea379c3f1843b7d0a56259d6d93e7ff12c032ee10b585ce9283052338a5b5982",
+              "sizeBytes": 219765248
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "f2ca7e403f0a7e326592f1267338d12187e54b3f2856fa093e2742c4fb8356fd",
+                "sizeBytes": 154106541
+              },
+              "receiptSha256": "c303a5fe817329056c7d9e8b6c94056bdd0b9a94842f9da9280a12e14b0b0178"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "8dee6cabea4a88378b20a820a120f5b834eda13f5ae4286c65597e0f16c86de7",
+              "sizeBytes": 297167384
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "c0ba9b29b35b80be260ef5414a97bba58c81a52420621f49a44626529e118c3f",
+                "sizeBytes": 163847091
+              },
+              "receiptSha256": "d0799e22ce82ecb5750b6d66091a742e5304018524a52d7f2640e5ac47697d89"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "2d7db91e59ce357c6ad4863f600e91dfed4cb97edd1f521cd0f589c577383329",
+              "sizeBytes": 265970176
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "dc06be95786322e53b223a94062ab69cca3f0cfa51fd28b435a0d57f6459b82b",
+                "sizeBytes": 158153259
+              },
+              "receiptSha256": "ece35a17598778d6a95f221cb1c8c2f6a5984b495dad4318f8b9100f041d475b"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "ba4e386c2d174f67011c4cbd78e32c868d2d741ede5136e5960e5f21badd5f6d",
+              "sizeBytes": 310789760
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "bd3c030311a69d309624f3be9c1f514347851e00ea31a736cf3dbb9926d2f7e5",
+                "sizeBytes": 156682745
+              },
+              "receiptSha256": "369666510ff1bb8a37573869385718aaa728895a94d98402eacb746f81f78593"
+            }
+          }
+        ]
+      },
+      "lotus": {
+        "version": "2026.11.27",
+        "sourceRevision": "58dadd5e7dcc9d1c33368cfa23a620bb4840811e",
+        "manifestSha256": "916e4664dc48277f6ce159b82fa347f272ceaf75aaf78b03443eec2fd8438a72",
+        "resourcesSha256": "e8129924b9edcbe18a896ca822ddf83f45f403e7e15681373c0990370d56db97",
+        "tarball": {
+          "sha256": "51744fc6683ffc745e0ac3c654c62ac19ef32e7fbbd022bf3847495f5620964f",
+          "sizeBytes": 4136200
+        }
+      },
+      "changes": {
+        "bamboo": [
+          "Merge commit '5b7a49d553f8170285f370c931b128ee4f6e4d54' into HEAD",
+          "test(ci): register sysinfo process test coverage (#2475)",
+          "Merge pull request #2475 from bigduu/dependabot/cargo/sysinfo-0.40.0",
+          "Merge commit '3f4ff6d7d904234f17e8f1de3a5cbc038af6bb16' into HEAD",
+          "perf: skip history loads for acknowledged child wait outcomes",
+          "Merge pull request #2955 from bigduu/dependabot/cargo/cargo-minor-patch-a36a4e2e58",
+          "Merge commit 'f88b1eb2c107a0273db1f365506a78528582cfa8' into bamboo/perf/child-wait-replay",
+          "Merge pull request #2974 from bigduu/bamboo/perf/child-wait-replay",
+          "perf(history): cache recent session pages and restore older messages (#2978)",
+          "fix: preserve provider headers across compatible forwarding (#2979)",
+          "ci: balance Bamboo agent integration targets",
+          "fix(tasks): publish progress for the task that just completed",
+          "fix(supervisor): include verified Worker failure diagnostics",
+          "test(ci): refresh history source ownership fingerprint (#2978)",
+          "feat(supervisor): verify Worker startup and recover stalled streams",
+          "fix(tasks): preserve the public task status update API",
+          "fix(security): use patched cookie dependency for access verification",
+          "feat(supervisor): schedule incremental log monitors",
+          "Merge pull request #2990 from bigduu/bamboo/fix/2977-patched-cookie",
+          "Merge branch 'dev' into bamboo/fix/2979-provider-header-forwarding",
+          "Merge remote-tracking branch 'origin/dev' into bamboo/fix/session-task-progress-item",
+          "Merge branch 'dev' into bamboo/ci/2986-balance-agent-tests",
+          "Merge commit '43ff9b241f4b92c335c3fa67751a7321d48d307a' into bamboo/feat/2049-supervisor-autonomy",
+          "feat: predict chat drafts from saved session context",
+          "fix(supervisor): enforce retry budgets and preserve monitor sessions",
+          "Merge pull request #2988 from bigduu/bamboo/fix/2979-provider-header-forwarding",
+          "Merge remote-tracking branch 'origin/dev' into bamboo/fix/session-task-progress-item",
+          "Merge remote-tracking branch 'origin/dev' into bamboo/feat/2991-draft-predictions",
+          "Merge branch 'dev' into bamboo/ci/2986-balance-agent-tests",
+          "Merge commit '6bfd0081d0d77c2a521e212a82827e02caab96cd' into bamboo/feat/2049-supervisor-autonomy",
+          "Merge commit '6bfd0081d0d77c2a521e212a82827e02caab96cd' into bamboo/perf/2978-bounded-session-history",
+          "test(supervisor): preserve the fixed Observer test catalog",
+          "Merge pull request #2994 from bigduu/bamboo/fix/session-task-progress-item",
+          "Merge commit '40a013ae0484abb9169885910ec410f62d0af0f9' into bamboo/perf/2978-bounded-session-history",
+          "Merge commit '40a013ae0484abb9169885910ec410f62d0af0f9' into bamboo/feat/2049-supervisor-autonomy",
+          "Merge branch 'dev' into bamboo/ci/2986-balance-agent-tests",
+          "Merge remote-tracking branch 'origin/dev' into bamboo/feat/2991-draft-predictions",
+          "Merge pull request #2989 from bigduu/bamboo/perf/2978-bounded-session-history",
+          "Merge remote-tracking branch 'origin/dev' into bamboo/feat/2991-draft-predictions",
+          "Merge branch 'dev' into bamboo/ci/2986-balance-agent-tests",
+          "Merge commit 'bbfe020534d1bed984279ae97294dcadd651975f' into bamboo/feat/2049-supervisor-autonomy",
+          "Merge pull request #2992 from bigduu/bamboo/feat/2991-draft-predictions",
+          "Merge branch 'dev' into bamboo/ci/2986-balance-agent-tests",
+          "Merge commit '6c09ee9f12390488e74259fb2084a1ac4604b9f7' into bamboo/feat/2049-supervisor-autonomy",
+          "Merge pull request #2987 from bigduu/bamboo/ci/2986-balance-agent-tests",
+          "Merge commit '2fbfdf40b022181357c466ec815099aaa5e3f144' into bamboo/feat/2049-supervisor-autonomy",
+          "Merge pull request #2993 from bigduu/bamboo/feat/2049-supervisor-autonomy",
+          "feat: add attached Side Chat conversations",
+          "fix: bind side chat turns to their source generation",
+          "fix: stop obsolete side chat runs on project changes",
+          "test: record Side Chat feature test ownership",
+          "fix: return canonical JSON errors from Side Chat",
+          "fix: normalize Side Chat request extraction errors",
+          "fix: preserve Side Chat extractor status codes and limits",
+          "Merge pull request #2996 from bigduu/bamboo/feat/2995-side-chat",
+          "build: pack Bamboo desktop browser runtime on native targets",
+          "fix: package the exact Browser Host Git blobs",
+          "Merge pull request #2998 from bigduu/bamboo/build/2997-native-browser-runtime",
+          "release: publish the original native browser runtime assets",
+          "test: reject conflicting original desktop runtime assets",
+          "Merge pull request #3000 from bigduu/bamboo/release/2999-native-browser-assets",
+          "fix(release): recover a native matrix skipped by preflight (#3001)",
+          "Merge pull request #3002 from bigduu/bamboo/fix/3001-native-matrix-recovery",
+          "另有 17 条提交，完整记录 https://github.com/bigduu/Bamboo-agent/compare/73b0d4d9696e36b2ca1d39319805cda517c031a1...3cde33b110e965116e7fdcfce57cb08c0fe2f09c"
+        ],
+        "lotus": []
+      },
+      "sequence": 2,
+      "bootstrap": true,
+      "accepts": [
+        {
+          "bambooManifestSha256": "97735c89506603d295a41bd6db1a4d77432e5d344c9b1cb44fc0573feeb98e03",
+          "lotusManifestSha256": "916e4664dc48277f6ce159b82fa347f272ceaf75aaf78b03443eec2fd8438a72"
+        }
+      ]
     }
   ]
 }
