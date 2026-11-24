@@ -18,7 +18,7 @@ const waitForReadback = delay => Atomics.wait(new Int32Array(new SharedArrayBuff
 const assetIdentity = asset => ({ id: asset.id, name: asset.name, size: asset.size, digest: asset.digest, state: asset.state });
 const identities = release => release.assets.map(assetIdentity).sort((a, b) => a.name.localeCompare(b.name));
 const versionReservations = (ctx, releases) => releases.filter(release => release.tag_name === ctx.finalTag ||
-  ["bodhi", "bodhi-v2", "bodhi-v3"].some(prefix => release.tag_name.startsWith(`${prefix}-draft-v${ctx.version}-`)));
+  ["bodhi", "bodhi-v2", "bodhi-v3", "bodhi-v4"].some(prefix => release.tag_name.startsWith(`${prefix}-draft-v${ctx.version}-`)));
 function expectedNativeNames(ctx, contract = releaseContract(ctx)) {
   return contract.targets.flatMap(target => out.names(ctx.version, target));
 }
@@ -50,7 +50,8 @@ function reserve(ctx, product, proof, request = api, wait = waitForReadback) {
   const job = out.currentJob(ctx, "Reserve admitted release", request);
   const reservation = out.verifyReservation({ schemaVersion: releaseContract(ctx).schemaVersion, kind: "bodhi-original-release", repository: REPOSITORY,
     version: ctx.version, source: ctx.source, tree: proof.tree, controller: ctx.controller, runId: ctx.runId,
-    preflight: { jobId: job.id, attempt: ctx.attempt }, admission: proof, lockHashes: product.lockHashes, frontend: product.frontend }, ctx);
+    preflight: { jobId: job.id, attempt: ctx.attempt }, admission: proof, lockHashes: product.lockHashes, frontend: product.frontend,
+    ...(ctx.thin ? { bootstrap: product.bootstrap } : {}) }, ctx);
   const body = { tag_name: ctx.draftTag, target_commitish: ctx.source, name: `App v${ctx.version}`, body: JSON.stringify(reservation),
     draft: true, prerelease: false, make_latest: "false" };
   let created, failure;
@@ -167,7 +168,7 @@ function manifestAsset(release, ctx, manifest) {
   const assets = release.assets.filter(asset => asset.name === contract.manifest);
   assert.equal(assets.length, 1);
   const asset = assets[0]; validateAsset(asset, ctx);
-  if (contract.schemaVersion === 3) {
+  if (contract.schemaVersion >= 3) {
     const tags = new Set(release.assets.map(item => originalDownloadTag(item, ctx, release.draft)));
     assert.equal(tags.size, 1, "Release assets use different download tags");
   }
@@ -232,6 +233,12 @@ function publicationNotes(ctx, releaseId, reservation, request) {
     lines.push("", "更多提交见完整记录。 / See the full history for additional commits.");
   }
   lines.push("", "[完整 Git 提交记录 / Full Git history](" + history + ")");
+  if (ctx.thin) {
+    lines.push("", "## 组件分发 / Component delivery", "",
+      "Bodhi 通过签名组件通道独立获取 Bamboo、Lotus Next 和适用平台的浏览器运行时。",
+      "Bodhi obtains Bamboo, Lotus Next and the platform browser runtime independently through the signed component channel.");
+    return lines.join("\n");
+  }
 
   const lock = "scripts/bamboo-sidecar-lock.json";
   const response = request("contents/" + lock + "?ref=" + ctx.source);
@@ -251,7 +258,7 @@ function assemble(ctx, output, request = api, restore = out.download, send = upl
   const contract = releaseContract(ctx);
   const original = out.loadReservation(ctx, request, restore), { reservation } = original;
   available(ctx, request, original.release);
-  const releaseNotes = contract.schemaVersion === 3 && original.release.draft
+  const releaseNotes = contract.schemaVersion >= 3 && original.release.draft
     ? publicationNotes(ctx, original.release.id, reservation, request) : undefined;
   const targets = contract.targets.map(target => {
     const selected = out.selectTarget(ctx, reservation, target, request, restore, true);
@@ -397,7 +404,7 @@ function main() {
   const contract = releaseContract(ctx);
   if (command === "reserve") {
     originalRun(ctx);
-    const product = source.requireProduct(ctx.source, process.env.SOURCE_ROOT);
+    const product = source.requireProduct(ctx.source, process.env.SOURCE_ROOT, process.env, undefined, ctx.thin);
     if (contract.schemaVersion === 3) {
       const { MANIFEST_V3 } = require("./bamboo-sidecar.cjs");
       assert.equal(product.bamboo.manifestAssetName, MANIFEST_V3, "Five-target releases require the exact published five-target Bamboo lock");
@@ -412,13 +419,15 @@ function main() {
         assert.equal(String(original.reservation.admission[key]), process.env[variable]);
       value = { releaseId: original.release.id, reservation: original.reservation };
     } else {
-      const proof = source.admitFeature({ source: ctx.source, pullRequest: process.env.FEATURE_PULL_REQUEST, runId: process.env.FEATURE_RUN_ID, attempt: process.env.FEATURE_RUN_ATTEMPT }, api,
-        jobId => execFileSync("gh", ["api", `repos/${REPOSITORY}/actions/jobs/${jobId}/logs`, "--allow-escape-sequences"], { env: out.childEnv(), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }));
+      const readLog = jobId => execFileSync("gh", ["api", `repos/${REPOSITORY}/actions/jobs/${jobId}/logs`, "--allow-escape-sequences"],
+        { env: out.childEnv(), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+      const proof = source.admitFeature({ source: ctx.source, pullRequest: process.env.FEATURE_PULL_REQUEST, runId: process.env.FEATURE_RUN_ID, attempt: process.env.FEATURE_RUN_ATTEMPT }, api, readLog);
+      if (ctx.thin) require("./thin-release-inputs.cjs").verifyNativeBootstrap(proof, product.bootstrap, readLog);
       value = reserve(ctx, product, proof);
     }
     write(file, value);
-    out.outputs({ reuse: Boolean(existing.length), version: ctx.version, frontend_package: product.frontend.packageName,
-      frontend_version: product.frontend.packageVersion, targets: JSON.stringify(out.releaseMatrix(ctx)), schema_version: contract.schemaVersion,
+    out.outputs({ reuse: Boolean(existing.length), version: ctx.version, frontend_package: product.frontend?.packageName ?? "",
+      frontend_version: product.frontend?.packageVersion ?? "", targets: JSON.stringify(out.releaseMatrix(ctx)), schema_version: contract.schemaVersion,
       reservation_name: ctx.reservationName }); return;
   }
   if (recovering) {

@@ -9,7 +9,7 @@ on:
         type: choice
         required: true
         default: "2"
-        options: ["2", "3", "1"]
+        options: ["2", "3", "4", "1"]
       release_run_id:
         description: "Original release.yml run with every required native output"
         required: true
