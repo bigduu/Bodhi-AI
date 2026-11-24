@@ -174,7 +174,9 @@ test("Main accepts only a reviewed release workflow producer", () => {
   const f = fixture();
   const newBlob = execFileSync("git", ["hash-object", ".github/workflows/release.yml"], { encoding: "utf8" }).trim();
   assert.equal(newBlob, out.THIN_RELEASE_WORKFLOW_BLOB);
-  assert.equal(execFileSync("git", ["hash-object", ".github/workflows/recover-release.yml"], { encoding: "utf8" }).trim(), main.THIN_RECOVERY_BLOB);
+  const devRecovery = execFileSync("git", ["hash-object", ".github/workflows/recover-release.yml"], { encoding: "utf8" }).trim();
+  assert.equal(devRecovery, require("./recover-v37-winarm.cjs").WORKFLOW_BLOB);
+  assert.notEqual(devRecovery, main.THIN_RECOVERY_BLOB, "Dev capture recovery does not change the reviewed Main recovery blob");
   f.run.display_title = `Bodhi original v${f.value.version} @ ${S}`;
   f.onRead = (endpoint, response) => {
     if (endpoint === `contents/.github/workflows/release.yml?ref=${C}`) response.sha = newBlob;
