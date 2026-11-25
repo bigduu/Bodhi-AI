@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const {
-  browserArtifacts, changeNotes, parseSingleComponentArgs, releaseChanges, resolveLatestVersion,
+  browserArtifacts, changeNotes, parseSingleComponentArgs, prepareSinceCatalog, releaseChanges, resolveLatestVersion,
 } = require("./prepare-component-candidate.cjs");
 
 function fixture() {
@@ -92,6 +92,69 @@ test("Lotus latest reads only the official package dist-tag", async () => {
   for (const invalid of [{ name: "lotus-next" }, { version: "2026.11.30-rc.1" }, { version: null }]) {
     await assert.rejects(() => resolveLatestVersion("lotus", githubRequest, lotusRead({ ...metadata, ...invalid })));
   }
+});
+
+test("catalog discovery uses the highest version of the selected producer and records the exact baseline", async () => {
+  const revision = "a".repeat(40);
+  const lotus = { version: "2026.11.9", sourceRevision: "b".repeat(40) };
+  const published = { version: "2026.11.10", sourceRevision: "c".repeat(40) };
+  const catalog = async () => ({ revision, combinations: [
+    { sequence: 4, lotus },
+    { sequence: 5, lotus: { ...lotus } },
+    { sequence: 6, lotus: { ...lotus, version: "2026.11.8" } },
+  ] });
+  const candidate = await prepareSinceCatalog("lotus", {
+    catalog,
+    latest: async (component) => {
+      assert.equal(component, "lotus");
+      return published.version;
+    },
+    verify: async (version) => {
+      assert.equal(version, published.version);
+      return published;
+    },
+    request: (endpoint) => {
+      assert.equal(endpoint, `repos/bigduu/lotus-next/compare/${lotus.sourceRevision}...${published.sourceRevision}?per_page=64&page=1`);
+      return { merge_base_commit: { sha: lotus.sourceRevision }, status: "ahead", behind_by: 0, total_commits: 1,
+        commits: [{ sha: published.sourceRevision, commit: { message: "Fix message selection" } }] };
+    },
+  });
+  assert.deepEqual(candidate.catalog, { revision, sequence: 5, version: lotus.version });
+  assert.deepEqual(candidate.release, published);
+  assert.deepEqual(candidate.changes, ["Fix message selection"]);
+});
+
+test("catalog discovery suppresses only an unchanged release and rejects a rewritten or older official version", async () => {
+  const bamboo = { version: "2026.11.9", manifest: { sha256: "a".repeat(64) }, artifacts: [] };
+  const deps = {
+    catalog: async () => ({ revision: "b".repeat(40), combinations: [{ sequence: 1, bamboo }] }),
+    latest: async () => bamboo.version,
+    verify: async () => structuredClone(bamboo),
+  };
+  assert.equal(await prepareSinceCatalog("bamboo", deps), null);
+  await assert.rejects(prepareSinceCatalog("bamboo", {
+    ...deps, verify: async () => ({ ...bamboo, manifest: { sha256: "c".repeat(64) } }),
+  }), /differs from the accepted catalog identity/);
+  await assert.rejects(prepareSinceCatalog("bamboo", {
+    ...deps, latest: async () => "2026.11.8", verify: () => assert.fail("Older release must be rejected"),
+  }), /older than the catalog version/);
+  await assert.rejects(prepareSinceCatalog("bamboo", {
+    ...deps,
+    catalog: async () => ({ revision: "b".repeat(40), combinations: [
+      { sequence: 1, bamboo },
+      { sequence: 2, bamboo: { ...bamboo, manifest: { sha256: "c".repeat(64) } } },
+    ] }),
+  }), /Matching catalog versions must have the same release identity/);
+});
+
+test("catalog discovery rejects a newer Bamboo missing a desktop browser runtime", async () => {
+  const bamboo = { version: "2026.11.9", sourceRevision: "a".repeat(40) };
+  const published = { ...bamboo, version: "2026.11.10", artifacts: [{ target: "aarch64-apple-darwin" }] };
+  await assert.rejects(prepareSinceCatalog("bamboo", {
+    catalog: async () => ({ revision: "b".repeat(40), combinations: [{ sequence: 1, bamboo }] }),
+    latest: async () => published.version,
+    verify: async () => published,
+  }), /missing a desktop browser runtime/);
 });
 
 test("change history reads all comparison pages and gives bounded notes a full-history link", () => {
