@@ -35,21 +35,22 @@ Review catalog changes on the publication branch. The shell fetches its fixed of
 
 ## Applying an update in Bodhi
 
-Automatic and manual checks read the official catalog. Open **Versions and
-Updates** and choose the target version when the catalog approves separate
-updates for the versions you are running. Bamboo lists all compatible newer
-versions, highest first. You can choose another listed version and Bodhi applies
-that selection, even if a higher version appears before you restart. The profile
-minimum Bamboo version applies at startup and during updates. If the catalog
-only approves changing both components together, the window offers the
-combined update.
+Automatic and manual checks read the official catalog. In **Versions and
+Updates**, Bamboo appears on the left and Lotus Next on the right. The panels
+stack in a narrow window. Each panel shows its running version, eligible target
+versions, release notes, and update controls. Bamboo lists compatible newer
+versions highest first. Choose the exact version to download in its panel. A
+refresh keeps each selected version while its catalog entry remains eligible.
+The profile minimum Bamboo version applies at startup and during updates. When
+the catalog requires both components to change together, one combined update
+shows both target versions and their release notes.
 
-Choose **Download update** for the selected item. Bodhi downloads its changed
-assets and verifies the cached peer. One verified selection can be staged for
-restart at a time. Choose **Restart and update** after long-running work
-finishes. Bodhi requests Bamboo's normal shutdown, waits for the owned process
-to release its profile lease and port, then reopens and checks the effective
-Bamboo and Lotus versions.
+Choose **Download update** for the selected target. Bodhi downloads its changed
+assets and verifies the cached peer for a single-component update. One verified
+selection can be staged for restart at a time. Choose **Restart and update**
+after long-running work finishes. Bodhi requests Bamboo's normal shutdown, waits
+for the owned process to release its profile lease and port, then reopens and
+checks the effective Bamboo and Lotus versions.
 
 If shutdown takes longer than the wait or the existing kernel cannot accept
 the request, the verified update stays pending. Use **Retry restart** after
