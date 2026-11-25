@@ -109,6 +109,7 @@
   "updates.retryRestart": "重试重启",
   "updates.remindLater": "稍后提醒",
   "updates.retry": "重试启动",
+  "updates.selectOffer": "选择要查看的更新",
   "updates.skipVersion": "跳过此版本",
   "updates.undoSkip": "撤销跳过",
   "updates.undoSkipRequired": "请先撤销跳过，再下载或应用此版本。",

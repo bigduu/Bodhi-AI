@@ -155,7 +155,7 @@ mod tests {
         let locale = crate::i18n::Locale::English;
         assert_eq!(
             manager
-                .set_skipped(target.sequence, target.identity(), true, locale)
+                .set_skipped(target.sequence, String::new(), true, locale)
                 .await
                 .unwrap_err(),
             locale.text("updates.restartPending")
@@ -196,6 +196,56 @@ mod tests {
         );
         plan.clear(&profile).unwrap();
         assert!(manager.arm_authorized_restart().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn lotus_update_does_not_acquire_a_missing_bamboo_peer() {
+        use crate::component_channel::tests::{
+            fixture_channel_with_independent_updates, initial_combination,
+        };
+        use crate::component_channel::UpdateKind;
+        let directory = tempfile::tempdir().unwrap();
+        let profile = Profile::open(directory.path()).unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let original = initial_combination().await;
+        let channel = fixture_channel_with_independent_updates();
+        let mut candidate = channel
+            .select_updates(&original)
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.update_kind(&original) == Some(UpdateKind::Lotus))
+            .unwrap()
+            .clone();
+        let peer = original.candidate().unwrap().artifact.executable.clone();
+        stage_pair(&profile, &mut candidate, &original.bamboo.version, &peer);
+        candidate.bamboo = original.bamboo.clone();
+        assert!(crate::frontend::reopen_release(&profile, &candidate.lotus).is_ok());
+        let missing_peer =
+            crate::component_kernel::reopen_kernel(&profile, &candidate.candidate().unwrap())
+                .await
+                .unwrap_err();
+
+        let proxy = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        manager
+            .settings
+            .send_replace(crate::component_download::DownloadSettings {
+                proxy_url: Some(format!("http://{}", proxy.local_addr().unwrap())),
+                ..Default::default()
+            });
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            manager.prepare_update(&original, &candidate),
+        )
+        .await
+        .expect("reopening a missing peer should not contact a release source");
+        assert_eq!(outcome.unwrap_err(), missing_peer);
+        assert!(!profile
+            .state_dir
+            .join(format!("bamboo-{}", peer.sha256))
+            .exists());
+        journal::save_downloaded(&profile, &candidate).unwrap();
+        assert!(manager.reopen_downloaded_update(&candidate).await.is_err());
+        assert!(journal::read_downloaded(&profile).unwrap().is_none());
     }
 
     #[tokio::test]
@@ -243,6 +293,8 @@ mod tests {
             .clone();
         stage_pair(&profile, &mut original, version, &executable);
         stage_pair(&profile, &mut target, version, &executable);
+        target.bamboo = original.bamboo.clone();
+        assert_ne!(target.lotus.manifest_sha256, original.lotus.manifest_sha256);
         fs::write(profile.data.join("config.json"), b"{}").unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -312,6 +364,7 @@ mod tests {
             .unwrap());
         manager.finish(&original, Ok(())).unwrap();
 
+        manager.prepare_update(&original, &target).await.unwrap();
         journal::save_downloaded(&profile, &target).unwrap();
         let plan = manager
             .plan_restart(
@@ -338,6 +391,10 @@ mod tests {
         assert_eq!(handoff.request, plan.request);
         restarted.begin(&target).unwrap();
         let prepared = restarted.reopen_prepared(&target).await.unwrap();
+        assert_eq!(
+            prepared.kernel.executable,
+            cache.join(format!("bamboo{}", std::env::consts::EXE_SUFFIX))
+        );
         let next = Host::default();
         let successor = start(&next.0, &prepared);
         assert_ne!(next.0.planned_update_owner().unwrap(), plan.owner);
@@ -423,16 +480,7 @@ impl Manager {
         runtime: &SidecarState,
         update: &SelectedUpdate,
     ) -> Result<PlannedRestart, String> {
-        let target = match self.reopen_prepared(&update.candidate).await {
-            Ok(target) => target,
-            Err(error) => {
-                let _lock = self.profile.update_lock()?;
-                journal::clear_downloaded(&self.profile, &update.candidate)?;
-                return Err(format!(
-                    "Cannot verify the cached update: {error}. Download this update again."
-                ));
-            }
-        };
+        let target = self.reopen_downloaded_update(&update.candidate).await?;
         if !planned_update::executable_supports(&target.kernel.executable).await? {
             return Err("The downloaded Bamboo cannot restore a planned update. The current session remains available.".into());
         }

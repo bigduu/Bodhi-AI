@@ -35,12 +35,17 @@ Review catalog changes on the publication branch. The shell fetches its fixed of
 
 ## Applying an update in Bodhi
 
-Automatic and manual checks only read the official catalog. Open **Versions
-and Updates**, review the available versions and choose **Download update**.
-The verified download stays available for later. Choose **Restart and update**
-after your long-running work finishes. Bodhi requests Bamboo's normal
-shutdown, waits for the owned process and its profile lease and port to be
-released, then reopens and checks the new Bamboo and Lotus pair.
+Automatic and manual checks read the official catalog. Open **Versions and
+Updates** and choose Bamboo or Lotus Next when the catalog approves separate
+updates for the versions you are running. If the catalog only approves changing
+both together, the window offers the combined update.
+
+Choose **Download update** for the selected item. Bodhi downloads its changed
+assets and verifies the cached peer. One verified selection can be staged for
+restart at a time. Choose **Restart and update** after long-running work
+finishes. Bodhi requests Bamboo's normal shutdown, waits for the owned process
+to release its profile lease and port, then reopens and checks the effective
+Bamboo and Lotus versions.
 
 If shutdown takes longer than the wait or the existing kernel cannot accept
 the request, the verified update stays pending. Use **Retry restart** after

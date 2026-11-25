@@ -2,11 +2,12 @@ use super::{
     journal::{self, History, Journal, Versions},
     Manager, SelectedUpdate,
 };
-use crate::component_channel::{Changes, PairIdentity, VerifiedChannel};
+use crate::component_channel::{Changes, Combination, PairIdentity, UpdateKind, VerifiedChannel};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
 use chrono::Utc;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,8 +37,42 @@ struct Display {
     phase: Phase,
     error: Option<String>,
     progress: Option<Progress>,
+    download_sequence: Option<u64>,
     #[serde(skip)]
-    selection: Option<Arc<SelectedUpdate>>,
+    selections: Vec<Arc<SelectedUpdate>>,
+}
+
+impl Display {
+    fn refresh_offers(
+        &mut self,
+        downloaded: Option<&Combination>,
+        skipped: &[PairIdentity],
+    ) -> bool {
+        let mut available = false;
+        let mut verified = false;
+        for selection in &self.selections {
+            if !skipped.contains(&selection.candidate.identity()) {
+                if downloaded == Some(&selection.candidate) {
+                    verified = true;
+                } else {
+                    available = true;
+                }
+            }
+        }
+        self.phase = if available {
+            Phase::Available
+        } else if verified {
+            Phase::Verified
+        } else if self.selections.is_empty() {
+            Phase::Current
+        } else {
+            Phase::Skipped
+        };
+        self.error = None;
+        self.progress = None;
+        self.download_sequence = None;
+        available
+    }
 }
 
 #[derive(Clone, Copy, Default, Serialize)]
@@ -74,12 +109,18 @@ struct Progress {
 
 #[derive(Serialize)]
 struct Offer {
+    kind: UpdateKind,
     sequence: u64,
-    identity: PairIdentity,
+    identity: String,
     versions: Versions,
     changes: Changes,
     downloaded: bool,
     skipped: bool,
+}
+
+fn artifact_identity(candidate: &Combination) -> Result<String, String> {
+    let descriptor = serde_json::to_vec(candidate).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(descriptor)))
 }
 
 #[derive(Serialize)]
@@ -93,7 +134,7 @@ pub(crate) struct Snapshot {
     settings: DownloadSettings,
     last_check: Option<String>,
     display: Display,
-    offer: Option<Offer>,
+    offers: Vec<Offer>,
     history: Vec<History>,
 }
 
@@ -125,44 +166,51 @@ impl Updates {
     }
 
     pub(super) fn status(&self, phase: Phase, error: Option<String>) {
+        self.status_for_download(phase, error, None);
+    }
+
+    fn status_for_download(&self, phase: Phase, error: Option<String>, sequence: Option<u64>) {
         if let Ok(mut display) = self.display.lock() {
             display.phase = phase;
             display.error = error;
             display.progress = None;
+            display.download_sequence = sequence;
         }
     }
 
-    fn set_selection(
+    fn set_selections(
         &self,
-        selection: Option<Arc<SelectedUpdate>>,
-        downloaded: bool,
-        skipped: bool,
-    ) -> Result<(), String> {
+        selections: Vec<Arc<SelectedUpdate>>,
+        downloaded: Option<&Combination>,
+        skipped: &[PairIdentity],
+    ) -> Result<bool, String> {
         let mut display = self
             .display
             .lock()
             .map_err(|_| "Cannot set the update status")?;
-        display.phase = match (&selection, downloaded, skipped) {
-            (None, _, _) => Phase::Current,
-            (Some(_), _, true) => Phase::Skipped,
-            (Some(_), false, false) => Phase::Available,
-            (Some(_), true, false) => Phase::Verified,
-        };
-        display.selection = selection;
-        display.error = None;
-        display.progress = None;
-        Ok(())
+        display.selections = selections;
+        Ok(display.refresh_offers(downloaded, skipped))
     }
 
-    fn selected(&self, sequence: u64, locale: Locale) -> Result<Arc<SelectedUpdate>, String> {
-        self.display
+    fn selected(
+        &self,
+        sequence: u64,
+        identity: &str,
+        locale: Locale,
+    ) -> Result<Arc<SelectedUpdate>, String> {
+        let selection = self
+            .display
             .lock()
             .map_err(|_| "Cannot read the update status")?
-            .selection
-            .as_ref()
-            .filter(|selection| selection.candidate.sequence == sequence)
+            .selections
+            .iter()
+            .find(|selection| selection.candidate.sequence == sequence)
             .cloned()
-            .ok_or_else(|| locale.text("updates.catalogChanged").into())
+            .ok_or_else(|| locale.text("updates.catalogChanged").to_string())?;
+        if artifact_identity(&selection.candidate)? != identity {
+            return Err(locale.text("updates.catalogChanged").into());
+        }
+        Ok(selection)
     }
 }
 
@@ -175,22 +223,28 @@ impl Manager {
             .lock()
             .map_err(|_| "Cannot read the update status")?
             .clone();
-        let offer = match display.selection.as_ref() {
-            None => None,
-            Some(update) => {
-                let identity = update.candidate.identity();
-                let skipped = journal::read_skipped(&self.profile)?.contains(&identity);
-                Some(Offer {
+        let mut offers = Vec::new();
+        if !display.selections.is_empty() {
+            let skipped = journal::read_skipped(&self.profile)?;
+            let downloaded = journal::read_downloaded(&self.profile)?;
+            for update in &display.selections {
+                let Ok(active) = update.validate_transition(&journal) else {
+                    continue;
+                };
+                let Some(kind) = update.candidate.update_kind(active) else {
+                    continue;
+                };
+                offers.push(Offer {
+                    kind,
                     sequence: update.candidate.sequence,
-                    identity,
+                    skipped: skipped.contains(&update.candidate.identity()),
+                    identity: artifact_identity(&update.candidate)?,
                     versions: Versions::from(&update.candidate),
                     changes: update.candidate.changes.clone(),
-                    downloaded: journal::read_downloaded(&self.profile)?.as_ref()
-                        == Some(&update.candidate),
-                    skipped,
-                })
+                    downloaded: downloaded.as_ref() == Some(&update.candidate),
+                });
             }
-        };
+        }
         Ok(Snapshot {
             locale,
             bodhi,
@@ -209,7 +263,7 @@ impl Manager {
             settings: self.settings.borrow().clone(),
             last_check: journal.last_check,
             display,
-            offer,
+            offers,
             history: journal.history,
         })
     }
@@ -277,31 +331,26 @@ impl Manager {
         let channel = load_catalog.await?;
         self.record_check()?;
         let identity = current.identity();
-        let selection = channel
-            .select(Some((current.sequence, &identity)))?
+        let selections = channel
+            .select_updates(&current)?
+            .into_iter()
             .map(|candidate| {
                 Arc::new(SelectedUpdate {
                     current_sequence: current.sequence,
-                    current: identity,
-                    candidate: candidate.combination.clone(),
+                    current: identity.clone(),
+                    candidate: candidate.clone(),
                 })
-            });
+            })
+            .collect();
         let downloaded = journal::read_downloaded(&self.profile)?;
-        let verified = selection
-            .as_ref()
-            .is_some_and(|update| downloaded.as_ref() == Some(&update.candidate));
-        let skipped_pairs = journal::read_skipped(&self.profile)?;
-        let skipped = selection
-            .as_ref()
-            .is_some_and(|update| skipped_pairs.contains(&update.candidate.identity()));
-        let notify = selection.is_some()
-            && !verified
-            && !skipped
+        let skipped = journal::read_skipped(&self.profile)?;
+        let available = self
+            .updates
+            .set_selections(selections, downloaded.as_ref(), &skipped)?;
+        Ok(available
             && journal
                 .remind_after
-                .is_none_or(|deadline| deadline <= Utc::now().timestamp());
-        self.updates.set_selection(selection, verified, skipped)?;
-        Ok(notify)
+                .is_none_or(|deadline| deadline <= Utc::now().timestamp()))
     }
 
     fn remind<R: Runtime>(&self, app: &AppHandle<R>) {
@@ -336,35 +385,40 @@ impl Manager {
             });
     }
 
-    async fn download(&self, sequence: u64, locale: Locale) -> Result<(), String> {
+    async fn download(&self, sequence: u64, identity: &str, locale: Locale) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
-        let update = self.updates.selected(sequence, locale)?;
+        if super::PlannedRestart::read(&self.profile)?.is_some() {
+            return Err(locale.text("updates.restartPending").into());
+        }
+        let update = self.updates.selected(sequence, identity, locale)?;
         let journal = Journal::read(&self.profile)?;
-        update.validate_transition(&journal)?;
+        let active = update.validate_transition(&journal)?;
         self.require_unskipped(&update, locale)?;
         if journal::read_downloaded(&self.profile)?.as_ref() == Some(&update.candidate) {
             return Ok(());
         }
-        self.updates.status(Phase::Downloading, None);
-        let result = self.prepare(&update.candidate).await.map(|_| ());
+        self.updates
+            .status_for_download(Phase::Downloading, None, Some(sequence));
+        let result = self.prepare_update(active, &update.candidate).await;
         let phase = if result.is_ok() {
             Phase::Verified
         } else {
             Phase::DownloadFailed
         };
         let error = result.as_ref().err().cloned();
-        if let Err(error) = self.record_download(&update, result) {
-            self.updates.status(Phase::SaveFailed, Some(error));
-        } else {
-            self.updates.status(phase, error);
-        }
+        let (phase, error) = match self.record_download(&update, result) {
+            Ok(()) => (phase, error),
+            Err(error) => (Phase::SaveFailed, Some(error)),
+        };
+        self.updates
+            .status_for_download(phase, error, Some(sequence));
         Ok(())
     }
 
     pub(super) async fn set_skipped(
         &self,
         sequence: u64,
-        identity: PairIdentity,
+        identity: String,
         skip: bool,
         locale: Locale,
     ) -> Result<(), String> {
@@ -379,13 +433,10 @@ impl Manager {
         {
             return Err(locale.text("updates.restartPending").into());
         }
-        let update = self.updates.selected(sequence, locale)?;
-        if identity != update.candidate.identity() {
-            return Err(locale.text("updates.catalogChanged").into());
-        }
+        let update = self.updates.selected(sequence, &identity, locale)?;
         update.validate_transition(&journal)?;
-        let downloaded =
-            journal::read_downloaded(&self.profile)?.as_ref() == Some(&update.candidate);
+        let identity = update.candidate.identity();
+        let downloaded = journal::read_downloaded(&self.profile)?;
         let mut skipped = journal::read_skipped(&self.profile)?;
         if skip && !skipped.contains(&identity) {
             skipped.push(identity);
@@ -394,7 +445,12 @@ impl Manager {
             skipped.retain(|pair| pair != &identity);
             journal::save_skipped(&self.profile, &skipped)?;
         }
-        self.updates.set_selection(Some(update), downloaded, skip)
+        self.updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot set the update status")?
+            .refresh_offers(downloaded.as_ref(), &skipped);
+        Ok(())
     }
 
     fn require_unskipped(&self, update: &SelectedUpdate, locale: Locale) -> Result<(), String> {
@@ -424,7 +480,12 @@ impl Manager {
         }
     }
 
-    async fn apply<R: Runtime>(&self, app: &AppHandle<R>, sequence: u64) -> Result<(), String> {
+    async fn apply<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        sequence: u64,
+        identity: Option<String>,
+    ) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
         if self.updates.restart_requested.load(Ordering::Acquire) {
             return Ok(());
@@ -437,8 +498,15 @@ impl Manager {
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let port = crate::web_service_port();
         let plan = super::PlannedRestart::read(&self.profile)?;
+        let matches_approval = |candidate: &Combination| -> Result<bool, String> {
+            Ok(candidate.sequence == sequence
+                && match &identity {
+                    Some(id) => artifact_identity(candidate)? == *id,
+                    None => true,
+                })
+        };
         let restart = if let Some(plan) = plan {
-            if plan.candidate.sequence != sequence
+            if !matches_approval(&plan.candidate)?
                 || journal.active.as_ref() == Some(&plan.candidate)
             {
                 return Err(locale.text("updates.catalogChanged").into());
@@ -446,26 +514,25 @@ impl Manager {
             self.updates.status(Phase::ShuttingDown, None);
             self.prepare_planned_restart(&runtime, port, plan).await
         } else if let Some(queued) = &journal.queued {
-            if queued.sequence != sequence {
+            if !matches_approval(queued)? {
                 return Err(locale.text("updates.catalogChanged").into());
             }
             self.prepare_restart(&runtime, port).await
         } else {
-            let update = self.updates.selected(sequence, locale)?;
-            update.validate_transition(&journal)?;
+            let identity = identity
+                .as_ref()
+                .ok_or_else(|| locale.text("updates.catalogChanged").to_string())?;
+            let update = self.updates.selected(sequence, identity, locale)?;
+            let active = update.validate_transition(&journal)?;
             self.require_unskipped(&update, locale)?;
             if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
                 return Err(locale.text("updates.downloadRequired").into());
             }
             self.updates.status(Phase::Saving, None);
-            if let Err(error) = self.reconfirm(&update, locale).await {
+            if let Err(error) = self.reconfirm(active, &update, locale).await {
                 self.updates.status(Phase::SaveFailed, Some(error));
                 return Ok(());
             }
-            let active = journal
-                .active
-                .as_ref()
-                .ok_or("Bamboo has no active component release")?;
             match self.use_planned_restart(&runtime, active).await {
                 Ok(true) => match self.plan_restart(&runtime, &update).await {
                     Ok(plan) => {
@@ -474,7 +541,11 @@ impl Manager {
                     }
                     Err(error) => Err(error),
                 },
-                Ok(false) => match self.queue(&update) {
+                Ok(false) => match self
+                    .reopen_downloaded_update(&update.candidate)
+                    .await
+                    .and_then(|_| self.queue(&update))
+                {
                     Ok(()) => self.prepare_restart(&runtime, port).await,
                     Err(error) => Err(error),
                 },
@@ -493,13 +564,14 @@ impl Manager {
         Ok(())
     }
 
-    async fn reconfirm(&self, update: &SelectedUpdate, locale: Locale) -> Result<(), String> {
+    async fn reconfirm(
+        &self,
+        active: &Combination,
+        update: &SelectedUpdate,
+        locale: Locale,
+    ) -> Result<(), String> {
         let channel = self.load_catalog().await?;
-        let current = Some((update.current_sequence, &update.current));
-        if channel
-            .select(current)?
-            .is_none_or(|candidate| candidate.combination != &update.candidate)
-        {
+        if !channel.select_updates(active)?.contains(&&update.candidate) {
             return Err(locale.text("updates.catalogChanged").into());
         }
         Ok(())
@@ -607,10 +679,11 @@ pub(crate) async fn download_component_update<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
     sequence: u64,
+    identity: String,
 ) -> Result<(), String> {
     authorize(&window, false)?;
     running_manager(&app)?
-        .download(sequence, i18n::active(&app))
+        .download(sequence, &identity, i18n::active(&app))
         .await
 }
 
@@ -619,7 +692,7 @@ pub(crate) async fn set_component_version_skipped<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
     sequence: u64,
-    identity: PairIdentity,
+    identity: String,
     skipped: bool,
 ) -> Result<(), String> {
     authorize(&window, false)?;
@@ -633,9 +706,10 @@ pub(crate) async fn apply_component_update<R: Runtime>(
     app: AppHandle<R>,
     window: WebviewWindow<R>,
     sequence: u64,
+    identity: Option<String>,
 ) -> Result<(), String> {
     authorize(&window, false)?;
-    running_manager(&app)?.apply(&app, sequence).await
+    running_manager(&app)?.apply(&app, sequence, identity).await
 }
 
 fn running_manager<R: Runtime>(app: &AppHandle<R>) -> Result<tauri::State<'_, Manager>, String> {
@@ -725,11 +799,11 @@ mod tests {
         assert!(snapshot.last_check.is_some());
         assert!(matches!(snapshot.display.phase, Phase::Available));
         assert!(snapshot.display.progress.is_none() && snapshot.queued.is_none());
-        let offer = snapshot.offer.unwrap();
+        let offer = snapshot.offers.into_iter().next().unwrap();
         assert!(!offer.downloaded);
         let update = manager
             .updates
-            .selected(offer.sequence, Locale::English)
+            .selected(offer.sequence, &offer.identity, Locale::English)
             .unwrap();
         assert!(manager.queue(&update).is_err());
 
@@ -746,8 +820,87 @@ mod tests {
             .unwrap());
         let verified = reopened.snapshot("0.0.0".into(), Locale::English).unwrap();
         assert!(matches!(verified.display.phase, Phase::Verified));
-        assert!(verified.offer.unwrap().downloaded);
+        assert!(verified.offers.into_iter().next().unwrap().downloaded);
         assert!(verified.queued.is_none());
+    }
+
+    #[tokio::test]
+    async fn either_offer_can_be_staged_and_queued_without_switching_its_peer() {
+        use crate::component_channel::tests::{
+            fixture_channel_with_independent_updates, initial_combination,
+        };
+
+        for kind in [UpdateKind::Bamboo, UpdateKind::Lotus] {
+            let state = tempfile::tempdir().unwrap();
+            let profile = crate::bamboo_profile::Profile::open(state.path()).unwrap();
+            let original = initial_combination().await;
+            Journal {
+                active: Some(original.clone()),
+                ..Journal::default()
+            }
+            .save(&profile)
+            .unwrap();
+            let locale = Locale::English;
+            let manager = Manager::new(profile.clone()).unwrap();
+            assert!(manager
+                .detect(async { Ok(fixture_channel_with_independent_updates()) })
+                .await
+                .unwrap());
+            let offers = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+            assert_eq!(offers.len(), 2);
+            let chosen = offers.iter().find(|offer| offer.kind == kind).unwrap();
+            let peer = offers.iter().find(|offer| offer.kind != kind).unwrap();
+            assert!(manager
+                .download(chosen.sequence, &peer.identity, locale)
+                .await
+                .is_err());
+            manager
+                .set_skipped(peer.sequence, peer.identity.clone(), true, locale)
+                .await
+                .unwrap();
+            let update = manager
+                .updates
+                .selected(chosen.sequence, &chosen.identity, locale)
+                .unwrap();
+            let mut altered = update.candidate.clone();
+            altered.lotus.tarball.size_bytes += 1;
+            assert_eq!(altered.identity(), update.candidate.identity());
+            assert!(manager
+                .updates
+                .selected(
+                    chosen.sequence,
+                    &artifact_identity(&altered).unwrap(),
+                    locale
+                )
+                .is_err());
+            match kind {
+                UpdateKind::Bamboo => assert_eq!(update.candidate.lotus, original.lotus),
+                UpdateKind::Lotus => assert_eq!(update.candidate.bamboo, original.bamboo),
+                UpdateKind::Pair => unreachable!(),
+            }
+            manager.record_download(&update, Ok(())).unwrap();
+            let staged = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+            assert!(staged
+                .iter()
+                .any(|offer| offer.kind == kind && offer.downloaded && !offer.skipped));
+            assert!(staged
+                .iter()
+                .any(|offer| offer.kind != kind && !offer.downloaded && offer.skipped));
+            manager.queue(&update).unwrap();
+            let _writer = profile.writer().unwrap();
+            manager.begin(&update.candidate).unwrap();
+            manager.finish(&update.candidate, Ok(())).unwrap();
+            assert!(update
+                .validate_transition(&Journal::read(&profile).unwrap())
+                .is_err());
+            manager
+                .detect(async { Ok(fixture_channel_with_independent_updates()) })
+                .await
+                .unwrap();
+            let remaining = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+            assert_eq!(remaining.len(), 1);
+            assert!(remaining[0].kind != kind && remaining[0].kind != UpdateKind::Pair);
+        }
     }
 
     #[tokio::test]
@@ -774,11 +927,18 @@ mod tests {
         let offer = manager
             .snapshot("0.0.0".into(), locale)
             .unwrap()
-            .offer
+            .offers
+            .into_iter()
+            .next()
             .unwrap();
 
         assert!(manager
-            .set_skipped(offer.sequence, original.identity(), true, locale)
+            .set_skipped(
+                offer.sequence,
+                artifact_identity(&original).unwrap(),
+                true,
+                locale
+            )
             .await
             .is_err());
         assert!(journal::read_skipped(&profile).unwrap().is_empty());
@@ -790,7 +950,12 @@ mod tests {
         }
         assert_eq!(
             journal::read_skipped(&profile).unwrap(),
-            [offer.identity.clone()]
+            [manager
+                .updates
+                .selected(offer.sequence, &offer.identity, locale)
+                .unwrap()
+                .candidate
+                .identity()]
         );
         let reopened = Manager::new(profile.clone()).unwrap();
         assert_eq!(reopened.choose().await.unwrap(), original);
@@ -800,9 +965,12 @@ mod tests {
             .unwrap());
         let skipped = reopened.snapshot("0.0.0".into(), locale).unwrap();
         assert!(matches!(skipped.display.phase, Phase::Skipped));
-        assert!(skipped.offer.unwrap().skipped);
+        assert!(skipped.offers.into_iter().next().unwrap().skipped);
         assert_eq!(
-            reopened.download(offer.sequence, locale).await.unwrap_err(),
+            reopened
+                .download(offer.sequence, &offer.identity, locale)
+                .await
+                .unwrap_err(),
             locale.text("updates.undoSkipRequired")
         );
         assert!(journal::read_downloaded(&profile).unwrap().is_none());
@@ -814,7 +982,9 @@ mod tests {
         let later = reopened
             .snapshot("0.0.0".into(), locale)
             .unwrap()
-            .offer
+            .offers
+            .into_iter()
+            .next()
             .unwrap();
         assert!(!later.skipped);
         assert!(later.sequence > offer.sequence);
@@ -835,7 +1005,9 @@ mod tests {
         let still_latest = reopened
             .snapshot("0.0.0".into(), locale)
             .unwrap()
-            .offer
+            .offers
+            .into_iter()
+            .next()
             .unwrap();
         assert!(still_latest.skipped);
         assert_eq!(still_latest.sequence, later.sequence);
@@ -881,9 +1053,14 @@ mod tests {
         let offer = manager
             .snapshot("0.0.0".into(), locale)
             .unwrap()
-            .offer
+            .offers
+            .into_iter()
+            .next()
             .unwrap();
-        let update = manager.updates.selected(offer.sequence, locale).unwrap();
+        let update = manager
+            .updates
+            .selected(offer.sequence, &offer.identity, locale)
+            .unwrap();
         manager.record_download(&update, Ok(())).unwrap();
         let journal_file = profile.state_dir.join("components-v1.json");
         let before = std::fs::read(&journal_file).unwrap();
@@ -896,7 +1073,9 @@ mod tests {
         let skipped = manager
             .snapshot("0.0.0".into(), locale)
             .unwrap()
-            .offer
+            .offers
+            .into_iter()
+            .next()
             .unwrap();
         assert!(skipped.downloaded && skipped.skipped);
         manager
@@ -905,7 +1084,7 @@ mod tests {
             .unwrap();
         let resumed = manager.snapshot("0.0.0".into(), locale).unwrap();
         assert!(matches!(resumed.display.phase, Phase::Verified));
-        assert!(resumed.offer.unwrap().downloaded);
+        assert!(resumed.offers.into_iter().next().unwrap().downloaded);
         assert_eq!(std::fs::read(journal_file).unwrap(), before);
         assert_eq!(
             journal::read_downloaded(&profile).unwrap().unwrap(),

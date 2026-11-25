@@ -109,6 +109,7 @@
   "updates.retryRestart": "Retry restart",
   "updates.remindLater": "Remind me later",
   "updates.retry": "Retry startup",
+  "updates.selectOffer": "Update to review",
   "updates.skipVersion": "Skip this version",
   "updates.undoSkip": "Undo skip",
   "updates.undoSkipRequired": "Undo the skip before downloading or applying this version.",

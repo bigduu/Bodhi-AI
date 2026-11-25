@@ -67,6 +67,19 @@ impl Manager {
 
     async fn prepare(&self, pair: &Combination) -> Result<Prepared, String> {
         check_component_floor(&self.profile, &pair.bamboo.version)?;
+        let (kernel, browser) = self.prepare_bamboo(pair).await?;
+        let frontend = self.prepare_lotus(pair).await?;
+        Ok(Prepared {
+            kernel,
+            frontend,
+            browser,
+        })
+    }
+
+    async fn prepare_bamboo(
+        &self,
+        pair: &Combination,
+    ) -> Result<(VerifiedKernel, Option<[PathBuf; 3]>), String> {
         let candidate = pair.candidate()?;
         let kernel = component_kernel::prepare_kernel(
             &self.profile.data,
@@ -75,17 +88,6 @@ impl Manager {
             |source, received, total| {
                 self.updates
                     .progress(&candidate.artifact.asset_name, source, received, total)
-            },
-        )
-        .await?;
-        let lotus_archive = format!("lotus-next-{}.tgz", pair.lotus.version);
-        let frontend = crate::frontend::prepare_release(
-            &self.profile.data,
-            &pair.lotus,
-            self.settings.subscribe(),
-            |source, received, total| {
-                self.updates
-                    .progress(&lotus_archive, source, received, total)
             },
         )
         .await?;
@@ -105,11 +107,32 @@ impl Manager {
         } else {
             None
         };
-        Ok(Prepared {
-            kernel,
-            frontend,
-            browser,
-        })
+        Ok((kernel, browser))
+    }
+
+    async fn prepare_lotus(&self, pair: &Combination) -> Result<VerifiedFrontend, String> {
+        let lotus_archive = format!("lotus-next-{}.tgz", pair.lotus.version);
+        crate::frontend::prepare_release(
+            &self.profile.data,
+            &pair.lotus,
+            self.settings.subscribe(),
+            |source, received, total| {
+                self.updates
+                    .progress(&lotus_archive, source, received, total)
+            },
+        )
+        .await
+    }
+
+    async fn prepare_update(&self, active: &Combination, pair: &Combination) -> Result<(), String> {
+        check_component_floor(&self.profile, &pair.bamboo.version)?;
+        if pair.bamboo != active.bamboo {
+            self.prepare_bamboo(pair).await?;
+        }
+        if pair.lotus != active.lotus {
+            self.prepare_lotus(pair).await?;
+        }
+        self.reopen_prepared(pair).await.map(|_| ())
     }
 
     async fn reopen_prepared(&self, pair: &Combination) -> Result<Prepared, String> {
@@ -128,6 +151,19 @@ impl Manager {
         })
         .await
         .map_err(|e| e.to_string())?
+    }
+
+    async fn reopen_downloaded_update(&self, pair: &Combination) -> Result<Prepared, String> {
+        match self.reopen_prepared(pair).await {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => {
+                let _lock = self.profile.update_lock()?;
+                journal::clear_downloaded(&self.profile, pair)?;
+                Err(format!(
+                    "Cannot verify the cached update: {error}. Download this update again."
+                ))
+            }
+        }
     }
 
     fn begin(&self, pair: &Combination) -> Result<(), String> {
@@ -311,18 +347,18 @@ struct SelectedUpdate {
 }
 
 impl SelectedUpdate {
-    fn validate_transition(&self, journal: &Journal) -> Result<(), String> {
-        if journal.trial.is_none()
-            && journal.queued.is_none()
-            && journal.active.as_ref().is_some_and(|active| {
-                active.sequence == self.current_sequence
+    fn validate_transition<'a>(&self, journal: &'a Journal) -> Result<&'a Combination, String> {
+        journal
+            .active
+            .as_ref()
+            .filter(|active| {
+                journal.trial.is_none()
+                    && journal.queued.is_none()
+                    && active.sequence == self.current_sequence
                     && active.identity() == self.current
                     && self.candidate.sequence > active.sequence
             })
-        {
-            return Ok(());
-        }
-        Err("This component update is no longer applicable".into())
+            .ok_or_else(|| "This component update is no longer applicable".into())
     }
 }
 

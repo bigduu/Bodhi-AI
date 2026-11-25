@@ -23,6 +23,42 @@ pub(crate) fn fixture_channel_with_lotus_only_update() -> VerifiedChannel {
     parse(&serde_json::to_vec(&catalog).unwrap()).unwrap()
 }
 
+pub(crate) fn fixture_channel_with_independent_updates() -> VerifiedChannel {
+    let mut channel = parse(CATALOG).unwrap();
+    let initial = &channel.0.combinations[0];
+    let pair = &channel.0.combinations[1];
+    let bamboo = Combination {
+        sequence: 3,
+        bootstrap: false,
+        lotus: initial.lotus.clone(),
+        ..pair.clone()
+    };
+    let lotus = Combination {
+        sequence: 4,
+        bootstrap: false,
+        bamboo: initial.bamboo.clone(),
+        ..pair.clone()
+    };
+    let after_either = Combination {
+        sequence: 5,
+        bootstrap: false,
+        accepts: vec![bamboo.identity(), lotus.identity()],
+        ..pair.clone()
+    };
+    let mut unapproved = Combination {
+        sequence: 6,
+        accepts: Vec::new(),
+        ..bamboo.clone()
+    };
+    unapproved.bamboo.version = "2026.11.40".into();
+    unapproved.bamboo.manifest.sha256 = "cd".repeat(32);
+    channel
+        .0
+        .combinations
+        .extend([bamboo, lotus, after_either, unapproved]);
+    channel
+}
+
 pub(crate) async fn lotus_fixtures() -> [LotusRelease; 2] {
     let channel = fixture_channel().await;
     [
@@ -76,6 +112,88 @@ async fn selects_exact_native_asset_and_only_an_approved_transition() {
     assert!(channel
         .select_for_target(None, "x86_64-apple-darwin")
         .is_err());
+}
+
+#[test]
+fn independent_selection_keeps_the_approved_peer_and_works_in_either_order() {
+    let channel = fixture_channel_with_independent_updates();
+    let current = &channel.0.combinations[0];
+    let options = channel.select_updates(current).unwrap();
+    assert_eq!(options.len(), 2);
+    let bamboo = options[0];
+    let lotus = options[1];
+    assert_eq!(bamboo.sequence, 3);
+    assert_eq!(bamboo.update_kind(current), Some(UpdateKind::Bamboo));
+    assert_eq!(bamboo.lotus, current.lotus);
+    assert_eq!(lotus.sequence, 4);
+    assert_eq!(lotus.update_kind(current), Some(UpdateKind::Lotus));
+    assert_eq!(lotus.bamboo, current.bamboo);
+
+    let after_either = &channel.0.combinations[4];
+    assert_eq!(channel.select_updates(bamboo).unwrap(), vec![after_either]);
+    assert_eq!(after_either.update_kind(bamboo), Some(UpdateKind::Lotus));
+    assert_eq!(channel.select_updates(lotus).unwrap(), vec![after_either]);
+    assert_eq!(after_either.update_kind(lotus), Some(UpdateKind::Bamboo));
+    assert!(channel.select_updates(after_either).unwrap().is_empty());
+}
+
+#[test]
+fn independent_selection_chooses_the_newest_approved_record_per_component() {
+    let mut channel = fixture_channel_with_independent_updates();
+    let mut newer_bamboo = channel.0.combinations[5].clone();
+    newer_bamboo.sequence = 7;
+    newer_bamboo.accepts = vec![channel.0.combinations[0].identity()];
+    channel.0.combinations.push(newer_bamboo);
+
+    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    let sequences: Vec<_> = options.iter().map(|option| option.sequence).collect();
+    assert_eq!(sequences, vec![7, 4]);
+}
+
+#[test]
+fn combined_update_is_a_fallback_when_neither_component_has_its_own_edge() {
+    let channel = parse(CATALOG).unwrap();
+    let current = &channel.0.combinations[0];
+    let pair = &channel.0.combinations[1];
+    assert_eq!(channel.select_updates(current).unwrap(), vec![pair]);
+    assert_eq!(pair.update_kind(current), Some(UpdateKind::Pair));
+
+    let mut current_at_same_sequence = current.clone();
+    current_at_same_sequence.sequence = pair.sequence;
+    assert!(channel
+        .select_updates(&current_at_same_sequence)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn update_kind_checks_full_descriptors_but_selection_requires_an_identity_change() {
+    let mut channel = parse(CATALOG).unwrap();
+    let current = channel.0.combinations[0].clone();
+    let mut changed = current.clone();
+    changed.sequence = 3;
+    changed.accepts = vec![current.identity()];
+    changed.bamboo.browser_host.sha256 = "de".repeat(32);
+
+    assert_eq!(current.update_kind(&current), None);
+    assert_eq!(changed.identity(), current.identity());
+    assert_eq!(changed.update_kind(&current), Some(UpdateKind::Bamboo));
+    channel.0.combinations.push(changed);
+    assert_eq!(
+        channel.select_updates(&current).unwrap(),
+        vec![&channel.0.combinations[1]]
+    );
+}
+
+#[test]
+fn update_kinds_have_stable_lowercase_labels() {
+    for (kind, label) in [
+        (UpdateKind::Bamboo, "bamboo"),
+        (UpdateKind::Lotus, "lotus"),
+        (UpdateKind::Pair, "pair"),
+    ] {
+        assert_eq!(serde_json::to_value(kind).unwrap(), label);
+    }
 }
 
 #[test]

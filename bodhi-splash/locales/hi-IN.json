@@ -109,6 +109,7 @@
   "updates.retryRestart": "फिर शुरू करने की कोशिश करें",
   "updates.remindLater": "बाद में याद दिलाएँ",
   "updates.retry": "फिर से शुरू करें",
+  "updates.selectOffer": "देखने के लिए अपडेट",
   "updates.skipVersion": "यह संस्करण छोड़ें",
   "updates.undoSkip": "संस्करण को फिर दिखाएँ",
   "updates.undoSkipRequired": "इस संस्करण को डाउनलोड करने या लागू करने से पहले इसे फिर दिखाएँ।",
