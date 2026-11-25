@@ -187,7 +187,7 @@ pub(crate) async fn reconfirm(
     }
     let matches = match selected.update_kind(current) {
         Some(UpdateKind::Bamboo) => {
-            bamboo_release::load_version(settings, &selected.bamboo.version)
+            bamboo_release::load_version(settings, &selected.bamboo)
                 .await?
                 .0
                 == selected.bamboo
