@@ -134,7 +134,7 @@ pub(crate) fn open_state_file(path: &Path, exclusive: bool) -> io::Result<File> 
     Ok(file)
 }
 
-fn sync_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     File::open(path)?.sync_all()?;
     #[cfg(windows)]

@@ -11,6 +11,32 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReleaseCheckError {
+    #[error("{0}")]
+    Unavailable(String),
+    #[error("{0}")]
+    Rejected(String),
+}
+
+impl From<String> for ReleaseCheckError {
+    fn from(message: String) -> Self {
+        Self::Rejected(message)
+    }
+}
+
+impl From<&str> for ReleaseCheckError {
+    fn from(message: &str) -> Self {
+        Self::Rejected(message.into())
+    }
+}
+
+impl From<ReleaseCheckError> for String {
+    fn from(error: ReleaseCheckError) -> Self {
+        error.to_string()
+    }
+}
+
 pub const STABLE_CATALOG_URL: &str =
     "https://raw.githubusercontent.com/bigduu/Bodhi-AI/components-stable/channel-v1.json";
 const MAX_CHANNEL_BYTES: usize = 1024 * 1024;
@@ -249,11 +275,13 @@ fn native_target_index(target: &str) -> Result<usize, String> {
 
 /// The catalog comes from the official repository over HTTPS. Download
 /// mirrors apply to archives whose size and digest the catalog already fixes.
-pub(crate) async fn load_stable(settings: &DownloadSettings) -> Result<VerifiedChannel, String> {
+pub(crate) async fn load_stable(
+    settings: &DownloadSettings,
+) -> Result<VerifiedChannel, ReleaseCheckError> {
     let client = producer_client(settings, "Bodhi bootstrap catalog")?;
     let url = Url::parse(STABLE_CATALOG_URL).map_err(|error| error.to_string())?;
     let bytes = read_limited(&client, url, MAX_CHANNEL_BYTES, "The component catalog").await?;
-    parse(&bytes)
+    Ok(parse(&bytes)?)
 }
 
 fn producer_client(settings: &DownloadSettings, label: &str) -> Result<Client, String> {
@@ -272,23 +300,24 @@ async fn read_limited(
     url: Url,
     limit: usize,
     label: &str,
-) -> Result<Vec<u8>, String> {
-    let mut response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("{label}: {}", error.without_url()))?;
+) -> Result<Vec<u8>, ReleaseCheckError> {
+    let transport_error = |error: reqwest::Error| {
+        let unavailable = error.is_request() || error.is_timeout() || error.is_body();
+        let message = format!("{label}: {}", error.without_url());
+        if unavailable {
+            ReleaseCheckError::Unavailable(message)
+        } else {
+            ReleaseCheckError::Rejected(message)
+        }
+    };
+    let mut response = client.get(url).send().await.map_err(transport_error)?;
     if response.status() != StatusCode::OK {
-        return Err(format!("{label} returned HTTP {}", response.status()));
+        return Err(format!("{label} returned HTTP {}", response.status()).into());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("{label}: {}", error.without_url()))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
         if chunk.len() > limit - bytes.len() {
-            return Err(format!("{label} exceeds its size limit"));
+            return Err(format!("{label} exceeds its size limit").into());
         }
         bytes.extend_from_slice(&chunk);
     }

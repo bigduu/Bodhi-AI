@@ -1,9 +1,12 @@
 use super::{
     journal::{self, History, Journal, Versions},
+    planned_restart::RestartMode,
     Manager, SelectedUpdate,
 };
 use crate::component_channel::producer::{self, Discovery};
-use crate::component_channel::{Changes, Combination, PairIdentity, UpdateKind, VerifiedChannel};
+use crate::component_channel::{
+    Changes, Combination, PairIdentity, ReleaseCheckError, UpdateKind, VerifiedChannel,
+};
 use crate::component_download::{while_selected, DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
 use crate::sidecar::UpdateShutdownError;
@@ -21,6 +24,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 pub(crate) const MENU_ID: &str = "component-updates";
 const PAGE: &str = "component-updates.html";
 const REMINDER_DELAY: Duration = Duration::from_secs(30 * 60);
+const IMMEDIATE_RELEASE_CHECK: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub(super) struct Updates {
@@ -128,6 +132,7 @@ struct ForceOffer {
     sequence: u64,
     identity: String,
     shutdown_started: bool,
+    checkpointed: bool,
 }
 
 #[derive(Serialize)]
@@ -297,6 +302,7 @@ impl Manager {
                     force_update = Some(ForceOffer {
                         sequence: update.candidate.sequence,
                         identity: identity.clone(),
+                        checkpointed: false,
                         shutdown_started: self
                             .updates
                             .force_shutdown_started
@@ -734,11 +740,14 @@ impl Manager {
             }
             self.updates.status(Phase::Saving, None);
             if let Err(error) = self.reconfirm_selected(active, &update, locale).await {
-                self.updates.status(Phase::SaveFailed, Some(error));
+                self.updates.status(Phase::SaveFailed, Some(error.into()));
                 return Ok(());
             }
             match self.use_planned_restart(&runtime, active).await {
-                Ok(true) => match self.plan_restart(&runtime, &update).await {
+                Ok(true) => match self
+                    .plan_restart(&runtime, &update, RestartMode::Planned)
+                    .await
+                {
                     Ok(plan) => {
                         self.updates.status(Phase::ShuttingDown, None);
                         self.prepare_planned_restart(&runtime, port, plan).await
@@ -891,20 +900,37 @@ impl Manager {
         app: &AppHandle<R>,
         sequence: u64,
         identity: &str,
+        checkpointed: bool,
     ) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
         let locale = i18n::active(app);
         let (update, journal) = self.force_target(sequence, identity, locale)?;
         let active = update.validate_transition(&journal)?;
         self.updates.status(Phase::Saving, None);
+        if let Err(error) =
+            allow_cached_immediate_update(self.reconfirm_selected(active, &update, locale)).await
+        {
+            self.updates.status(Phase::SaveFailed, Some(error));
+            return Ok(());
+        }
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let result = async {
-            self.reconfirm_selected(active, &update, locale).await?;
+            let port = crate::web_service_port();
+            if runtime.immediate_update_available()? != checkpointed {
+                return Err(locale.text("updates.catalogChanged").into());
+            }
+            if checkpointed {
+                let plan = self
+                    .plan_restart(&runtime, &update, RestartMode::Immediate)
+                    .await?;
+                self.updates.status(Phase::ShuttingDown, None);
+                return self.prepare_planned_restart(&runtime, port, plan).await;
+            }
             self.reopen_downloaded_update(&update.candidate).await?;
             self.queue_after_force_shutdown(
                 &update,
                 runtime.force_stop_for_update(Duration::from_secs(10)),
-                crate::web_service_port(),
+                port,
             )
             .await
         }
@@ -946,8 +972,8 @@ impl Manager {
         active: &Combination,
         update: &SelectedUpdate,
         locale: Locale,
-        load_catalog: impl Future<Output = Result<VerifiedChannel, String>>,
-    ) -> Result<(), String> {
+        load_catalog: impl Future<Output = Result<VerifiedChannel, ReleaseCheckError>>,
+    ) -> Result<(), ReleaseCheckError> {
         let channel = load_catalog.await?;
         let journal = Journal::read(&self.profile)?;
         if !channel
@@ -964,7 +990,7 @@ impl Manager {
         active: &Combination,
         update: &SelectedUpdate,
         locale: Locale,
-    ) -> Result<(), String> {
+    ) -> Result<(), ReleaseCheckError> {
         if !update.candidate.producer_release {
             return self
                 .reconfirm(active, update, locale, self.load_catalog())
@@ -977,6 +1003,25 @@ impl Manager {
             if let Some(result) = while_selected(&mut settings, &selected, work).await {
                 return result;
             }
+        }
+    }
+}
+
+async fn allow_cached_immediate_update(
+    reconfirm: impl Future<Output = Result<(), ReleaseCheckError>>,
+) -> Result<(), String> {
+    match tokio::time::timeout(IMMEDIATE_RELEASE_CHECK, reconfirm).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(ReleaseCheckError::Rejected(error))) => Err(error),
+        Ok(Err(ReleaseCheckError::Unavailable(error))) => {
+            log::info!("Applying the locally verified component update: {error}");
+            Ok(())
+        }
+        Err(_) => {
+            log::info!(
+                "Applying the locally verified component update after the release check timed out"
+            );
+            Ok(())
         }
     }
 }
@@ -1097,9 +1142,20 @@ pub(crate) fn component_snapshot<R: Runtime>(
     window: WebviewWindow<R>,
 ) -> Result<Snapshot, String> {
     authorize(&window, true)?;
-    app.try_state::<Manager>()
+    let mut snapshot = app
+        .try_state::<Manager>()
         .ok_or("The component updater is unavailable")?
-        .snapshot(app.package_info().version.to_string(), i18n::active(&app))
+        .snapshot(app.package_info().version.to_string(), i18n::active(&app))?;
+    if let Some(offer) = &mut snapshot.force_update {
+        offer.checkpointed =
+            app.try_state::<crate::sidecar::SidecarState>()
+                .is_some_and(|runtime| {
+                    runtime
+                        .immediate_update_available()
+                        .is_ok_and(|value| value)
+                });
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1158,10 +1214,11 @@ pub(crate) async fn force_component_update<R: Runtime>(
     window: WebviewWindow<R>,
     sequence: u64,
     identity: String,
+    checkpointed: bool,
 ) -> Result<(), String> {
     authorize(&window, false)?;
     running_manager(&app)?
-        .force_apply(&app, sequence, &identity)
+        .force_apply(&app, sequence, &identity, checkpointed)
         .await
 }
 
@@ -1323,6 +1380,24 @@ mod tests {
         );
         assert!(manual.detect(async { Ok(channel) }).await.is_ok());
         assert!(Journal::read(&profile).unwrap().last_check.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn immediate_release_check_allows_transport_failure_and_bounds_unresponsive_sources() {
+        let unavailable = ReleaseCheckError::Unavailable("cannot reach producer".into());
+        allow_cached_immediate_update(async { Err(unavailable) })
+            .await
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        allow_cached_immediate_update(std::future::pending())
+            .await
+            .unwrap();
+        assert_eq!(start.elapsed(), IMMEDIATE_RELEASE_CHECK);
+        let rejected = ReleaseCheckError::Rejected("the selected release was withdrawn".into());
+        assert_eq!(
+            allow_cached_immediate_update(async { Err(rejected) }).await,
+            Err("the selected release was withdrawn".into())
+        );
     }
 
     #[tokio::test]
@@ -1639,12 +1714,32 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(manager
-            .reconfirm(&original, &selected, locale, async {
-                Ok(fixture_channel().await)
-            })
+        assert!(allow_cached_immediate_update(manager.reconfirm(
+            &original,
+            &selected,
+            locale,
+            async { Ok(fixture_channel().await) }
+        ))
+        .await
+        .is_err());
+
+        let proxy = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
-            .is_err());
+            .unwrap();
+        manager.settings.send_replace(DownloadSettings {
+            proxy_url: Some(format!("http://{}", proxy.local_addr().unwrap())),
+            ..DownloadSettings::default()
+        });
+        let disconnect = tokio::spawn(async move { drop(proxy.accept().await.unwrap()) });
+        let unavailable = async {
+            let result = manager
+                .reconfirm(&original, &selected, locale, manager.load_catalog())
+                .await;
+            assert!(matches!(&result, Err(ReleaseCheckError::Unavailable(_))));
+            result
+        };
+        allow_cached_immediate_update(unavailable).await.unwrap();
+        disconnect.await.unwrap();
 
         manager.queue(&selected).unwrap();
         let queued = Journal::read(&profile).unwrap().queued.unwrap();

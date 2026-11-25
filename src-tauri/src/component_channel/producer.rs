@@ -1,4 +1,6 @@
-use super::{bamboo_release, lotus_release, Combination, LotusRelease, UpdateKind};
+use super::{
+    bamboo_release, lotus_release, Combination, LotusRelease, ReleaseCheckError, UpdateKind,
+};
 use crate::component_download::DownloadSettings;
 use semver::Version;
 use std::cmp::Ordering;
@@ -34,7 +36,7 @@ pub(crate) async fn discover(
         pair.changes.bamboo = changes;
         Ok(Some(pair))
     });
-    let lotus = lotus.and_then(|found| {
+    let lotus = lotus.map_err(String::from).and_then(|found| {
         if rolled_back_lotus.is_some_and(|recorded| {
             recorded.version == found.release.version && recorded != &found.release
         }) {
@@ -182,7 +184,7 @@ pub(crate) async fn reconfirm(
     settings: &DownloadSettings,
     current: &Combination,
     selected: &Combination,
-) -> Result<(), String> {
+) -> Result<(), ReleaseCheckError> {
     if !selected.producer_release
         || !selected.accepts_update_from(current.sequence, &current.identity())
         || !eligible(current, selected, None)
@@ -191,7 +193,7 @@ pub(crate) async fn reconfirm(
     }
     let matches = match selected.update_kind(current) {
         Some(UpdateKind::Bamboo) => {
-            bamboo_release::load_version(settings, &selected.bamboo.version)
+            bamboo_release::load_version(settings, &selected.bamboo)
                 .await?
                 .0
                 == selected.bamboo

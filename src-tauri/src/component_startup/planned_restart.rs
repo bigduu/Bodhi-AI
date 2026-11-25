@@ -1,11 +1,11 @@
 //! Durable desktop intent and verification of the old Bamboo process's receipt.
 
 use super::{journal, Combination, Journal, Manager, PairIdentity, SelectedUpdate};
-use crate::bamboo_profile::{is_link, Profile};
+use crate::bamboo_profile::{is_link, sync_directory, Profile};
 use crate::component_kernel;
 use crate::sidecar::{
     planned_update::{self, Action, Status},
-    SidecarState,
+    SidecarState, UpdateShutdownError,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -20,6 +20,27 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 const RESPONSE: Duration = Duration::from_secs(5);
 const MAX_INTENT: u64 = 4 * 1024 * 1024;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RestartMode {
+    #[default]
+    Planned,
+    Immediate,
+}
+
+impl RestartMode {
+    fn is_planned(&self) -> bool {
+        matches!(self, Self::Planned)
+    }
+
+    fn prepare_action(self) -> Action {
+        match self {
+            Self::Planned => Action::Prepare,
+            Self::Immediate => Action::PrepareImmediate,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PlannedRestart {
@@ -28,6 +49,8 @@ pub(super) struct PlannedRestart {
     current_sequence: u64,
     current: PairIdentity,
     owner: String,
+    #[serde(default, skip_serializing_if = "RestartMode::is_planned")]
+    mode: RestartMode,
     commit_requested: bool,
     exit_confirmed: bool,
 }
@@ -94,6 +117,12 @@ impl PlannedRestart {
         {
             return Err("Bamboo update readiness receipt does not match this restart".into());
         }
+        if matches!(self.mode, RestartMode::Immediate) {
+            // The receipt can be visible while Bamboo is still syncing its directory.
+            sync_directory(&root).map_err(|error| {
+                format!("Cannot make the Bamboo update readiness receipt durable: {error}")
+            })?;
+        }
         Ok(true)
     }
 }
@@ -126,10 +155,19 @@ mod tests {
             current_sequence: original.sequence,
             current: original.identity(),
             owner: "shutdown-fixture".into(),
+            mode: RestartMode::default(),
             commit_requested: false,
             exit_confirmed: false,
         };
         plan.save(&profile).unwrap();
+        let saved = fs::read(profile.state_dir.join(FILE)).unwrap();
+        let legacy: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+        assert!(legacy.get("mode").is_none());
+        assert!(PlannedRestart::read(&profile)
+            .unwrap()
+            .unwrap()
+            .mode
+            .is_planned());
         assert!(manager.arm_authorized_restart().unwrap().is_none());
         assert_eq!(manager.choose().await.unwrap(), original);
 
@@ -251,6 +289,16 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BODHI_PLANNED_UPDATE_BAMBOO set to an independently built native Bamboo"]
     async fn native_bodhi_control_replaces_two_owned_bamboo_processes() {
+        native_bodhi_restart(RestartMode::Planned).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires BODHI_PLANNED_UPDATE_BAMBOO with immediate-update-v1 support"]
+    async fn native_bodhi_control_applies_an_immediate_checkpointed_update() {
+        native_bodhi_restart(RestartMode::Immediate).await;
+    }
+
+    async fn native_bodhi_restart(mode: RestartMode) {
         let _ = env_logger::builder().is_test(true).try_init();
         let binary = PathBuf::from(std::env::var_os("BODHI_PLANNED_UPDATE_BAMBOO").unwrap());
         assert!(planned_update::executable_supports(&binary).await.unwrap());
@@ -291,8 +339,16 @@ mod tests {
             .unwrap()
             .combination
             .clone();
-        stage_pair(&profile, &mut original, version, &executable);
-        stage_pair(&profile, &mut target, version, &executable);
+        // The component journal requires release versions. For a source-built
+        // binary use its real digest and retain the test catalog's version.
+        // Both launched processes still have to report the binary's version.
+        let catalog_version = if version == "0.0.0" {
+            original.bamboo.version.clone()
+        } else {
+            version.into()
+        };
+        stage_pair(&profile, &mut original, &catalog_version, &executable);
+        stage_pair(&profile, &mut target, &catalog_version, &executable);
         target.bamboo = original.bamboo.clone();
         assert_ne!(target.lotus.manifest_sha256, original.lotus.manifest_sha256);
         fs::write(profile.data.join("config.json"), b"{}").unwrap();
@@ -362,6 +418,9 @@ mod tests {
             .use_planned_restart(&old.0, &original)
             .await
             .unwrap());
+        if matches!(mode, RestartMode::Immediate) {
+            assert!(old.0.immediate_update_available().unwrap());
+        }
         manager.finish(&original, Ok(())).unwrap();
 
         manager.prepare_update(&original, &target).await.unwrap();
@@ -374,15 +433,27 @@ mod tests {
                     current: original.identity(),
                     candidate: target.clone(),
                 },
+                mode,
             )
             .await
             .unwrap();
+        let persisted = PlannedRestart::read(&profile).unwrap().unwrap();
+        assert_eq!(persisted.request, plan.request);
+        assert_eq!(
+            serde_json::to_value(persisted.mode.prepare_action()).unwrap(),
+            serde_json::to_value(mode.prepare_action()).unwrap()
+        );
         assert_eq!(manager.choose().await.unwrap(), original);
         assert!(profile.writer().is_err());
         manager
-            .prepare_planned_restart(&old.0, port, plan.clone())
+            .prepare_planned_restart(&old.0, port, persisted)
             .await
             .unwrap();
+        assert!(PlannedRestart::read(&profile)
+            .unwrap()
+            .unwrap()
+            .authorized(&profile)
+            .unwrap());
         assert!(!owner.is_ready());
         assert!(profile.writer().is_ok());
 
@@ -479,6 +550,7 @@ impl Manager {
         &self,
         runtime: &SidecarState,
         update: &SelectedUpdate,
+        mode: RestartMode,
     ) -> Result<PlannedRestart, String> {
         let target = self.reopen_downloaded_update(&update.candidate).await?;
         if !planned_update::executable_supports(&target.kernel.executable).await? {
@@ -495,6 +567,7 @@ impl Manager {
             current_sequence: update.current_sequence,
             current: update.current.clone(),
             owner: runtime.planned_update_owner()?,
+            mode,
             commit_requested: false,
             exit_confirmed: false,
         };
@@ -515,7 +588,9 @@ impl Manager {
         if !plan.commit_requested {
             let prepared = async {
                 loop {
-                    let result = runtime.planned_update(plan.request, Action::Prepare, RESPONSE).await?;
+                    let result = runtime
+                        .planned_update(plan.request, plan.mode.prepare_action(), RESPONSE)
+                        .await?;
                     match result.status {
                         Status::Ready => return Ok(()),
                         Status::Busy if tokio::time::Instant::now() < deadline => {
@@ -567,7 +642,16 @@ impl Manager {
                 _ => return Err(result.message.unwrap_or_else(|| "Bamboo has not finished the planned shutdown. Retry applying the update to continue waiting.".into())),
             }
         }
-        runtime.wait_for_update_exit(TIMEOUT, false).await?;
+        match plan.mode {
+            RestartMode::Planned => runtime.wait_for_update_exit(TIMEOUT, false).await?,
+            RestartMode::Immediate => runtime
+                .force_stop_after_checkpoint(&plan.owner, Duration::from_secs(10))
+                .await
+                .map_err(|error| match error {
+                    UpdateShutdownError::RequestRejected(message)
+                    | UpdateShutdownError::Unconfirmed(message) => message,
+                })?,
+        }
         let _writer = self.profile.writer()?;
         crate::sidecar::require_available_port(port)?;
         let _lock = self.profile.update_lock()?;

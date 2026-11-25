@@ -235,9 +235,34 @@ impl SidecarState {
         &self,
         timeout: Duration,
     ) -> Result<(), UpdateShutdownError> {
-        use UpdateShutdownError::{RequestRejected, Unconfirmed};
+        let child = self
+            .owned_child()
+            .map_err(UpdateShutdownError::Unconfirmed)?;
+        Self::force_stop_owned_child(child, timeout).await
+    }
+
+    pub(crate) async fn force_stop_after_checkpoint(
+        &self,
+        owner: &str,
+        timeout: Duration,
+    ) -> Result<(), UpdateShutdownError> {
+        use UpdateShutdownError::Unconfirmed;
 
         let child = self.owned_child().map_err(Unconfirmed)?;
+        if child.update_owner() != Some(owner) {
+            return Err(Unconfirmed(
+                "The Bamboo process changed after confirming the update checkpoint".into(),
+            ));
+        }
+        Self::force_stop_owned_child(child, timeout).await
+    }
+
+    async fn force_stop_owned_child(
+        child: Arc<ManagedChild>,
+        timeout: Duration,
+    ) -> Result<(), UpdateShutdownError> {
+        use UpdateShutdownError::{RequestRejected, Unconfirmed};
+
         let process = child.process.clone();
         if process
             .try_wait()
@@ -802,6 +827,14 @@ mod tests {
         let control = child.shutdown.as_ref().unwrap().path();
         assert!(profile.writer().is_err());
         assert!(require_available_port(port).is_err());
+
+        assert!(matches!(
+            runtime
+                .force_stop_after_checkpoint("different-process", Duration::ZERO)
+                .await,
+            Err(UpdateShutdownError::Unconfirmed(_))
+        ));
+        assert!(child.process.try_wait().unwrap().is_none());
 
         runtime
             .force_stop_for_update(Duration::from_secs(5))
