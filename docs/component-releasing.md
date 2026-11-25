@@ -73,7 +73,9 @@ roll back to {version}** after finishing running tasks. Bodhi verifies the
 cached assets locally, stops its own Bamboo normally, and checks the profile
 writer and service port before staging the rollback. It starts the same
 Bamboo with the previous Lotus and verifies the served frontend. If the
-rollback fails at startup, Bodhi reopens the active combination.
+rollback fails at startup, Bodhi reopens the active combination. If the
+existing process is still shutting down, retry the same rollback once it
+exits.
 
 Bodhi hides the rolled-away Lotus build from new offers after a successful
 rollback. Choose **Show the version I rolled back from** to make it eligible

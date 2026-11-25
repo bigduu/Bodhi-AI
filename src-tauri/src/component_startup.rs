@@ -199,7 +199,10 @@ impl Manager {
     ) -> Result<Combination, String> {
         let _update = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
-        if journal.lotus_rollback_target() != Some(pair) || journal.queued.as_ref() != Some(pair) {
+        if journal.lotus_rollback_target() != Some(pair)
+            || journal.queued.as_ref() != Some(pair)
+            || journal.next() != Some(pair)
+        {
             return Err("The Lotus Next rollback checkpoint changed".into());
         }
         let active = journal.active.clone().ok_or("No active components")?;

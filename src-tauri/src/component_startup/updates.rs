@@ -27,6 +27,7 @@ pub(super) struct Updates {
     action: tokio::sync::Mutex<()>,
     restart_requested: AtomicBool,
     force_shutdown_started: AtomicBool,
+    lotus_rollback_started: AtomicBool,
     dialog_open: AtomicBool,
     pub(super) boot: tokio::sync::Mutex<()>,
     pub(super) ready: AtomicBool,
@@ -129,9 +130,11 @@ struct ForceOffer {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LotusRollbackOffer {
     identity: String,
     versions: Versions,
+    shutdown_started: bool,
 }
 
 fn artifact_identity(candidate: &Combination) -> Result<String, String> {
@@ -248,6 +251,10 @@ impl Manager {
                     Ok::<_, String>(LotusRollbackOffer {
                         identity: artifact_identity(pair)?,
                         versions: Versions::from(pair),
+                        shutdown_started: self
+                            .updates
+                            .lotus_rollback_started
+                            .load(Ordering::Acquire),
                     })
                 })
                 .transpose()?
@@ -278,6 +285,7 @@ impl Manager {
                 if planned.is_none()
                     && !self.updates.restoring.load(Ordering::Acquire)
                     && !self.updates.restart_requested.load(Ordering::Acquire)
+                    && !self.updates.lotus_rollback_started.load(Ordering::Acquire)
                     && downloaded_offer
                     && !skipped_offer
                 {
@@ -323,7 +331,8 @@ impl Manager {
             force_update,
             lotus_rollback,
             lotus_update_suppressed: journal.suppressed_lotus.is_some()
-                && !self.restart_in_progress(),
+                && !self.restart_in_progress()
+                && !self.updates.lotus_rollback_started.load(Ordering::Acquire),
             history: journal.history,
         })
     }
@@ -383,7 +392,7 @@ impl Manager {
         };
         if journal.trial.is_some()
             || journal.queued.is_some()
-            || self.updates.force_shutdown_started.load(Ordering::Acquire)
+            || self.local_shutdown_started()
             || super::PlannedRestart::read(&self.profile)?.is_some()
         {
             return Ok(false);
@@ -448,9 +457,7 @@ impl Manager {
 
     async fn download(&self, sequence: u64, identity: &str, locale: Locale) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
-        if self.updates.force_shutdown_started.load(Ordering::Acquire)
-            || super::PlannedRestart::read(&self.profile)?.is_some()
-        {
+        if self.local_shutdown_started() || super::PlannedRestart::read(&self.profile)?.is_some() {
             return Err(locale.text("updates.restartPending").into());
         }
         let update = self.updates.selected(sequence, identity, locale)?;
@@ -490,7 +497,7 @@ impl Manager {
         let journal = Journal::read(&self.profile)?;
         if self.updates.restart_requested.load(Ordering::Acquire)
             || self.updates.restoring.load(Ordering::Acquire)
-            || self.updates.force_shutdown_started.load(Ordering::Acquire)
+            || self.local_shutdown_started()
             || journal.trial.is_some()
             || journal.queued.is_some()
             || super::PlannedRestart::read(&self.profile)?.is_some()
@@ -558,7 +565,7 @@ impl Manager {
             return Err("Wait for Bamboo to restore the previous sessions".into());
         }
         let locale = i18n::active(app);
-        if self.updates.force_shutdown_started.load(Ordering::Acquire) {
+        if self.local_shutdown_started() {
             return Err(locale.text("updates.restartPending").into());
         }
         let journal = Journal::read(&self.profile)?;
@@ -636,6 +643,11 @@ impl Manager {
             || self.updates.force_shutdown_started.load(Ordering::Acquire)
     }
 
+    fn local_shutdown_started(&self) -> bool {
+        self.updates.force_shutdown_started.load(Ordering::Acquire)
+            || self.updates.lotus_rollback_started.load(Ordering::Acquire)
+    }
+
     fn require_idle_journal(&self, journal: &Journal, locale: Locale) -> Result<(), String> {
         if self.restart_in_progress()
             || journal.queued.is_some()
@@ -664,12 +676,14 @@ impl Manager {
         }
         self.updates.status(Phase::Saving, None);
         let result = async {
-            self.reopen_prepared(pair).await?;
+            if !self.updates.lotus_rollback_started.load(Ordering::Acquire) {
+                self.reopen_prepared(pair).await?;
+            }
             self.updates.status(Phase::ShuttingDown, None);
             let runtime = app.state::<crate::sidecar::SidecarState>();
             self.queue_lotus_rollback(
                 pair,
-                runtime.stop_for_update(Duration::from_secs(90)),
+                runtime.stop_for_rollback(Duration::from_secs(90)),
                 crate::web_service_port(),
                 locale,
             )
@@ -687,11 +701,11 @@ impl Manager {
     async fn queue_lotus_rollback(
         &self,
         pair: &Combination,
-        shutdown: impl Future<Output = Result<(), String>>,
+        shutdown: impl Future<Output = Result<(), UpdateShutdownError>>,
         port: u16,
         locale: Locale,
     ) -> Result<(), String> {
-        shutdown.await?;
+        wait_for_owned_exit(&self.updates.lotus_rollback_started, shutdown).await?;
         let _writer = self.profile.writer()?;
         crate::sidecar::require_available_port(port)?;
         let _update = self.profile.update_lock()?;
@@ -707,6 +721,9 @@ impl Manager {
     async fn resume_lotus_updates(&self, locale: Locale) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
         {
+            if self.updates.lotus_rollback_started.load(Ordering::Acquire) {
+                return Err(locale.text("updates.restartPending").into());
+            }
             let _update = self.profile.update_lock()?;
             let mut journal = Journal::read(&self.profile)?;
             self.require_idle_journal(&journal, locale)?;
@@ -727,6 +744,7 @@ impl Manager {
     ) -> Result<(Arc<SelectedUpdate>, Journal), String> {
         if self.updates.restoring.load(Ordering::Acquire)
             || self.updates.restart_requested.load(Ordering::Acquire)
+            || self.updates.lotus_rollback_started.load(Ordering::Acquire)
             || super::PlannedRestart::read(&self.profile)?.is_some()
         {
             return Err(locale.text("updates.restartPending").into());
@@ -779,21 +797,8 @@ impl Manager {
         shutdown: impl Future<Output = Result<(), UpdateShutdownError>>,
         port: u16,
     ) -> Result<(), String> {
-        let shutdown_already_started = self
-            .updates
-            .force_shutdown_started
-            .swap(true, Ordering::AcqRel);
         self.updates.status(Phase::ShuttingDown, None);
-        match shutdown.await {
-            Ok(()) => {}
-            Err(UpdateShutdownError::RequestRejected(error)) => {
-                self.updates
-                    .force_shutdown_started
-                    .store(shutdown_already_started, Ordering::Release);
-                return Err(error);
-            }
-            Err(UpdateShutdownError::Unconfirmed(error)) => return Err(error),
-        }
+        wait_for_owned_exit(&self.updates.force_shutdown_started, shutdown).await?;
         let _writer = self.profile.writer()?;
         crate::sidecar::require_available_port(port)?;
         if super::PlannedRestart::read(&self.profile)?.is_some() {
@@ -826,6 +831,21 @@ impl Manager {
             return Err(locale.text("updates.catalogChanged").into());
         }
         Ok(())
+    }
+}
+
+async fn wait_for_owned_exit(
+    shutdown_started: &AtomicBool,
+    shutdown: impl Future<Output = Result<(), UpdateShutdownError>>,
+) -> Result<(), String> {
+    let already_started = shutdown_started.swap(true, Ordering::AcqRel);
+    match shutdown.await {
+        Ok(()) => Ok(()),
+        Err(UpdateShutdownError::RequestRejected(error)) => {
+            shutdown_started.store(already_started, Ordering::Release);
+            Err(error)
+        }
+        Err(UpdateShutdownError::Unconfirmed(error)) => Err(error),
     }
 }
 
@@ -1101,20 +1121,57 @@ mod tests {
         assert!(manager.reopen_prepared(&previous).await.is_err());
         let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = occupied.local_addr().unwrap().port();
+        let rejected = || async {
+            Err(UpdateShutdownError::RequestRejected(
+                "shutdown rejected".into(),
+            ))
+        };
         assert!(manager
-            .queue_lotus_rollback(&previous, async { Ok(()) }, port, locale)
+            .queue_lotus_rollback(&previous, rejected(), port, locale)
             .await
             .is_err());
-        drop(occupied);
+        assert!(
+            !manager
+                .snapshot("0.0.0".into(), locale)
+                .unwrap()
+                .lotus_rollback
+                .unwrap()
+                .shutdown_started
+        );
         assert!(manager
             .queue_lotus_rollback(
                 &previous,
-                async { Err("shutdown failed".into()) },
+                async {
+                    Err(UpdateShutdownError::Unconfirmed(
+                        "shutdown timed out".into(),
+                    ))
+                },
                 port,
                 locale
             )
             .await
             .is_err());
+        assert!(manager
+            .queue_lotus_rollback(&previous, rejected(), port, locale)
+            .await
+            .is_err());
+        assert!(
+            manager
+                .snapshot("0.0.0".into(), locale)
+                .unwrap()
+                .lotus_rollback
+                .unwrap()
+                .shutdown_started
+        );
+        assert!(!manager
+            .detect(async { panic!("lookup while rollback shutdown still pending") })
+            .await
+            .unwrap());
+        assert!(manager
+            .queue_lotus_rollback(&previous, async { Ok(()) }, port, locale)
+            .await
+            .is_err());
+        drop(occupied);
         assert_eq!(manager.choose().await.unwrap(), current);
 
         manager

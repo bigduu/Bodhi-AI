@@ -29,7 +29,7 @@ function showSettingsState() {
   get("mirror-settings").hidden = !custom;
   get("mirror-url").disabled = !custom;
   get("mirror-url").required = custom;
-  get("settings-fields").disabled = saving;
+  get("settings-fields").disabled = saving || !!currentSnapshot?.lotusRollback?.shutdownStarted;
   get("save-settings").disabled = !dirty;
   const status = get("settings-status");
   const message = settingsError || (settingsMessage && i18n.text(settingsMessage));
@@ -88,14 +88,19 @@ function renderOfferSelection(view, offers, busy) {
 }
 
 function canForceUpdate(snapshot, offer) {
-  return snapshot.running && snapshot.queued == null && offer?.downloaded && !offer.skipped
+  return snapshot.running && snapshot.queued == null && !snapshot.lotusRollback?.shutdownStarted
+    && offer?.downloaded && !offer.skipped
     && snapshot.forceUpdate?.sequence === offer.sequence
     && snapshot.forceUpdate?.identity === offer.identity;
 }
 
+function updateShutdownStarted(snapshot) {
+  return !!(snapshot.forceUpdate?.shutdownStarted || snapshot.lotusRollback?.shutdownStarted);
+}
+
 function renderPanelActions(view, offer, snapshot, phase, busy) {
   const canSkip = snapshot.running && snapshot.queued == null
-    && !snapshot.forceUpdate?.shutdownStarted && !!offer;
+    && !updateShutdownStarted(snapshot) && !!offer;
   const canDownload = canSkip && !offer.skipped && !offer.downloaded;
   const canApply = canSkip && !offer.skipped && offer.downloaded;
   const canForce = canForceUpdate(snapshot, offer);
@@ -147,7 +152,7 @@ function renderPanel(view, snapshot, busy) {
   const offers = snapshot.offers.filter((offer) => offer.kind === view.kind);
   view.panel.hidden = view.kind === "pair" && offers.length === 0;
   const offer = renderOfferSelection(view, offers,
-    actionPending || queued != null || snapshot.forceUpdate?.shutdownStarted);
+    actionPending || queued != null || updateShutdownStarted(snapshot));
   const downloadIsHere = offer && display.downloadSequence === offer.sequence
     && downloadPhases.includes(display.phase);
   const phase = downloadIsHere ? display.phase
@@ -171,17 +176,18 @@ function renderLotusRollbackActions(snapshot, busy) {
   const canChangeLotus = running && queued == null && !forceUpdate?.shutdownStarted && !restoring;
   const available = canChangeLotus && !!lotusRollback;
   const showVersion = get("show-rolled-back-lotus");
-  showVersion.hidden = !(canChangeLotus && lotusUpdateSuppressed && !busy);
+  showVersion.hidden = !(canChangeLotus && lotusUpdateSuppressed && !lotusRollback?.shutdownStarted && !busy);
   get("lotus-rollback").hidden = !available;
   const button = get("rollback-lotus");
   button.disabled = !available || busy;
   if (!available) return;
 
   let label = "updates.rollbackLotus";
-  if (rollbackAttempt === lotusRollback.identity) {
+  if (lotusRollback.shutdownStarted || rollbackAttempt === lotusRollback.identity) {
     if (actionPending || ["shuttingDown", "restarting"].includes(display.phase)) {
       label = "updates.rollingBackLotus";
-    } else if (["restartFailed", "saveFailed"].includes(display.phase) || actionError?.identity === rollbackAttempt) {
+    } else if (lotusRollback.shutdownStarted || ["restartFailed", "saveFailed"].includes(display.phase)
+        || actionError?.identity === rollbackAttempt) {
       label = "updates.retryRollbackLotus";
     }
   }
@@ -201,7 +207,7 @@ function renderUpdates(snapshot) {
   const check = get("check");
   setText(check, i18n.text(running ? "updates.check" : "updates.retry"));
   check.disabled = busy || (running
-    ? pendingRestart || !!snapshot.forceUpdate?.shutdownStarted
+    ? pendingRestart || updateShutdownStarted(snapshot)
     : display.phase !== "startupFailed");
 
   const scopedDownload = downloadPhases.includes(display.phase)
@@ -284,6 +290,7 @@ async function runAction(command, args) {
 }
 
 get("check").addEventListener("click", () => {
+  if (get("check").disabled) return;
   void runAction(currentSnapshot?.running ? "check_components" : "retry_component_startup");
 });
 
@@ -337,7 +344,7 @@ get("source").addEventListener("change", editSettings);
 
 get("download-settings").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (saving || !dirty) return;
+  if (saving || !dirty || currentSnapshot?.lotusRollback?.shutdownStarted) return;
   const source = get("source").value;
   const settings = {
     source,
