@@ -119,6 +119,13 @@ function renderPanelActions(view, offer, snapshot, phase, busy) {
   setText(apply, i18n.text("updates.confirmApply"));
   force.hidden = !canForce;
   force.disabled = busy;
+  if (canForce) {
+    const checkpointed = snapshot.forceUpdate.checkpointed;
+    setText(force, i18n.text(checkpointed ? "updates.forceUpdate" : "updates.legacyForceUpdate"));
+    setText(view.part("force-warning"), i18n.text(
+      checkpointed ? "updates.checkpointWarning" : "updates.forceWarning",
+    ));
+  }
   view.part("force-warning").hidden = !canForce;
   skip.hidden = !canSkip;
   skip.disabled = busy;
@@ -326,6 +333,7 @@ for (const view of componentViews) {
       if (button.hidden || button.disabled || !offer || currentSnapshot.queued != null) return;
       if (part === "force" && !canForceUpdate(currentSnapshot, offer)) return;
       const args = { sequence: offer.sequence, identity: offer.identity };
+      if (part === "force") args.checkpointed = !!currentSnapshot.forceUpdate.checkpointed;
       if (part === "skip") args.skipped = !offer.skipped;
       void runAction(command, args);
     });

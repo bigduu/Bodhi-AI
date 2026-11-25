@@ -1,6 +1,6 @@
 //! Per-process control channel for a planned Bamboo replacement.
 
-use super::SidecarState;
+use super::{ManagedChild, SidecarState};
 use crate::bamboo_profile::{is_link, persist};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -16,6 +16,7 @@ const MAX_RESULT: u64 = 4 * 1024 * 1024;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Action {
     Prepare,
+    PrepareImmediate,
     Commit,
     Abort,
     Resume,
@@ -101,25 +102,38 @@ pub(crate) async fn executable_supports(path: &Path) -> Result<bool, String> {
     }
 }
 
-impl SidecarState {
-    pub(crate) fn planned_update_owner(&self) -> Result<String, String> {
-        let child = self.owned_child()?;
-        child
-            .shutdown
+impl ManagedChild {
+    pub(super) fn update_owner(&self) -> Option<&str> {
+        self.shutdown
             .as_ref()
             .and_then(|directory| directory.path().file_name())
             .and_then(|name| name.to_str())
+    }
+}
+
+impl SidecarState {
+    pub(crate) fn planned_update_owner(&self) -> Result<String, String> {
+        self.owned_child()?
+            .update_owner()
             .map(str::to_owned)
             .ok_or("Missing identity of the owned Bamboo process".into())
     }
 
     pub(crate) fn planned_update_available(&self) -> Result<bool, String> {
+        self.has_update_capability("planned-update-v1")
+    }
+
+    pub(crate) fn immediate_update_available(&self) -> Result<bool, String> {
+        self.has_update_capability("immediate-update-v1")
+    }
+
+    fn has_update_capability(&self, marker: &str) -> Result<bool, String> {
         let child = self.owned_child()?;
         let directory = child
             .shutdown
             .as_ref()
             .ok_or("Missing Bamboo control directory")?;
-        Ok(read_control(&directory.path().join("planned-update-v1"), 0)?.is_some())
+        Ok(read_control(&directory.path().join(marker), 0)?.is_some())
     }
 
     pub(crate) async fn planned_update(

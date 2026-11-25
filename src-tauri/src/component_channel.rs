@@ -302,7 +302,7 @@ async fn read_limited(
     label: &str,
 ) -> Result<Vec<u8>, ReleaseCheckError> {
     let transport_error = |error: reqwest::Error| {
-        let unavailable = error.is_connect() || error.is_timeout() || error.is_body();
+        let unavailable = error.is_request() || error.is_timeout() || error.is_body();
         let message = format!("{label}: {}", error.without_url());
         if unavailable {
             ReleaseCheckError::Unavailable(message)

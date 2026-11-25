@@ -1,5 +1,6 @@
 use super::{
     journal::{self, History, Journal, Versions},
+    planned_restart::RestartMode,
     Manager, SelectedUpdate,
 };
 use crate::component_channel::producer::{self, Discovery};
@@ -131,6 +132,7 @@ struct ForceOffer {
     sequence: u64,
     identity: String,
     shutdown_started: bool,
+    checkpointed: bool,
 }
 
 #[derive(Serialize)]
@@ -299,6 +301,7 @@ impl Manager {
                     force_update = Some(ForceOffer {
                         sequence: update.candidate.sequence,
                         identity: identity.clone(),
+                        checkpointed: false,
                         shutdown_started: self
                             .updates
                             .force_shutdown_started
@@ -661,7 +664,10 @@ impl Manager {
                 return Ok(());
             }
             match self.use_planned_restart(&runtime, active).await {
-                Ok(true) => match self.plan_restart(&runtime, &update).await {
+                Ok(true) => match self
+                    .plan_restart(&runtime, &update, RestartMode::Planned)
+                    .await
+                {
                     Ok(plan) => {
                         self.updates.status(Phase::ShuttingDown, None);
                         self.prepare_planned_restart(&runtime, port, plan).await
@@ -814,20 +820,37 @@ impl Manager {
         app: &AppHandle<R>,
         sequence: u64,
         identity: &str,
+        checkpointed: bool,
     ) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
         let locale = i18n::active(app);
         let (update, journal) = self.force_target(sequence, identity, locale)?;
         let active = update.validate_transition(&journal)?;
         self.updates.status(Phase::Saving, None);
+        if let Err(error) =
+            allow_cached_immediate_update(self.reconfirm_selected(active, &update, locale)).await
+        {
+            self.updates.status(Phase::SaveFailed, Some(error));
+            return Ok(());
+        }
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let result = async {
-            allow_cached_immediate_update(self.reconfirm_selected(active, &update, locale)).await?;
+            let port = crate::web_service_port();
+            if runtime.immediate_update_available()? != checkpointed {
+                return Err(locale.text("updates.catalogChanged").into());
+            }
+            if checkpointed {
+                let plan = self
+                    .plan_restart(&runtime, &update, RestartMode::Immediate)
+                    .await?;
+                self.updates.status(Phase::ShuttingDown, None);
+                return self.prepare_planned_restart(&runtime, port, plan).await;
+            }
             self.reopen_downloaded_update(&update.candidate).await?;
             self.queue_after_force_shutdown(
                 &update,
                 runtime.force_stop_for_update(Duration::from_secs(10)),
-                crate::web_service_port(),
+                port,
             )
             .await
         }
@@ -1017,9 +1040,20 @@ pub(crate) fn component_snapshot<R: Runtime>(
     window: WebviewWindow<R>,
 ) -> Result<Snapshot, String> {
     authorize(&window, true)?;
-    app.try_state::<Manager>()
+    let mut snapshot = app
+        .try_state::<Manager>()
         .ok_or("The component updater is unavailable")?
-        .snapshot(app.package_info().version.to_string(), i18n::active(&app))
+        .snapshot(app.package_info().version.to_string(), i18n::active(&app))?;
+    if let Some(offer) = &mut snapshot.force_update {
+        offer.checkpointed =
+            app.try_state::<crate::sidecar::SidecarState>()
+                .is_some_and(|runtime| {
+                    runtime
+                        .immediate_update_available()
+                        .is_ok_and(|value| value)
+                });
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1078,10 +1112,11 @@ pub(crate) async fn force_component_update<R: Runtime>(
     window: WebviewWindow<R>,
     sequence: u64,
     identity: String,
+    checkpointed: bool,
 ) -> Result<(), String> {
     authorize(&window, false)?;
     running_manager(&app)?
-        .force_apply(&app, sequence, &identity)
+        .force_apply(&app, sequence, &identity, checkpointed)
         .await
 }
 
