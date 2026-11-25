@@ -1,6 +1,7 @@
 //! Plan and record startup of an authenticated component combination.
 mod journal;
 mod planned_restart;
+mod producer_compatibility;
 pub(crate) mod updates;
 
 use crate::bamboo_profile::Profile;
@@ -132,7 +133,12 @@ impl Manager {
         if pair.lotus != active.lotus {
             self.prepare_lotus(pair).await?;
         }
-        self.reopen_prepared(pair).await.map(|_| ())
+        let prepared = self.reopen_prepared(pair).await?;
+        if pair.producer_release {
+            producer_compatibility::prove_pair(&prepared.kernel, &prepared.frontend, &pair.lotus)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn reopen_prepared(&self, pair: &Combination) -> Result<Prepared, String> {
@@ -343,6 +349,16 @@ impl Manager {
                 return Err(
                     "The running Bamboo differs from the approved component release".into(),
                 );
+            }
+            if pair.producer_release {
+                producer_compatibility::prove_live_pair(
+                    port,
+                    &status,
+                    &prepared.kernel.version,
+                    &prepared.frontend,
+                    &pair.lotus,
+                )
+                .await?;
             }
             let url = crate::ready_frontend_url(
                 true,

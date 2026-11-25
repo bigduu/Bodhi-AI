@@ -1,7 +1,11 @@
-//! Selection from the official catalog of independently published components.
+//! Immutable component identities and the legacy bootstrap catalog.
+mod bamboo_release;
+pub(crate) mod lotus_release;
+pub(crate) mod producer;
+
 use crate::bamboo_update::version as bamboo_version;
 use crate::component_download::DownloadSettings;
-use reqwest::{redirect::Policy, StatusCode};
+use reqwest::{redirect::Policy, Client, StatusCode, Url};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -91,6 +95,8 @@ pub(crate) enum UpdateKind {
 pub struct Combination {
     pub sequence: u64,
     pub bootstrap: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) producer_release: bool,
     accepts: Vec<PairIdentity>,
     pub bamboo: BambooRelease,
     pub lotus: LotusRelease,
@@ -244,36 +250,49 @@ fn native_target_index(target: &str) -> Result<usize, String> {
 /// The catalog comes from the official repository over HTTPS. Download
 /// mirrors apply to archives whose size and digest the catalog already fixes.
 pub(crate) async fn load_stable(settings: &DownloadSettings) -> Result<VerifiedChannel, String> {
-    let client = settings
+    let client = producer_client(settings, "Bodhi bootstrap catalog")?;
+    let url = Url::parse(STABLE_CATALOG_URL).map_err(|error| error.to_string())?;
+    let bytes = read_limited(&client, url, MAX_CHANNEL_BYTES, "The component catalog").await?;
+    parse(&bytes)
+}
+
+fn producer_client(settings: &DownloadSettings, label: &str) -> Result<Client, String> {
+    settings
         .client()?
+        .user_agent("Bodhi component updater")
         .redirect(Policy::none())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|error| error.without_url().to_string())?;
+        .map_err(|error| format!("{label}: {}", error.without_url()))
+}
+
+async fn read_limited(
+    client: &Client,
+    url: Url,
+    limit: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
     let mut response = client
-        .get(STABLE_CATALOG_URL)
+        .get(url)
         .send()
         .await
-        .map_err(|error| error.without_url().to_string())?;
+        .map_err(|error| format!("{label}: {}", error.without_url()))?;
     if response.status() != StatusCode::OK {
-        return Err(format!(
-            "The component catalog returned HTTP {}",
-            response.status()
-        ));
+        return Err(format!("{label} returned HTTP {}", response.status()));
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response
         .chunk()
         .await
-        .map_err(|error| error.without_url().to_string())?
+        .map_err(|error| format!("{label}: {}", error.without_url()))?
     {
-        if chunk.len() > MAX_CHANNEL_BYTES - bytes.len() {
-            return Err("The component catalog exceeds its size limit".into());
+        if chunk.len() > limit - bytes.len() {
+            return Err(format!("{label} exceeds its size limit"));
         }
         bytes.extend_from_slice(&chunk);
     }
-    parse(&bytes)
+    Ok(bytes)
 }
 
 fn parse(bytes: &[u8]) -> Result<VerifiedChannel, String> {
@@ -293,7 +312,8 @@ fn parse(bytes: &[u8]) -> Result<VerifiedChannel, String> {
     for combination in &channel.combinations {
         let bamboo = &combination.bamboo;
         let lotus = &combination.lotus;
-        if combination.sequence <= sequence
+        if combination.producer_release
+            || combination.sequence <= sequence
             || !stable_version(&bamboo.version)
             || !stable_version(&lotus.version)
             || !hex(&bamboo.source_revision, 40)

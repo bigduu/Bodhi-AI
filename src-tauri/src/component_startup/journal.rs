@@ -1,5 +1,5 @@
 use crate::bamboo_profile::{is_link, persist, Profile};
-use crate::component_channel::{Combination, PairIdentity};
+use crate::component_channel::{Combination, LotusRelease, PairIdentity};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -57,6 +57,8 @@ pub(super) struct Journal {
     pub previous_lotus: Option<Combination>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suppressed_lotus: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rolled_back_lotus: Option<LotusRelease>,
 }
 
 impl Journal {
@@ -88,6 +90,7 @@ impl Journal {
         if let Some(active) = &self.active {
             if self.lotus_rollback_target() == Some(pair) {
                 self.suppressed_lotus = Some(active.lotus.manifest_sha256.clone());
+                self.rolled_back_lotus = Some(active.lotus.clone());
                 self.previous_lotus = None;
             } else if active.bamboo != pair.bamboo || active.lotus != pair.lotus {
                 self.previous_lotus = (active.bamboo == pair.bamboo
