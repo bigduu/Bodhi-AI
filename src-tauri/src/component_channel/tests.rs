@@ -59,6 +59,18 @@ pub(crate) fn fixture_channel_with_independent_updates() -> VerifiedChannel {
     channel
 }
 
+pub(crate) fn fixture_channel_with_independent_bamboo_versions() -> VerifiedChannel {
+    let mut channel = fixture_channel_with_independent_updates();
+    let mut newer_bamboo = channel.0.combinations[5].clone();
+    newer_bamboo.sequence = 7;
+    newer_bamboo.accepts = vec![
+        channel.0.combinations[0].identity(),
+        channel.0.combinations[2].identity(),
+    ];
+    channel.0.combinations.push(newer_bamboo);
+    channel
+}
+
 pub(crate) async fn lotus_fixtures() -> [LotusRelease; 2] {
     let channel = fixture_channel().await;
     [
@@ -138,16 +150,94 @@ fn independent_selection_keeps_the_approved_peer_and_works_in_either_order() {
 }
 
 #[test]
-fn independent_selection_chooses_the_newest_approved_record_per_component() {
-    let mut channel = fixture_channel_with_independent_updates();
-    let mut newer_bamboo = channel.0.combinations[5].clone();
-    newer_bamboo.sequence = 7;
-    newer_bamboo.accepts = vec![channel.0.combinations[0].identity()];
-    channel.0.combinations.push(newer_bamboo);
+fn independent_selection_lists_each_approved_bamboo_version_and_one_lotus() {
+    let channel = fixture_channel_with_independent_bamboo_versions();
+    let current = &channel.0.combinations[0];
+    let options = channel.select_updates(current).unwrap();
+    let sequences: Vec<_> = options.iter().map(|option| option.sequence).collect();
+    assert_eq!(sequences, vec![7, 3, 4]);
+    assert_eq!(options[0].lotus, current.lotus);
+    assert_eq!(options[1].lotus, current.lotus);
+    assert_eq!(
+        channel.select_updates(options[1]).unwrap(),
+        vec![options[0], &channel.0.combinations[4]]
+    );
+    assert!(channel.select_updates(options[0]).unwrap().is_empty());
+}
+
+#[test]
+fn bamboo_options_sort_by_numeric_version_even_out_of_catalog_order() {
+    let mut channel = fixture_channel_with_independent_bamboo_versions();
+    channel.0.combinations[2].bamboo.version = "2027.1.10".into();
+    channel.0.combinations[6].bamboo.version = "2027.1.9".into();
+    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    let selections: Vec<_> = options
+        .iter()
+        .map(|option| (option.sequence, option.bamboo.version.as_str()))
+        .collect();
+    assert_eq!(
+        selections,
+        vec![(3, "2027.1.10"), (7, "2027.1.9"), (4, "2026.11.37")]
+    );
+}
+
+#[test]
+fn equivalent_duplicate_does_not_replace_the_earliest_selectable_bamboo_offer() {
+    let mut channel = fixture_channel_with_independent_bamboo_versions();
+    let mut duplicate = channel.0.combinations[2].clone();
+    duplicate.sequence = 8;
+    duplicate
+        .changes
+        .bamboo
+        .push("Additional release notes".into());
+    channel.0.combinations.push(duplicate);
+
+    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    assert_eq!(options[1], &channel.0.combinations[2]);
+    assert_eq!(options.len(), 3);
+}
+
+#[test]
+fn conflicting_bamboo_descriptor_excludes_its_version_despite_later_duplicates() {
+    let mut channel = fixture_channel_with_independent_bamboo_versions();
+    let original = &channel.0.combinations[2];
+    let mut conflict = original.clone();
+    conflict.sequence = 8;
+    conflict.bamboo.browser_host.sha256 = "ab".repeat(32);
+    let mut repeat_original = original.clone();
+    repeat_original.sequence = 9;
+    channel.0.combinations.extend([conflict, repeat_original]);
 
     let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
     let sequences: Vec<_> = options.iter().map(|option| option.sequence).collect();
     assert_eq!(sequences, vec![7, 4]);
+}
+
+#[test]
+fn bamboo_options_require_a_supported_newer_version_and_the_exact_lotus_peer() {
+    let mut channel = fixture_channel_with_independent_bamboo_versions();
+    let newer = &channel.0.combinations[6];
+    let mut downgrade = newer.clone();
+    downgrade.sequence = 8;
+    downgrade.bamboo.version = "2026.11.36".into();
+    let mut same_version = newer.clone();
+    same_version.sequence = 9;
+    same_version.bamboo.version = "2026.11.37".into();
+    let mut changed_peer = newer.clone();
+    changed_peer.sequence = 10;
+    changed_peer.bamboo.version = "2026.11.41".into();
+    changed_peer.lotus.tarball.sha256 = "ab".repeat(32);
+    let mut unsupported_version = newer.clone();
+    unsupported_version.sequence = 11;
+    unsupported_version.bamboo.version = "2026.11.4294967296".into();
+    channel
+        .0
+        .combinations
+        .extend([downgrade, same_version, changed_peer, unsupported_version]);
+
+    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    let sequences: Vec<_> = options.iter().map(|option| option.sequence).collect();
+    assert_eq!(sequences, vec![7, 3, 4]);
 }
 
 #[test]

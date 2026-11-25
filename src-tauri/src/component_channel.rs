@@ -1,7 +1,10 @@
 //! Selection from the official catalog of independently published components.
+use crate::bamboo_update::version as bamboo_version;
 use crate::component_download::DownloadSettings;
 use reqwest::{redirect::Policy, StatusCode};
+use semver::Version;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const STABLE_CATALOG_URL: &str =
@@ -159,24 +162,46 @@ impl VerifiedChannel {
     ) -> Result<Vec<&Combination>, String> {
         native_target_index(env!("BODHI_BUILD_TARGET"))?;
         let identity = current.identity();
-        let mut bamboo = None;
+        let active_bamboo =
+            bamboo_version(&current.bamboo.version).ok_or("Invalid active Bamboo version")?;
+        let mut bamboo = BTreeMap::<[u32; 3], Option<&Combination>>::new();
         let mut lotus = None;
         let mut pair = None;
-        for combination in self.0.combinations.iter().rev() {
+        for combination in &self.0.combinations {
             if !combination.accepts_update_from(current.sequence, &identity) {
                 continue;
             }
             match combination.update_kind(current) {
-                Some(UpdateKind::Bamboo) => bamboo.get_or_insert(combination),
-                Some(UpdateKind::Lotus) => lotus.get_or_insert(combination),
-                Some(UpdateKind::Pair) => pair.get_or_insert(combination),
-                None => continue,
-            };
+                Some(UpdateKind::Bamboo) => {
+                    let Some(version) = bamboo_version(&combination.bamboo.version) else {
+                        continue;
+                    };
+                    if version > active_bamboo {
+                        bamboo
+                            .entry(version)
+                            .and_modify(|earliest| {
+                                // Keep the first equivalent offer. Once any record conflicts,
+                                // an additional record cannot restore the ambiguous version.
+                                if earliest
+                                    .is_some_and(|record| record.bamboo != combination.bamboo)
+                                {
+                                    *earliest = None;
+                                }
+                            })
+                            .or_insert(Some(combination));
+                    }
+                }
+                Some(UpdateKind::Lotus) => lotus = Some(combination),
+                Some(UpdateKind::Pair) => pair = Some(combination),
+                None => {}
+            }
         }
-        if bamboo.is_none() && lotus.is_none() {
-            return Ok(pair.into_iter().collect());
+        let mut updates: Vec<_> = bamboo.into_values().rev().flatten().collect();
+        updates.extend(lotus);
+        if updates.is_empty() {
+            updates.extend(pair);
         }
-        Ok([bamboo, lotus].into_iter().flatten().collect())
+        Ok(updates)
     }
 
     pub fn select(
@@ -328,7 +353,7 @@ fn hex(value: &str, length: usize) -> bool {
 }
 
 fn stable_version(version: &str) -> bool {
-    semver::Version::parse(version)
+    Version::parse(version)
         .is_ok_and(|parsed| parsed.major > 0 && parsed.pre.is_empty() && parsed.build.is_empty())
 }
 
