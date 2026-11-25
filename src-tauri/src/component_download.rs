@@ -1,4 +1,5 @@
 //! Acquire immutable component artifacts using a profile-local partial file.
+mod parallel;
 mod settings;
 
 pub(crate) use settings::{DownloadSettings, DownloadSource};
@@ -79,17 +80,18 @@ pub(crate) async fn acquire_asset(
         let (url, source) = selected.route(&official)?;
         let client = selected.artifact_client(&official, &url)?;
         let mut report = |received| progress(source, received, expected.size_bytes);
-        let work = transfer(
+        let work = transfer_asset(
             &client,
             &url,
             &mut partial.file,
             expected.size_bytes,
             &mut report,
+            !tried_clean,
         );
         let Some(result) = while_selected(&mut settings, &selected, work).await else {
             continue;
         };
-        let offset = result?;
+        let can_retry_clean = result?;
         let expected = expected.clone();
         let (checked, valid) = tokio::task::spawn_blocking(move || {
             let valid = partial.matches(&expected)?;
@@ -106,7 +108,7 @@ pub(crate) async fn acquire_asset(
                 _lock: partial.lock,
             });
         }
-        if offset == 0 || tried_clean {
+        if !can_retry_clean || tried_clean {
             return Err("The downloaded bytes failed the component catalog SHA-256 check.".into());
         }
         tried_clean = true;
@@ -126,6 +128,27 @@ pub(crate) async fn while_selected<T>(
         }
         output = &mut work => Some(output),
     }
+}
+
+async fn transfer_asset(
+    client: &Client,
+    url: &Url,
+    file: &mut File,
+    total: u64,
+    progress: &mut (impl FnMut(u64) + Send),
+    allow_parallel: bool,
+) -> Result<bool, String> {
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
+    if allow_parallel
+        && total.saturating_sub(size) >= parallel::MIN_REMAINING
+        && parallel::transfer(client, url, file, total, progress, parallel::CHUNK_SIZE).await?
+    {
+        // If an origin serves inconsistent range bodies, retry from zero serially.
+        return Ok(true);
+    }
+    transfer(client, url, file, total, progress)
+        .await
+        .map(|offset| offset != 0)
 }
 
 async fn transfer(
@@ -205,7 +228,7 @@ async fn request(
         let resumed = match response.status() {
             StatusCode::OK => false,
             StatusCode::PARTIAL_CONTENT
-                if range_start > 0 && valid_range(&response, range_start, total) =>
+                if range_start > 0 && valid_range(&response, range_start, total, total) =>
             {
                 true
             }
@@ -220,11 +243,7 @@ async fn request(
             }
         };
         let start = if resumed { range_start } else { 0 };
-        if response
-            .headers()
-            .get_all(CONTENT_ENCODING)
-            .iter()
-            .any(|value| !value.as_bytes().eq_ignore_ascii_case(b"identity"))
+        if !identity_encoding(&response)
             || response
                 .content_length()
                 .is_some_and(|length| length != total - start)
@@ -259,8 +278,16 @@ async fn request(
     }
 }
 
-fn valid_range(response: &reqwest::Response, offset: u64, total: u64) -> bool {
-    let expected = format!("bytes {offset}-{}/{total}", total - 1);
+fn identity_encoding(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get_all(CONTENT_ENCODING)
+        .iter()
+        .all(|value| value.as_bytes().eq_ignore_ascii_case(b"identity"))
+}
+
+fn valid_range(response: &reqwest::Response, start: u64, end: u64, total: u64) -> bool {
+    let expected = format!("bytes {start}-{}/{total}", end - 1);
     let mut ranges = response.headers().get_all(CONTENT_RANGE).iter();
     ranges
         .next()

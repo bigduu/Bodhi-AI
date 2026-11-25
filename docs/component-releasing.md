@@ -55,7 +55,10 @@ verified download remains available if its producer publishes a newer version.
 The profile minimum Bamboo version applies at startup and during updates.
 
 Choose **Download update** for the selected target. Bodhi downloads its changed
-assets and verifies the cached peer. It starts the exact pair in an isolated
+assets and verifies the cached peer. Large downloads use up to four concurrent
+HTTP ranges and write them in order so they can resume after an interruption.
+Sources that cannot serve ranges use a single stream. Bodhi checks the final
+size and SHA-256 before staging. It starts the exact pair in an isolated
 profile and checks Bamboo's live Bootstrap capabilities against the Lotus
 frontend requirements. One verified selection can be staged for restart at a
 time. The shell rechecks the official release identity before shutdown and the
