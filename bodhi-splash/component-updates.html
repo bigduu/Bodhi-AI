@@ -30,6 +30,7 @@
     .component-controls select { min-width: 0; max-width: 100%; }
     .component-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .component-actions[hidden], #phase:empty, .component-phase:empty, #last-check:empty { display: none; }
+    .force-warning { color: #f3cd92; }
     details { margin-top: 12px; }
     summary { cursor: pointer; color: #c2dcff; }
     #retry-restart { margin-bottom: 16px; }
@@ -132,9 +133,10 @@
     <div class="component-actions" data-part="actions" hidden>
       <button data-part="download" type="button" data-i18n="updates.download" hidden>Download update</button>
       <button data-part="apply" type="button" data-i18n="updates.confirmApply" aria-describedby="restart-hint" hidden>Restart and update</button>
-      <button data-part="force" class="secondary" type="button" data-i18n="updates.forceUpdate" hidden>Force update</button>
       <button data-part="skip" class="secondary" type="button" data-i18n="updates.skipVersion" hidden>Skip this version</button>
+      <button data-part="force" class="secondary" type="button" data-i18n="updates.forceUpdate" hidden>Update and restart now</button>
     </div>
+    <p data-part="force-warning" class="force-warning" data-i18n="updates.forceWarning" hidden>Running tasks will be interrupted.</p>
     <details data-part="notes" hidden>
       <summary data-i18n="updates.changes">Release notes</summary>
       <ul data-part="changes"></ul>

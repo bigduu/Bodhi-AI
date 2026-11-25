@@ -7,11 +7,12 @@ const offerPhases = ["current", "available", "skipped", "verified"];
 const downloadPhases = ["downloading", "downloadFailed", "saveFailed"];
 const componentViews = [...document.querySelectorAll("[data-update-kind]")].map((panel) => {
   panel.querySelector("[data-part=controls]").append(get("component-controls").content.cloneNode(true));
-  return {
-    panel,
-    kind: panel.dataset.updateKind,
-    part: (name) => panel.querySelector(`[data-part=${name}]`),
-  };
+  const kind = panel.dataset.updateKind;
+  const part = (name) => panel.querySelector(`[data-part=${name}]`);
+  const warning = part("force-warning");
+  warning.id = `force-warning-${kind}`;
+  part("force").setAttribute("aria-describedby", warning.id);
+  return { panel, kind, part };
 });
 let currentSnapshot = null;
 let actionPending = false;
@@ -112,10 +113,11 @@ function renderPanelActions(view, offer, snapshot, phase, busy) {
   setText(apply, i18n.text("updates.confirmApply"));
   force.hidden = !canForce;
   force.disabled = busy;
+  view.part("force-warning").hidden = !canForce;
   skip.hidden = !canSkip;
   skip.disabled = busy;
   setText(skip, i18n.text(offer?.skipped ? "updates.undoSkip" : "updates.skipVersion"));
-  return canApply || canForce;
+  return canApply;
 }
 
 function renderNotes(view, offer, active) {
@@ -275,9 +277,10 @@ for (const view of componentViews) {
     ["force", "force_component_update"],
     ["skip", "set_component_version_skipped"],
   ]) {
-    view.part(part).addEventListener("click", () => {
+    const button = view.part(part);
+    button.addEventListener("click", () => {
       const offer = selectedOffer(view);
-      if (!offer || currentSnapshot.queued != null) return;
+      if (button.hidden || button.disabled || !offer || currentSnapshot.queued != null) return;
       if (part === "force" && !canForceUpdate(currentSnapshot, offer)) return;
       const args = { sequence: offer.sequence, identity: offer.identity };
       if (part === "skip") args.skipped = !offer.skipped;

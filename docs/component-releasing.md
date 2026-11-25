@@ -52,12 +52,12 @@ after long-running work finishes. Bodhi requests Bamboo's normal shutdown, waits
 for the owned process to release its profile lease and port, then reopens and
 checks the effective Bamboo and Lotus versions.
 
-If Bamboo blocks the planned restart because Connect or MCP workers are
-configured, the downloaded target offers **Force update**. Review the exact
-target versions in the confirmation dialog. Running tasks may stop and will
-not resume automatically. After confirmation, Bodhi rechecks the selected
-update and waits for Bamboo to shut down normally before restarting. Canceling
-keeps the downloaded update available.
+For a one-click switch, choose **Update and restart now** for any downloaded,
+verified target that is still eligible. Bodhi rechecks the target and
+terminates its current managed Bamboo process immediately. This interrupts
+running tasks, which need to be started again. Bodhi confirms the old process
+has ended and released the profile writer lease and port before switching to
+the exact selected versions.
 
 If an approved update is queued and shutdown takes longer than the wait, use
 **Retry restart** after shutdown finishes, or reopen Bodhi to apply the queued

@@ -42,8 +42,6 @@ struct Display {
     download_sequence: Option<u64>,
     #[serde(skip)]
     selections: Vec<Arc<SelectedUpdate>>,
-    #[serde(skip)]
-    force: Option<Arc<SelectedUpdate>>,
 }
 
 impl Display {
@@ -152,20 +150,6 @@ pub(crate) struct Snapshot {
 }
 
 impl Updates {
-    pub(super) fn enable_force_update(&self, update: SelectedUpdate) -> Result<(), String> {
-        self.display
-            .lock()
-            .map_err(|_| "Cannot set the update status")?
-            .force = Some(Arc::new(update));
-        Ok(())
-    }
-
-    fn clear_force_update(&self) {
-        if let Ok(mut display) = self.display.lock() {
-            display.force = None;
-        }
-    }
-
     pub(super) fn progress(
         &self,
         file: &str,
@@ -269,7 +253,6 @@ impl Manager {
                 if planned.is_none()
                     && !self.updates.restoring.load(Ordering::Acquire)
                     && !self.updates.restart_requested.load(Ordering::Acquire)
-                    && display.force.as_deref() == Some(update.as_ref())
                     && downloaded_offer
                     && !skipped_offer
                 {
@@ -584,7 +567,6 @@ impl Manager {
             if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
                 return Err(locale.text("updates.downloadRequired").into());
             }
-            self.updates.clear_force_update();
             self.updates.status(Phase::Saving, None);
             if let Err(error) = self
                 .reconfirm(active, &update, locale, self.load_catalog())
@@ -633,15 +615,6 @@ impl Manager {
             return Err(locale.text("updates.restartPending").into());
         }
         let update = self.updates.selected(sequence, identity, locale)?;
-        let display = self
-            .updates
-            .display
-            .lock()
-            .map_err(|_| "Cannot read the update status")?;
-        if display.force.as_deref() != Some(update.as_ref()) {
-            return Err(locale.text("updates.catalogChanged").into());
-        }
-        drop(display);
         let journal = Journal::read(&self.profile)?;
         update.validate_transition(&journal)?;
         self.require_unskipped(&update, locale)?;
@@ -659,26 +632,6 @@ impl Manager {
     ) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
         let locale = i18n::active(app);
-        let (update, _) = self.force_target(sequence, identity, locale)?;
-        let prompt = locale
-            .text("updates.forceBody")
-            .replace("{bamboo}", &update.candidate.bamboo.version)
-            .replace("{lotus}", &update.candidate.lotus.version);
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        app.dialog()
-            .message(prompt)
-            .title(locale.text("updates.forceTitle"))
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                locale.text("updates.forceUpdate").into(),
-                locale.text("dialog.cancel").into(),
-            ))
-            .show(move |confirmed| {
-                let _ = sender.send(confirmed);
-            });
-        if !receiver.await.unwrap_or(false) {
-            return Ok(());
-        }
         let (update, journal) = self.force_target(sequence, identity, locale)?;
         let active = update.validate_transition(&journal)?;
         self.updates.status(Phase::Saving, None);
@@ -689,7 +642,7 @@ impl Manager {
             self.reopen_downloaded_update(&update.candidate).await?;
             self.queue_after_force_shutdown(
                 &update,
-                runtime.stop_for_update(Duration::from_secs(90)),
+                runtime.force_stop_for_update(Duration::from_secs(10)),
                 crate::web_service_port(),
             )
             .await
@@ -733,7 +686,6 @@ impl Manager {
     }
 
     fn request_restart<R: Runtime>(&self, app: &AppHandle<R>) {
-        self.updates.clear_force_update();
         self.updates
             .restart_requested
             .store(true, Ordering::Release);
@@ -1187,18 +1139,10 @@ mod tests {
             .updates
             .selected(chosen.sequence, &chosen.identity, locale)
             .unwrap();
-        manager.record_download(&update, Ok(())).unwrap();
         assert!(manager
             .force_target(chosen.sequence, &chosen.identity, locale)
             .is_err());
-        manager
-            .updates
-            .enable_force_update(SelectedUpdate {
-                current_sequence: update.current_sequence,
-                current: update.current.clone(),
-                candidate: update.candidate.clone(),
-            })
-            .unwrap();
+        manager.record_download(&update, Ok(())).unwrap();
         let granted = manager
             .snapshot("0.0.0".into(), locale)
             .unwrap()
