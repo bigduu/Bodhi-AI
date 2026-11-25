@@ -40,6 +40,14 @@ pub struct SidecarState {
 
 const SHUTDOWN_DIR_ENV: &str = "BAMBOO_MANAGED_SHUTDOWN_DIR";
 
+#[derive(Debug)]
+pub(crate) enum UpdateShutdownError {
+    /// The immediate stop was rejected and the exact child is still running.
+    RequestRejected(String),
+    /// The stop may have started, or the exact child's outcome is uncertain.
+    Unconfirmed(String),
+}
+
 struct ManagedChild {
     process: Arc<SharedChild>,
     startup: StartupStatus,
@@ -155,6 +163,57 @@ impl SidecarState {
     /// Stop this exact child through the server's normal cleanup path.
     pub(crate) async fn stop_for_update(&self, timeout: Duration) -> Result<(), String> {
         self.wait_for_update_exit(timeout, true).await
+    }
+
+    /// Terminate only the recorded Bamboo process and wait for it to be reaped.
+    pub(crate) async fn force_stop_for_update(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), UpdateShutdownError> {
+        use UpdateShutdownError::{RequestRejected, Unconfirmed};
+
+        let child = self.owned_child().map_err(Unconfirmed)?;
+        let process = child.process.clone();
+        if process
+            .try_wait()
+            .map_err(|error| Unconfirmed(error.to_string()))?
+            .is_none()
+        {
+            // Until the child has exited, keep the shell open long enough to
+            // prove that the exact process stopped.
+            let was_committing = child.committing_update.swap(true, Ordering::SeqCst);
+            match process.kill() {
+                Ok(()) => {
+                    tokio::task::spawn_blocking(move || process.wait_timeout(timeout))
+                        .await
+                        .map_err(|error| Unconfirmed(error.to_string()))?
+                        .map_err(|error| {
+                            Unconfirmed(format!("Cannot reap managed Bamboo: {error}"))
+                        })?
+                        .ok_or_else(|| {
+                            Unconfirmed(
+                                "Managed Bamboo has not exited. Retry the update after it exits."
+                                    .into(),
+                            )
+                        })?;
+                }
+                Err(error) => {
+                    let message = format!("Cannot terminate managed Bamboo: {error}");
+                    match process.try_wait() {
+                        // The child exited between the first observation and kill.
+                        Ok(Some(_)) => (),
+                        Ok(None) if !was_committing => {
+                            child.committing_update.store(false, Ordering::SeqCst);
+                            return Err(RequestRejected(message));
+                        }
+                        _ => return Err(Unconfirmed(message)),
+                    }
+                }
+            }
+        }
+        // Forced termination is expected to produce an unsuccessful exit code.
+        child.startup.0.store(2, Ordering::SeqCst);
+        Ok(())
     }
 
     pub(crate) fn set_committing_update(&self, committing: bool) -> Result<(), String> {
@@ -528,7 +587,7 @@ mod tests {
     const TEST_SHUTDOWN_PORT: &str = "BODHI_SHUTDOWN_FIXTURE_PORT";
 
     #[test]
-    #[ignore = "spawned as an owned native process by the graceful stop test"]
+    #[ignore = "spawned as an owned native process by the update stop tests"]
     fn shutdown_fixture_entry() {
         let work = PathBuf::from(std::env::var_os(TEST_SHUTDOWN_WORK).unwrap());
         let control = PathBuf::from(std::env::var_os(SHUTDOWN_DIR_ENV).unwrap());
@@ -604,6 +663,65 @@ mod tests {
         assert!(require_available_port(port).is_ok());
         assert!(profile.writer().is_ok());
         runtime.stop_for_update(Duration::ZERO).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn force_update_terminates_and_reaps_the_owned_child_without_requesting_shutdown() {
+        let work = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(work.path()).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut fixture = Command::new(std::env::current_exe().unwrap());
+        fixture
+            .args([
+                "--ignored",
+                "--exact",
+                "sidecar::tests::shutdown_fixture_entry",
+                "--nocapture",
+            ])
+            .env(TEST_SHUTDOWN_WORK, work.path())
+            .env(TEST_SHUTDOWN_PORT, port.to_string());
+
+        let runtime = SidecarState::default();
+        let status = runtime
+            .start(
+                fixture,
+                profile.writer().unwrap(),
+                port,
+                Some(&profile.state_dir),
+            )
+            .unwrap();
+        let child = runtime.owned_child().unwrap();
+        let control = child.shutdown.as_ref().unwrap().path();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !control.join("ready").is_file() || !status.is_ready() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(profile.writer().is_err());
+        assert!(require_available_port(port).is_err());
+
+        runtime
+            .force_stop_for_update(Duration::from_secs(5))
+            .await
+            .unwrap();
+        let exit = child.process.try_wait().unwrap().unwrap();
+        assert!(!exit.success());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(exit.signal(), Some(libc::SIGKILL));
+        }
+        assert!(!control.join("stop").exists());
+        assert!(!work.path().join("clean-exit").exists());
+        assert!(!status.is_ready());
+        assert!(!runtime.update_requires_process());
+        assert!(profile.writer().is_ok());
+        assert!(require_available_port(port).is_ok());
+        runtime.force_stop_for_update(Duration::ZERO).await.unwrap();
     }
 
     #[test]

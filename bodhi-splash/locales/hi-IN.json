@@ -99,6 +99,8 @@
   "updates.confirmBody": "आगे बढ़ने से पहले लंबे समय से चल रहे काम पूरे करें। Bodhi, Bamboo के बंद होने का इंतज़ार करेगा और फिर खुलकर अपडेट लगाएगा।",
   "updates.download": "अपडेट डाउनलोड करें",
   "updates.downloadRequired": "अपडेट लगाने से पहले उसे डाउनलोड और सत्यापित करें।",
+  "updates.forceUpdate": "अभी अपडेट करें और फिर से शुरू करें",
+  "updates.forceWarning": "चल रहे काम रुक जाएँगे।",
   "updates.failed": "अपडेट विफल रहा। वर्शन {effective} चल रहा है।",
   "updates.heading": "वर्शन और अपडेट",
   "updates.history": "अपडेट का इतिहास",

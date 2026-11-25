@@ -1,6 +1,64 @@
 use super::*;
 use std::fs;
 
+#[tokio::test]
+async fn force_update_only_queues_after_clean_shutdown_and_released_ownership() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile::open(directory.path()).unwrap();
+    let manager = Manager::new(profile.clone()).unwrap();
+    let original = component_channel::tests::initial_combination().await;
+    let channel = component_channel::tests::fixture_channel().await;
+    let candidate = channel.select_updates(&original).unwrap()[0].clone();
+    let update = SelectedUpdate {
+        current_sequence: original.sequence,
+        current: original.identity(),
+        candidate: candidate.clone(),
+    };
+    Journal {
+        active: Some(original.clone()),
+        ..Journal::default()
+    }
+    .save(&profile)
+    .unwrap();
+    journal::save_downloaded(&profile, &candidate).unwrap();
+    let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = occupied.local_addr().unwrap().port();
+    assert!(manager
+        .queue_after_force_shutdown(
+            &update,
+            async {
+                Err(crate::sidecar::UpdateShutdownError::Unconfirmed(
+                    "shutdown timed out".into(),
+                ))
+            },
+            port,
+        )
+        .await
+        .is_err());
+    assert!(manager
+        .queue_after_force_shutdown(&update, async { Ok(()) }, port)
+        .await
+        .is_err());
+    assert!(Journal::read(&profile).unwrap().queued.is_none());
+    drop(occupied);
+    let writer = profile.writer().unwrap();
+    assert!(manager
+        .queue_after_force_shutdown(&update, async { Ok(()) }, port)
+        .await
+        .is_err());
+    assert_eq!(manager.choose().await.unwrap(), original);
+    assert_eq!(
+        journal::read_downloaded(&profile).unwrap(),
+        Some(candidate.clone())
+    );
+    drop(writer);
+    manager
+        .queue_after_force_shutdown(&update, async { Ok(()) }, port)
+        .await
+        .unwrap();
+    assert_eq!(manager.choose().await.unwrap(), candidate);
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Bootstrap {

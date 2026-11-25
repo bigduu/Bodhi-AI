@@ -340,6 +340,7 @@ impl Manager {
     }
 }
 
+#[derive(PartialEq, Eq)]
 struct SelectedUpdate {
     current_sequence: u64,
     current: PairIdentity,

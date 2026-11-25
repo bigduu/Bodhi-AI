@@ -99,6 +99,8 @@
   "updates.confirmBody": "請先完成長時間執行的工作。確認後，Bodhi 會等待 Bamboo 完成關閉，再自動重新啟動並套用更新。",
   "updates.download": "下載更新",
   "updates.downloadRequired": "請先下載並驗證更新。",
+  "updates.forceUpdate": "立即更新並重新啟動",
+  "updates.forceWarning": "執行中的工作會中斷。",
   "updates.failed": "更新失敗。目前執行版本 {effective}。",
   "updates.heading": "版本與更新",
   "updates.history": "更新記錄",

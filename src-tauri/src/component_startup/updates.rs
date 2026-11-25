@@ -5,6 +5,7 @@ use super::{
 use crate::component_channel::{Changes, Combination, PairIdentity, UpdateKind, VerifiedChannel};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
+use crate::sidecar::UpdateShutdownError;
 use chrono::Utc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -25,6 +26,7 @@ pub(super) struct Updates {
     display: Mutex<Display>,
     action: tokio::sync::Mutex<()>,
     restart_requested: AtomicBool,
+    force_shutdown_started: AtomicBool,
     dialog_open: AtomicBool,
     pub(super) boot: tokio::sync::Mutex<()>,
     pub(super) ready: AtomicBool,
@@ -118,6 +120,14 @@ struct Offer {
     skipped: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForceOffer {
+    sequence: u64,
+    identity: String,
+    shutdown_started: bool,
+}
+
 fn artifact_identity(candidate: &Combination) -> Result<String, String> {
     let descriptor = serde_json::to_vec(candidate).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", Sha256::digest(descriptor)))
@@ -135,6 +145,7 @@ pub(crate) struct Snapshot {
     last_check: Option<String>,
     display: Display,
     offers: Vec<Offer>,
+    force_update: Option<ForceOffer>,
     history: Vec<History>,
 }
 
@@ -217,6 +228,7 @@ impl Updates {
 impl Manager {
     fn snapshot(&self, bodhi: String, locale: Locale) -> Result<Snapshot, String> {
         let journal = Journal::read(&self.profile)?;
+        let planned = super::PlannedRestart::read(&self.profile)?;
         let display = self
             .updates
             .display
@@ -224,6 +236,7 @@ impl Manager {
             .map_err(|_| "Cannot read the update status")?
             .clone();
         let mut offers = Vec::new();
+        let mut force_update = None;
         if !display.selections.is_empty() {
             let skipped = journal::read_skipped(&self.profile)?;
             let downloaded = journal::read_downloaded(&self.profile)?;
@@ -234,14 +247,32 @@ impl Manager {
                 let Some(kind) = update.candidate.update_kind(active) else {
                     continue;
                 };
+                let identity = artifact_identity(&update.candidate)?;
+                let skipped_offer = skipped.contains(&update.candidate.identity());
+                let downloaded_offer = downloaded.as_ref() == Some(&update.candidate);
+                if planned.is_none()
+                    && !self.updates.restoring.load(Ordering::Acquire)
+                    && !self.updates.restart_requested.load(Ordering::Acquire)
+                    && downloaded_offer
+                    && !skipped_offer
+                {
+                    force_update = Some(ForceOffer {
+                        sequence: update.candidate.sequence,
+                        identity: identity.clone(),
+                        shutdown_started: self
+                            .updates
+                            .force_shutdown_started
+                            .load(Ordering::Acquire),
+                    });
+                }
                 offers.push(Offer {
                     kind,
                     sequence: update.candidate.sequence,
-                    skipped: skipped.contains(&update.candidate.identity()),
-                    identity: artifact_identity(&update.candidate)?,
+                    skipped: skipped_offer,
+                    identity,
                     versions: Versions::from(&update.candidate),
                     changes: update.candidate.changes.clone(),
-                    downloaded: downloaded.as_ref() == Some(&update.candidate),
+                    downloaded: downloaded_offer,
                 });
             }
         }
@@ -254,7 +285,7 @@ impl Manager {
                 .queued
                 .as_ref()
                 .map(|candidate| candidate.sequence)
-                .or(super::PlannedRestart::read(&self.profile)?
+                .or(planned
                     .filter(|plan| {
                         journal.active.as_ref() != Some(&plan.candidate)
                             && !self.updates.restoring.load(Ordering::Acquire)
@@ -264,6 +295,7 @@ impl Manager {
             last_check: journal.last_check,
             display,
             offers,
+            force_update,
             history: journal.history,
         })
     }
@@ -323,6 +355,7 @@ impl Manager {
         };
         if journal.trial.is_some()
             || journal.queued.is_some()
+            || self.updates.force_shutdown_started.load(Ordering::Acquire)
             || super::PlannedRestart::read(&self.profile)?.is_some()
         {
             return Ok(false);
@@ -387,7 +420,9 @@ impl Manager {
 
     async fn download(&self, sequence: u64, identity: &str, locale: Locale) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
-        if super::PlannedRestart::read(&self.profile)?.is_some() {
+        if self.updates.force_shutdown_started.load(Ordering::Acquire)
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
             return Err(locale.text("updates.restartPending").into());
         }
         let update = self.updates.selected(sequence, identity, locale)?;
@@ -427,6 +462,7 @@ impl Manager {
         let journal = Journal::read(&self.profile)?;
         if self.updates.restart_requested.load(Ordering::Acquire)
             || self.updates.restoring.load(Ordering::Acquire)
+            || self.updates.force_shutdown_started.load(Ordering::Acquire)
             || journal.trial.is_some()
             || journal.queued.is_some()
             || super::PlannedRestart::read(&self.profile)?.is_some()
@@ -494,6 +530,9 @@ impl Manager {
             return Err("Wait for Bamboo to restore the previous sessions".into());
         }
         let locale = i18n::active(app);
+        if self.updates.force_shutdown_started.load(Ordering::Acquire) {
+            return Err(locale.text("updates.restartPending").into());
+        }
         let journal = Journal::read(&self.profile)?;
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let port = crate::web_service_port();
@@ -559,12 +598,99 @@ impl Manager {
             self.updates.status(Phase::RestartFailed, Some(error));
             return Ok(());
         }
+        self.request_restart(app);
+        Ok(())
+    }
+
+    fn force_target(
+        &self,
+        sequence: u64,
+        identity: &str,
+        locale: Locale,
+    ) -> Result<(Arc<SelectedUpdate>, Journal), String> {
+        if self.updates.restoring.load(Ordering::Acquire)
+            || self.updates.restart_requested.load(Ordering::Acquire)
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
+            return Err(locale.text("updates.restartPending").into());
+        }
+        let update = self.updates.selected(sequence, identity, locale)?;
+        let journal = Journal::read(&self.profile)?;
+        update.validate_transition(&journal)?;
+        self.require_unskipped(&update, locale)?;
+        if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
+            return Err(locale.text("updates.downloadRequired").into());
+        }
+        Ok((update, journal))
+    }
+
+    async fn force_apply<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        sequence: u64,
+        identity: &str,
+    ) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        let locale = i18n::active(app);
+        let (update, journal) = self.force_target(sequence, identity, locale)?;
+        let active = update.validate_transition(&journal)?;
+        self.updates.status(Phase::Saving, None);
+        let runtime = app.state::<crate::sidecar::SidecarState>();
+        let result = async {
+            self.reconfirm(active, &update, locale, self.load_catalog())
+                .await?;
+            self.reopen_downloaded_update(&update.candidate).await?;
+            self.queue_after_force_shutdown(
+                &update,
+                runtime.force_stop_for_update(Duration::from_secs(10)),
+                crate::web_service_port(),
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = result {
+            self.updates.status(Phase::RestartFailed, Some(error));
+            return Ok(());
+        }
+        self.request_restart(app);
+        Ok(())
+    }
+
+    pub(super) async fn queue_after_force_shutdown(
+        &self,
+        update: &SelectedUpdate,
+        shutdown: impl Future<Output = Result<(), UpdateShutdownError>>,
+        port: u16,
+    ) -> Result<(), String> {
+        let shutdown_already_started = self
+            .updates
+            .force_shutdown_started
+            .swap(true, Ordering::AcqRel);
+        self.updates.status(Phase::ShuttingDown, None);
+        match shutdown.await {
+            Ok(()) => {}
+            Err(UpdateShutdownError::RequestRejected(error)) => {
+                self.updates
+                    .force_shutdown_started
+                    .store(shutdown_already_started, Ordering::Release);
+                return Err(error);
+            }
+            Err(UpdateShutdownError::Unconfirmed(error)) => return Err(error),
+        }
+        let _writer = self.profile.writer()?;
+        crate::sidecar::require_available_port(port)?;
+        if super::PlannedRestart::read(&self.profile)?.is_some() {
+            return Err("A planned Bamboo restart still needs to complete".into());
+        }
+        self.queue(update)
+    }
+
+    fn request_restart<R: Runtime>(&self, app: &AppHandle<R>) {
         self.updates
             .restart_requested
             .store(true, Ordering::Release);
         self.updates.status(Phase::Restarting, None);
         app.request_restart();
-        Ok(())
     }
 
     async fn reconfirm(
@@ -714,6 +840,19 @@ pub(crate) async fn apply_component_update<R: Runtime>(
 ) -> Result<(), String> {
     authorize(&window, false)?;
     running_manager(&app)?.apply(&app, sequence, identity).await
+}
+
+#[tauri::command]
+pub(crate) async fn force_component_update<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    sequence: u64,
+    identity: String,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    running_manager(&app)?
+        .force_apply(&app, sequence, &identity)
+        .await
 }
 
 fn running_manager<R: Runtime>(app: &AppHandle<R>) -> Result<tauri::State<'_, Manager>, String> {
@@ -971,6 +1110,109 @@ mod tests {
         let queued = Journal::read(&profile).unwrap().queued.unwrap();
         assert_eq!(queued.bamboo.version, "2026.11.39");
         assert_eq!(queued.lotus, original.lotus);
+    }
+
+    #[tokio::test]
+    async fn force_update_is_specific_to_the_download_and_tracks_shutdown_retries() {
+        use crate::component_channel::tests::{
+            fixture_channel_with_independent_updates, initial_combination,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(directory.path()).unwrap();
+        let original = initial_combination().await;
+        Journal {
+            active: Some(original),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let locale = Locale::English;
+        manager
+            .detect(async { Ok(fixture_channel_with_independent_updates()) })
+            .await
+            .unwrap();
+        let offers = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+        let chosen = &offers[0];
+        let other = &offers[1];
+        let update = manager
+            .updates
+            .selected(chosen.sequence, &chosen.identity, locale)
+            .unwrap();
+        assert!(manager
+            .force_target(chosen.sequence, &chosen.identity, locale)
+            .is_err());
+        manager.record_download(&update, Ok(())).unwrap();
+        let granted = manager
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .force_update
+            .unwrap();
+        assert_eq!(granted.identity, chosen.identity);
+        assert!(!granted.shutdown_started);
+        assert!(manager
+            .force_target(chosen.sequence, &chosen.identity, locale)
+            .is_ok());
+        assert!(manager
+            .force_target(other.sequence, &other.identity, locale)
+            .is_err());
+        let rejected = || async {
+            Err(UpdateShutdownError::RequestRejected(
+                "shutdown request was rejected".into(),
+            ))
+        };
+        assert_eq!(
+            manager
+                .queue_after_force_shutdown(&update, rejected(), 0)
+                .await
+                .unwrap_err(),
+            "shutdown request was rejected"
+        );
+        assert!(manager
+            .download(chosen.sequence, &chosen.identity, locale)
+            .await
+            .is_ok());
+        assert!(
+            !manager
+                .snapshot("0.0.0".into(), locale)
+                .unwrap()
+                .force_update
+                .unwrap()
+                .shutdown_started
+        );
+
+        assert!(manager
+            .queue_after_force_shutdown(
+                &update,
+                async {
+                    Err(UpdateShutdownError::Unconfirmed(
+                        "shutdown timed out".into(),
+                    ))
+                },
+                0,
+            )
+            .await
+            .is_err());
+        assert!(manager
+            .queue_after_force_shutdown(&update, rejected(), 0)
+            .await
+            .is_err());
+        assert!(
+            manager
+                .snapshot("0.0.0".into(), locale)
+                .unwrap()
+                .force_update
+                .unwrap()
+                .shutdown_started
+        );
+        assert!(manager
+            .download(other.sequence, &other.identity, locale)
+            .await
+            .is_err());
+        assert!(manager
+            .force_target(chosen.sequence, &chosen.identity, locale)
+            .is_ok());
+        assert!(Journal::read(&profile).unwrap().queued.is_none());
     }
 
     #[tokio::test]

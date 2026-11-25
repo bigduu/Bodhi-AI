@@ -52,8 +52,15 @@ after long-running work finishes. Bodhi requests Bamboo's normal shutdown, waits
 for the owned process to release its profile lease and port, then reopens and
 checks the effective Bamboo and Lotus versions.
 
-If shutdown takes longer than the wait or the existing kernel cannot accept
-the request, the verified update stays pending. Use **Retry restart** after
-shutdown finishes, or reopen Bodhi to apply the pending update. Unix kernels
-without the managed shutdown channel use Bamboo's SIGTERM shutdown. Automatic
-restart on Windows requires a kernel that supports the managed shutdown channel.
+For a one-click switch, choose **Update and restart now** for any downloaded,
+verified target that is still eligible. Bodhi rechecks the target and
+terminates its current managed Bamboo process immediately. This interrupts
+running tasks, which need to be started again. Bodhi confirms the old process
+has ended and released the profile writer lease and port before switching to
+the exact selected versions.
+
+If an approved update is queued and shutdown takes longer than the wait, use
+**Retry restart** after shutdown finishes, or reopen Bodhi to apply the queued
+update. Unix kernels without the managed shutdown channel use Bamboo's SIGTERM
+shutdown. Automatic restart on Windows requires a kernel that supports the
+managed shutdown channel.
