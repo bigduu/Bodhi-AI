@@ -1,8 +1,9 @@
 name: Prepare published components
 run-name: >-
-  Component inputs for ${{ inputs.component == 'bamboo' && format('Bamboo {0}', inputs.bamboo || 'latest')
+  ${{ inputs.component == 'discover' && 'Discover published Bodhi component updates'
+  || format('Component inputs for {0}', inputs.component == 'bamboo' && format('Bamboo {0}', inputs.bamboo || 'latest')
   || inputs.component == 'lotus' && format('Lotus {0}', inputs.lotus || 'latest')
-  || format('Bamboo {0} and Lotus {1}', inputs.bamboo, inputs.lotus) }}
+  || format('Bamboo {0} and Lotus {1}', inputs.bamboo, inputs.lotus)) }}
 
 on:
   workflow_dispatch:
@@ -15,6 +16,7 @@ on:
           - pair
           - bamboo
           - lotus
+          - discover
       bamboo:
         description: Exact published Bamboo version (required for pair, defaults to latest for bamboo)
         type: string
@@ -34,6 +36,7 @@ permissions:
 jobs:
   candidate:
     name: Verify original component identities
+    if: inputs.component != 'discover'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -103,6 +106,51 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: component-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/component-candidate.json
+          if-no-files-found: error
+          retention-days: 30
+
+  discover:
+    name: Discover published ${{ matrix.component }} updates
+    if: inputs.component == 'discover'
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [bamboo, lotus]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the trusted repository entrypoint
+        run: test "$GITHUB_REPOSITORY" = bigduu/Bodhi-AI && test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check the producer against the current client catalog
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/component-candidate.json"
+          node scripts/prepare-component-candidate.cjs --since-catalog "$COMPONENT" > "$candidate"
+          if [[ -s "$candidate" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            jq -r '"\(.component) \(.release.version) verified for compatibility review (catalog \(.catalog.version))."' "$candidate" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$COMPONENT is current in the stable catalog." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: steps.check.outputs.available == 'true'
+        with:
+          name: component-candidate-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/component-candidate.json
           if-no-files-found: error
           retention-days: 30

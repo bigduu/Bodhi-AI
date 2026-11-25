@@ -2,8 +2,9 @@ use super::{
     journal::{self, History, Journal, Versions},
     Manager, SelectedUpdate,
 };
+use crate::component_channel::producer::{self, Discovery};
 use crate::component_channel::{Changes, Combination, PairIdentity, UpdateKind, VerifiedChannel};
-use crate::component_download::{DownloadSettings, DownloadSource};
+use crate::component_download::{while_selected, DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
 use crate::sidecar::UpdateShutdownError;
 use chrono::Utc;
@@ -205,13 +206,16 @@ impl Updates {
         selections: Vec<Arc<SelectedUpdate>>,
         downloaded: Option<&Combination>,
         skipped: &[PairIdentity],
+        warning: Option<String>,
     ) -> Result<bool, String> {
         let mut display = self
             .display
             .lock()
             .map_err(|_| "Cannot set the update status")?;
         display.selections = selections;
-        Ok(display.refresh_offers(downloaded, skipped))
+        let available = display.refresh_offers(downloaded, skipped);
+        display.error = warning;
+        Ok(available)
     }
 
     fn selected(
@@ -373,7 +377,26 @@ impl Manager {
     }
 
     async fn check(&self) -> bool {
-        match self.detect(self.load_catalog()).await {
+        let detected = self
+            .detect_updates(async |current, journal, downloaded| {
+                let mut settings = self.settings.subscribe();
+                loop {
+                    let selected = settings.borrow_and_update().clone();
+                    let work = producer::discover(
+                        &selected,
+                        current,
+                        downloaded,
+                        journal.suppressed_lotus.as_deref(),
+                        journal.rolled_back_lotus.as_ref(),
+                        super::producer_compatibility::is_legacy_lotus,
+                    );
+                    if let Some(result) = while_selected(&mut settings, &selected, work).await {
+                        return Ok(result);
+                    }
+                }
+            })
+            .await;
+        match detected {
             Ok(available) => available,
             Err(error) => {
                 self.updates.status(Phase::CheckFailed, Some(error));
@@ -382,12 +405,35 @@ impl Manager {
         }
     }
 
+    #[cfg(test)]
     async fn detect(
         &self,
         load_catalog: impl Future<Output = Result<VerifiedChannel, String>>,
     ) -> Result<bool, String> {
+        self.detect_updates(async move |current, journal, _| {
+            let catalog = load_catalog.await?;
+            Ok(Discovery {
+                offers: catalog
+                    .select_updates(current, journal.suppressed_lotus.as_deref())?
+                    .into_iter()
+                    .cloned()
+                    .collect(),
+                failures: Vec::new(),
+            })
+        })
+        .await
+    }
+
+    async fn detect_updates(
+        &self,
+        discovery: impl AsyncFnOnce(
+            &Combination,
+            &Journal,
+            Option<&Combination>,
+        ) -> Result<Discovery, String>,
+    ) -> Result<bool, String> {
         let journal = Journal::read(&self.profile)?;
-        let Some(current) = journal.active else {
+        let Some(current) = &journal.active else {
             return Ok(false);
         };
         if journal.trial.is_some()
@@ -398,25 +444,29 @@ impl Manager {
             return Ok(false);
         }
         self.updates.status(Phase::Checking, None);
-        let channel = load_catalog.await?;
+        let downloaded = journal::read_downloaded(&self.profile)?;
+        let Discovery { offers, failures } =
+            discovery(current, &journal, downloaded.as_ref()).await?;
+        if failures.len() == 2 && offers.is_empty() {
+            return Err(failures.join("\n"));
+        }
         self.record_check()?;
         let identity = current.identity();
-        let selections = channel
-            .select_updates(&current, journal.suppressed_lotus.as_deref())?
+        let selections = offers
             .into_iter()
             .map(|candidate| {
                 Arc::new(SelectedUpdate {
                     current_sequence: current.sequence,
                     current: identity.clone(),
-                    candidate: candidate.clone(),
+                    candidate,
                 })
             })
             .collect();
-        let downloaded = journal::read_downloaded(&self.profile)?;
         let skipped = journal::read_skipped(&self.profile)?;
-        let available = self
-            .updates
-            .set_selections(selections, downloaded.as_ref(), &skipped)?;
+        let warning = (!failures.is_empty()).then(|| failures.join("\n"));
+        let available =
+            self.updates
+                .set_selections(selections, downloaded.as_ref(), &skipped, warning)?;
         Ok(available
             && journal
                 .remind_after
@@ -603,10 +653,7 @@ impl Manager {
                 return Err(locale.text("updates.downloadRequired").into());
             }
             self.updates.status(Phase::Saving, None);
-            if let Err(error) = self
-                .reconfirm(active, &update, locale, self.load_catalog())
-                .await
-            {
+            if let Err(error) = self.reconfirm_selected(active, &update, locale).await {
                 self.updates.status(Phase::SaveFailed, Some(error));
                 return Ok(());
             }
@@ -772,8 +819,7 @@ impl Manager {
         self.updates.status(Phase::Saving, None);
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let result = async {
-            self.reconfirm(active, &update, locale, self.load_catalog())
-                .await?;
+            self.reconfirm_selected(active, &update, locale).await?;
             self.reopen_downloaded_update(&update.candidate).await?;
             self.queue_after_force_shutdown(
                 &update,
@@ -831,6 +877,27 @@ impl Manager {
             return Err(locale.text("updates.catalogChanged").into());
         }
         Ok(())
+    }
+
+    async fn reconfirm_selected(
+        &self,
+        active: &Combination,
+        update: &SelectedUpdate,
+        locale: Locale,
+    ) -> Result<(), String> {
+        if !update.candidate.producer_release {
+            return self
+                .reconfirm(active, update, locale, self.load_catalog())
+                .await;
+        }
+        let mut settings = self.settings.subscribe();
+        loop {
+            let selected = settings.borrow_and_update().clone();
+            let work = producer::reconfirm(&selected, active, &update.candidate);
+            if let Some(result) = while_selected(&mut settings, &selected, work).await {
+                return result;
+            }
+        }
     }
 }
 
@@ -1204,6 +1271,7 @@ mod tests {
             journal.suppressed_lotus.as_deref(),
             Some(current.lotus.manifest_sha256.as_str())
         );
+        assert_eq!(journal.rolled_back_lotus.as_ref(), Some(&current.lotus));
         assert!(journal.lotus_rollback_target().is_none());
         assert!(reopened.detect(async { Ok(channel) }).await.unwrap());
         let snapshot = reopened.snapshot("0.0.0".into(), locale).unwrap();
