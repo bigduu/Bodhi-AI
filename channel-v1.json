@@ -613,6 +613,160 @@
           "Merge pull request #704 from bigduu/lotus-next/fix/703-stable-startup-transcript"
         ]
       }
+    },
+    {
+      "sequence": 5,
+      "bootstrap": true,
+      "accepts": [
+        {
+          "bambooManifestSha256": "834cb55aeab3f68d7189743ce5d1813f27956c30c0c866688c678c955af8616a",
+          "lotusManifestSha256": "3e86e724b1199f780130bff16fc1ac18635b7d9e74c7566fdfada0b60d67b794"
+        }
+      ],
+      "bamboo": {
+        "version": "2026.11.45",
+        "sourceRevision": "bce07558dedd904cf5c4ba5e881d51d393e5af05",
+        "manifest": {
+          "sha256": "a0e716d59403c39231d2ef8904f1c863825eeecd4c5d8c445c7dc967e2e4416f",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "563754697829c0eaaabdaede22fc2d5fdb1ee077157b15f71c6aeb4afd1a1a07",
+              "sizeBytes": 273067216
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "d1de1d73f72a81de1c22df8e2c02fdd92314572c52ed5fe0c800a22fab7d73c5",
+                "sizeBytes": 135224491
+              },
+              "receiptSha256": "405cf711cf3c26dc37025977a065e635d45c3c00a9ea0d15b365105dc9114142"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "809bb94a19d309988c805456e347a66c81e4073c5e6d9608f0330719abec28b5",
+              "sizeBytes": 221410304
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "5b012fe348843c6c36b9ece067f4528d4c72dd1a317ca4618603542811e8ff10",
+                "sizeBytes": 154106773
+              },
+              "receiptSha256": "f7a0a9a5979afd56ad1ced14aca64b138424a208e83f23e7a698789429d1dd4d"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "f98778566055ca78df97a10cd1f06d23ece25afc6b467a19203abe0672ad20bc",
+              "sizeBytes": 298494680
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "440c2ba183d9964c82ddb330066c2d509da9b507f8dcf37df9ed58b031dc4ca2",
+                "sizeBytes": 163847411
+              },
+              "receiptSha256": "2a1e6dd3c8ce8d632b8e3906dca03244dab23222320b2961909a5bf6fdd24d93"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "a96d1195d0a669b4e3705ff4c5d7d33f85cb91e5eb14f65f9ef0ff2a75436fa7",
+              "sizeBytes": 268255232
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "0a225ab74546aaba2f2dd2e9dd067ee4f60e1a82322b3a6d841cbc719a235e7e",
+                "sizeBytes": 158153256
+              },
+              "receiptSha256": "688dce0d7177f878f0dde8ccedd4064b49438da1dc02d4352a13262ec6f8633d"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "5fd5f7f193ab4e37504ce4fa44b432dd9c9da0afd2e93ada1a4b223bb3cd8143",
+              "sizeBytes": 312815432
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "cbce6951b4e524fdf9fd52a9a5d112e70c25758e90646598936efc5f89cf3d80",
+                "sizeBytes": 156683244
+              },
+              "receiptSha256": "744e93951514c96b92e4cb73e44ed60a595343963eb5242a6b52107f17156b98"
+            }
+          }
+        ]
+      },
+      "lotus": {
+        "version": "2026.11.30",
+        "sourceRevision": "a64535bcc8a73ecea5bdf538ad1564dbfa0a73df",
+        "manifestSha256": "9244e297fbf6e0540c18f6b13ca3415af06704ed48fa8d8f3a0c4b083badfa9a",
+        "resourcesSha256": "bdfd896fbd5611ea6aab1631a7395e0cb2432bbaf871f0b2afc8cd8ea379f534",
+        "tarball": {
+          "sha256": "f239743f72fc29f45cd798cee15acfbbab059c09c9d805720d98a52cfed6450a",
+          "sizeBytes": 4145527
+        }
+      },
+      "changes": {
+        "bamboo": [
+          "fix(memory): prevent global project context injection",
+          "fix(memory): refresh generated memory guidance and feature proof",
+          "Merge accepted dev for the prompt memory fix",
+          "Merge branch 'dev' into bamboo/fix/3048-scope-automatic-prompt-memory",
+          "fix(memory): scope automatic prompt memory (#3050)",
+          "fix(release): recover frozen Bamboo v2026.11.43 crates",
+          "fix(release): recover frozen Bamboo v2026.11.43 crates (#3054)",
+          "chore(deps): embed Jiandu 0.5.1 and Lotus Next 2026.11.28",
+          "test(memory): adapt legacy fixtures to Jiandu 0.5.1",
+          "chore(deps): embed Jiandu 0.5.1 and Lotus Next 2026.11.28 (#3057)",
+          "fix: stop exact monitored background commands",
+          "fix: refresh main session context for Side Chat (#3059)",
+          "refactor: use the existing coordinator module for stop outcomes",
+          "Merge pull request #3061 from bigduu/bamboo/fix/3059-side-chat-current-context",
+          "Merge branch 'dev' into bamboo/fix/2675-background-command-stop",
+          "test: keep the background stop case in the server shard",
+          "Merge pull request #3060 from bigduu/bamboo/fix/2675-background-command-stop",
+          "fix: recover Supervisor tool discovery after mixed calls",
+          "Merge pull request #3064 from bigduu/bamboo/fix/3063-supervisor-discovery-recovery"
+        ],
+        "lotus": [
+          "fix: keep running sessions in their sidebar groups (#707)",
+          "fix: isolate scrolling in the composer model picker",
+          "fix: stop monitored background commands by handle",
+          "test: target original session rows in sidebar navigation",
+          "test: distinguish monitored command and generation stop controls",
+          "Merge pull request #708 from bigduu/lotus-next/fix/707-priority-shortcuts",
+          "Merge branch 'dev' into lotus-next/fix/710-stop-background-command",
+          "Merge branch 'dev' into lotus-next/fix/709-model-picker-scroll",
+          "fix: keep Mermaid errors inside message cards (#713)",
+          "Merge pull request #712 from bigduu/lotus-next/fix/709-model-picker-scroll",
+          "Merge branch 'dev' into lotus-next/fix/710-stop-background-command",
+          "Merge remote-tracking branch 'origin/dev' into lotus-next/fix/713-mermaid-error-overlay",
+          "Merge pull request #714 from bigduu/lotus-next/fix/713-mermaid-error-overlay",
+          "Merge branch 'dev' into lotus-next/fix/710-stop-background-command",
+          "Merge pull request #711 from bigduu/lotus-next/fix/710-stop-background-command"
+        ]
+      }
     }
   ]
 }
