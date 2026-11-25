@@ -1,10 +1,10 @@
-//! Resolve Lotus from a release identity authenticated by the component channel.
+//! Verify and stage a Lotus Next frontend using its published release identity.
 use super::{
     download, file_inventory, hash_bytes, owned_directory, safe_relative, valid_sha256,
     VerifiedFrontend,
 };
 use crate::bamboo_profile::{is_link, publish_directory, Profile};
-use crate::component_channel::LotusRelease;
+use crate::component_channel::{Asset, LotusRelease};
 use crate::component_download::{acquire_asset, DownloadSettings, DownloadSource};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -57,7 +57,7 @@ pub(crate) fn reopen_release(
 }
 
 /// Reuse a verified local frontend or acquire the approved release from npm.
-/// The caller supplies a release identity from the authenticated channel.
+/// The caller supplies an independently verified release identity.
 pub(crate) async fn prepare_release(
     profile_data: &Path,
     release: &LotusRelease,
@@ -89,21 +89,108 @@ pub(crate) async fn prepare_release(
 
 fn verify_release(root: &Path, release: &LotusRelease) -> Result<VerifiedFrontend, String> {
     let dist = owned_directory(&owned_directory(root)?.join("dist"))?;
-    let path = dist.join(MANIFEST);
-    let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-    if !metadata.is_file() || is_link(&metadata) || metadata.len() > MAX_MANIFEST {
-        return Err("Invalid Lotus Next manifest file".into());
+    let bytes = manifest_bytes(&dist)?;
+    let manifest = parse_manifest(&bytes, release)?;
+    verify_inventory(dist, manifest, release)
+}
+
+/// Inspect an npm-integrity-verified archive in the caller's private scratch directory.
+pub(crate) fn inspect_release_archive(
+    version: &str,
+    archive: &[u8],
+    scratch: &Path,
+) -> Result<LotusRelease, String> {
+    if archive.is_empty() || archive.len() > download::MAX_DOWNLOAD {
+        return Err("Invalid Lotus Next archive size".into());
+    }
+    let dist = scratch.join("dist");
+    download::extract_dist(archive, &dist, None).map_err(|error| error.to_string())?;
+    let bytes = manifest_bytes(&dist)?;
+    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    if manifest.source_revision.len() != 40
+        || !manifest
+            .source_revision
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err("Invalid Lotus Next source revision".into());
+    }
+    let release = LotusRelease {
+        version: version.to_string(),
+        source_revision: manifest.source_revision.clone(),
+        manifest_sha256: hash_bytes(&bytes),
+        resources_sha256: manifest.resources_sha256.clone(),
+        tarball: Asset {
+            sha256: hash_bytes(archive),
+            size_bytes: archive.len() as u64,
+        },
+    };
+    check_manifest(&manifest, &release)?;
+    verify_inventory(dist, manifest, &release)?;
+    Ok(release)
+}
+
+/// Read one optional resource bound to the exact authenticated release manifest.
+pub(crate) fn read_release_resource(
+    dist: &Path,
+    release: &LotusRelease,
+    resource_path: &str,
+    max_bytes: u64,
+) -> Result<Option<Vec<u8>>, String> {
+    let dist = owned_directory(dist)?;
+    let bytes = manifest_bytes(&dist)?;
+    let manifest = parse_manifest(&bytes, release)?;
+    let Some(resource) = manifest
+        .resources
+        .iter()
+        .find(|item| item.path == resource_path)
+    else {
+        return Ok(None);
+    };
+    if !safe_relative(&resource.path)
+        || resource.size > max_bytes
+        || !valid_sha256(&resource.sha256)
+    {
+        return Err("Invalid Lotus Next resource identity".into());
+    }
+    let bytes = regular_file_bytes(&dist.join(&resource.path), max_bytes)?;
+    if bytes.len() as u64 != resource.size || hash_bytes(&bytes) != resource.sha256 {
+        return Err("A Lotus Next resource differs from its manifest".into());
+    }
+    Ok(Some(bytes))
+}
+
+fn manifest_bytes(dist: &Path) -> Result<Vec<u8>, String> {
+    regular_file_bytes(&dist.join(MANIFEST), MAX_MANIFEST)
+}
+
+fn regular_file_bytes(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.is_file() || is_link(&metadata) || metadata.len() > max_bytes {
+        return Err("Invalid Lotus Next artifact file".into());
     }
     let mut bytes = Vec::new();
-    fs::File::open(&path)
+    fs::File::open(path)
         .map_err(|error| error.to_string())?
-        .take(MAX_MANIFEST + 1)
+        .take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
-    if bytes.len() as u64 > MAX_MANIFEST || hash_bytes(&bytes) != release.manifest_sha256 {
-        return Err("The Lotus Next manifest differs from the component catalog".into());
+    if bytes.len() as u64 > max_bytes {
+        return Err("Lotus Next artifact file exceeds its size limit".into());
     }
-    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    Ok(bytes)
+}
+
+fn parse_manifest(bytes: &[u8], release: &LotusRelease) -> Result<Manifest, String> {
+    if hash_bytes(bytes) != release.manifest_sha256 {
+        return Err("The Lotus Next manifest differs from the verified release".into());
+    }
+    let manifest: Manifest = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    check_manifest(&manifest, release)?;
+    Ok(manifest)
+}
+
+fn check_manifest(manifest: &Manifest, release: &LotusRelease) -> Result<(), String> {
     if manifest.schema_version != 1
         || manifest.package_name != "@bigduu/lotus-next"
         || manifest.package_version != release.version
@@ -114,7 +201,14 @@ fn verify_release(root: &Path, release: &LotusRelease) -> Result<VerifiedFronten
     {
         return Err("Invalid Lotus Next release manifest".into());
     }
+    Ok(())
+}
 
+fn verify_inventory(
+    dist: PathBuf,
+    manifest: Manifest,
+    release: &LotusRelease,
+) -> Result<VerifiedFrontend, String> {
     let mut expected = BTreeMap::from([(MANIFEST.to_string(), release.manifest_sha256.clone())]);
     let mut inventory_hash = Sha256::new();
     for resource in manifest.resources {
@@ -145,7 +239,7 @@ fn verify_release(root: &Path, release: &LotusRelease) -> Result<VerifiedFronten
     let mut actual = BTreeMap::new();
     file_inventory(&dist, &dist, &mut actual)?;
     if actual != expected {
-        return Err("The Lotus Next resources differ from the component catalog".into());
+        return Err("The Lotus Next resources differ from the verified release".into());
     }
     Ok(VerifiedFrontend {
         static_dir: Some(dist),

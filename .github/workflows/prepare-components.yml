@@ -1,13 +1,11 @@
 name: Prepare published components
 run-name: >-
-  ${{ (github.event_name == 'schedule' || inputs.component == 'discover') && 'Discover published Bodhi component updates'
+  ${{ inputs.component == 'discover' && 'Discover published Bodhi component updates'
   || format('Component inputs for {0}', inputs.component == 'bamboo' && format('Bamboo {0}', inputs.bamboo || 'latest')
   || inputs.component == 'lotus' && format('Lotus {0}', inputs.lotus || 'latest')
   || format('Bamboo {0} and Lotus {1}', inputs.bamboo, inputs.lotus)) }}
 
 on:
-  schedule:
-    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       component:
@@ -38,7 +36,7 @@ permissions:
 jobs:
   candidate:
     name: Verify original component identities
-    if: github.event_name == 'workflow_dispatch' && inputs.component != 'discover'
+    if: inputs.component != 'discover'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -114,7 +112,7 @@ jobs:
 
   discover:
     name: Discover published ${{ matrix.component }} updates
-    if: github.event_name == 'schedule' || inputs.component == 'discover'
+    if: inputs.component == 'discover'
     strategy:
       fail-fast: false
       matrix:
