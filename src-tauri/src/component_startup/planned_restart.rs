@@ -210,7 +210,7 @@ mod tests {
         let original = initial_combination().await;
         let channel = fixture_channel_with_independent_updates();
         let mut candidate = channel
-            .select_updates(&original)
+            .select_updates(&original, None)
             .unwrap()
             .into_iter()
             .find(|candidate| candidate.update_kind(&original) == Some(UpdateKind::Lotus))

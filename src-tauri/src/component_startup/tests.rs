@@ -8,7 +8,7 @@ async fn force_update_only_queues_after_clean_shutdown_and_released_ownership() 
     let manager = Manager::new(profile.clone()).unwrap();
     let original = component_channel::tests::initial_combination().await;
     let channel = component_channel::tests::fixture_channel().await;
-    let candidate = channel.select_updates(&original).unwrap()[0].clone();
+    let candidate = channel.select_updates(&original, None).unwrap()[0].clone();
     let update = SelectedUpdate {
         current_sequence: original.sequence,
         current: original.identity(),

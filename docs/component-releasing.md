@@ -64,3 +64,21 @@ If an approved update is queued and shutdown takes longer than the wait, use
 update. Unix kernels without the managed shutdown channel use Bamboo's SIGTERM
 shutdown. Automatic restart on Windows requires a kernel that supports the
 managed shutdown channel.
+
+## Rolling back Lotus Next
+
+After a Lotus-only update becomes ready, Bodhi records the exact previous
+Lotus and Bamboo combination. In the Lotus Next panel, choose **Restart and
+roll back to {version}** after finishing running tasks. Bodhi verifies the
+cached assets locally, stops its own Bamboo normally, and checks the profile
+writer and service port before staging the rollback. It starts the same
+Bamboo with the previous Lotus and verifies the served frontend. If the
+rollback fails at startup, Bodhi reopens the active combination. If the
+existing process is still shutting down, retry the same rollback once it
+exits.
+
+Bodhi hides the rolled-away Lotus build from new offers after a successful
+rollback. Choose **Show the version I rolled back from** to make it eligible
+again. Existing profiles gain this rollback option after their first verified
+Lotus-only update with this shell. Changing Bamboo requires new compatibility
+evidence for any previously used Lotus build.

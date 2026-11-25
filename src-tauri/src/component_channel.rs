@@ -159,6 +159,7 @@ impl VerifiedChannel {
     pub(crate) fn select_updates(
         &self,
         current: &Combination,
+        suppressed_lotus: Option<&str>,
     ) -> Result<Vec<&Combination>, String> {
         native_target_index(env!("BODHI_BUILD_TARGET"))?;
         let identity = current.identity();
@@ -168,7 +169,10 @@ impl VerifiedChannel {
         let mut lotus = None;
         let mut pair = None;
         for combination in &self.0.combinations {
-            if !combination.accepts_update_from(current.sequence, &identity) {
+            if !combination.accepts_update_from(current.sequence, &identity)
+                || (combination.lotus != current.lotus
+                    && suppressed_lotus == Some(combination.lotus.manifest_sha256.as_str()))
+            {
                 continue;
             }
             match combination.update_kind(current) {

@@ -17,6 +17,7 @@ const componentViews = [...document.querySelectorAll("[data-update-kind]")].map(
 let currentSnapshot = null;
 let actionPending = false;
 let actionError = null;
+let rollbackAttempt = null;
 let mirrorUrl = null;
 let dirty = false;
 let saving = false;
@@ -28,7 +29,7 @@ function showSettingsState() {
   get("mirror-settings").hidden = !custom;
   get("mirror-url").disabled = !custom;
   get("mirror-url").required = custom;
-  get("settings-fields").disabled = saving;
+  get("settings-fields").disabled = saving || !!currentSnapshot?.lotusRollback?.shutdownStarted;
   get("save-settings").disabled = !dirty;
   const status = get("settings-status");
   const message = settingsError || (settingsMessage && i18n.text(settingsMessage));
@@ -87,14 +88,19 @@ function renderOfferSelection(view, offers, busy) {
 }
 
 function canForceUpdate(snapshot, offer) {
-  return snapshot.running && snapshot.queued == null && offer?.downloaded && !offer.skipped
+  return snapshot.running && snapshot.queued == null && !snapshot.lotusRollback?.shutdownStarted
+    && offer?.downloaded && !offer.skipped
     && snapshot.forceUpdate?.sequence === offer.sequence
     && snapshot.forceUpdate?.identity === offer.identity;
 }
 
+function updateShutdownStarted(snapshot) {
+  return !!(snapshot.forceUpdate?.shutdownStarted || snapshot.lotusRollback?.shutdownStarted);
+}
+
 function renderPanelActions(view, offer, snapshot, phase, busy) {
   const canSkip = snapshot.running && snapshot.queued == null
-    && !snapshot.forceUpdate?.shutdownStarted && !!offer;
+    && !updateShutdownStarted(snapshot) && !!offer;
   const canDownload = canSkip && !offer.skipped && !offer.downloaded;
   const canApply = canSkip && !offer.skipped && offer.downloaded;
   const canForce = canForceUpdate(snapshot, offer);
@@ -146,7 +152,7 @@ function renderPanel(view, snapshot, busy) {
   const offers = snapshot.offers.filter((offer) => offer.kind === view.kind);
   view.panel.hidden = view.kind === "pair" && offers.length === 0;
   const offer = renderOfferSelection(view, offers,
-    actionPending || queued != null || snapshot.forceUpdate?.shutdownStarted);
+    actionPending || queued != null || updateShutdownStarted(snapshot));
   const downloadIsHere = offer && display.downloadSequence === offer.sequence
     && downloadPhases.includes(display.phase);
   const phase = downloadIsHere ? display.phase
@@ -165,10 +171,34 @@ function renderPanel(view, snapshot, busy) {
   return renderPanelActions(view, offer, snapshot, phase, busy);
 }
 
+function renderLotusRollbackActions(snapshot, busy) {
+  const { lotusRollback, lotusUpdateSuppressed, display, running, queued, forceUpdate, restoring } = snapshot;
+  const canChangeLotus = running && queued == null && !forceUpdate?.shutdownStarted && !restoring;
+  const available = canChangeLotus && !!lotusRollback;
+  const showVersion = get("show-rolled-back-lotus");
+  showVersion.hidden = !(canChangeLotus && lotusUpdateSuppressed && !lotusRollback?.shutdownStarted && !busy);
+  get("lotus-rollback").hidden = !available;
+  const button = get("rollback-lotus");
+  button.disabled = !available || busy;
+  if (!available) return;
+
+  let label = "updates.rollbackLotus";
+  if (lotusRollback.shutdownStarted || rollbackAttempt === lotusRollback.identity) {
+    if (actionPending || ["shuttingDown", "restarting"].includes(display.phase)) {
+      label = "updates.rollingBackLotus";
+    } else if (lotusRollback.shutdownStarted || ["restartFailed", "saveFailed"].includes(display.phase)
+        || actionError?.identity === rollbackAttempt) {
+      label = "updates.retryRollbackLotus";
+    }
+  }
+  setText(button, i18n.text(label, { version: lotusRollback.versions.lotus }));
+}
+
 function renderUpdates(snapshot) {
   const { display, queued, running, offers } = snapshot;
   const busy = actionPending || busyPhases.includes(display.phase);
   const canApply = componentViews.map((view) => renderPanel(view, snapshot, busy)).some(Boolean);
+  renderLotusRollbackActions(snapshot, busy);
   const pendingRestart = running && queued != null;
   get("retry-restart").hidden = !pendingRestart;
   get("retry-restart").disabled = busy;
@@ -177,7 +207,7 @@ function renderUpdates(snapshot) {
   const check = get("check");
   setText(check, i18n.text(running ? "updates.check" : "updates.retry"));
   check.disabled = busy || (running
-    ? pendingRestart || !!snapshot.forceUpdate?.shutdownStarted
+    ? pendingRestart || updateShutdownStarted(snapshot)
     : display.phase !== "startupFailed");
 
   const scopedDownload = downloadPhases.includes(display.phase)
@@ -248,6 +278,7 @@ async function runAction(command, args) {
   if (actionPending || !currentSnapshot) return;
   actionPending = true;
   actionError = null;
+  rollbackAttempt = command === "rollback_lotus_component" ? args.identity : null;
   renderUpdates(currentSnapshot);
   try {
     await invoke(command, args);
@@ -259,12 +290,24 @@ async function runAction(command, args) {
 }
 
 get("check").addEventListener("click", () => {
+  if (get("check").disabled) return;
   void runAction(currentSnapshot?.running ? "check_components" : "retry_component_startup");
 });
 
 get("retry-restart").addEventListener("click", () => {
   const queued = currentSnapshot?.queued;
   if (queued != null) void runAction("apply_component_update", { sequence: queued });
+});
+
+get("rollback-lotus").addEventListener("click", () => {
+  const rollback = currentSnapshot?.lotusRollback;
+  if (!rollback || get("rollback-lotus").disabled) return;
+  void runAction("rollback_lotus_component", { identity: rollback.identity });
+});
+
+get("show-rolled-back-lotus").addEventListener("click", () => {
+  if (get("show-rolled-back-lotus").hidden) return;
+  void runAction("resume_lotus_updates");
 });
 
 for (const view of componentViews) {
@@ -301,7 +344,7 @@ get("source").addEventListener("change", editSettings);
 
 get("download-settings").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (saving || !dirty) return;
+  if (saving || !dirty || currentSnapshot?.lotusRollback?.shutdownStarted) return;
   const source = get("source").value;
   const settings = {
     source,
