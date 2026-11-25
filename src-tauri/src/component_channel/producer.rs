@@ -74,13 +74,7 @@ fn collect(
         offers: Vec::new(),
         failures: Vec::new(),
     };
-    let mut retained = downloaded.filter(|pair| {
-        pair.accepts_update_from(current.sequence, &current.identity())
-            && (eligible(current, pair, suppressed_lotus)
-                || (!pair.producer_release
-                    && pair.update_kind(current) == Some(UpdateKind::Pair)
-                    && suppressed_lotus != Some(pair.lotus.manifest_sha256.as_str())))
-    });
+    let mut retained = downloaded.filter(|pair| retain_download(current, pair, suppressed_lotus));
     for (name, result) in [("Bamboo", bamboo), ("Lotus Next", lotus)] {
         match result {
             Ok(Some(mut pair)) if eligible(current, &pair, suppressed_lotus) => {
@@ -124,6 +118,18 @@ fn collect(
         discovery.offers.push(saved.clone());
     }
     discovery
+}
+
+pub(crate) fn retain_download(
+    current: &Combination,
+    pair: &Combination,
+    suppressed_lotus: Option<&str>,
+) -> bool {
+    pair.accepts_update_from(current.sequence, &current.identity())
+        && (eligible(current, pair, suppressed_lotus)
+            || (!pair.producer_release
+                && pair.update_kind(current) == Some(UpdateKind::Pair)
+                && suppressed_lotus != Some(pair.lotus.manifest_sha256.as_str())))
 }
 
 fn eligible(current: &Combination, pair: &Combination, suppressed_lotus: Option<&str>) -> bool {

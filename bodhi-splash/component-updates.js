@@ -23,6 +23,20 @@ let dirty = false;
 let saving = false;
 let settingsMessage = "";
 let settingsError = "";
+let checkIntervalDirty = false;
+let checkIntervalSaving = false;
+
+function showCheckIntervalState() {
+  get("check-interval-fields").disabled = checkIntervalSaving;
+  get("save-check-interval").disabled = !checkIntervalDirty;
+}
+
+function renderCheckInterval(hours) {
+  if (!checkIntervalDirty && !checkIntervalSaving) {
+    get("auto-check-hours").value = hours ?? 3;
+  }
+  showCheckIntervalState();
+}
 
 function showSettingsState() {
   const custom = get("source").value === "custom";
@@ -234,6 +248,7 @@ function render(snapshot) {
   get("bodhi").textContent = snapshot.bodhi;
   get("bamboo").textContent = active?.bamboo || "—";
   get("lotus").textContent = active?.lotus || "—";
+  renderCheckInterval(snapshot.autoCheckHours);
   renderSettings(snapshot.settings);
   renderUpdates(snapshot);
   get("last-check").textContent = snapshot.lastCheck
@@ -372,6 +387,36 @@ get("download-settings").addEventListener("submit", async (event) => {
   } finally {
     saving = false;
     showSettingsState();
+  }
+});
+
+const checkIntervalStatus = get("check-interval-status");
+get("auto-check-hours").addEventListener("input", () => {
+  checkIntervalDirty = true;
+  checkIntervalStatus.textContent = "";
+  checkIntervalStatus.classList.remove("error");
+  showCheckIntervalState();
+});
+
+get("check-interval-settings").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!checkIntervalDirty || checkIntervalSaving) return;
+  const interval = get("auto-check-hours");
+  if (!interval.reportValidity()) return;
+  checkIntervalSaving = true;
+  checkIntervalStatus.textContent = "";
+  checkIntervalStatus.classList.remove("error");
+  showCheckIntervalState();
+  try {
+    await invoke("set_component_check_interval", { hours: interval.valueAsNumber });
+    checkIntervalDirty = false;
+    checkIntervalStatus.textContent = i18n.text("updates.checkIntervalSaved");
+  } catch (error) {
+    checkIntervalStatus.textContent = String(error);
+    checkIntervalStatus.classList.add("error");
+  } finally {
+    checkIntervalSaving = false;
+    showCheckIntervalState();
   }
 });
 
