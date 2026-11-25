@@ -1,17 +1,26 @@
 name: Prepare published components
-run-name: Component inputs for Bamboo ${{ inputs.bamboo }} and Lotus ${{ inputs.lotus }}
+run-name: >-
+  Component inputs for ${{ inputs.component == 'bamboo' && format('Bamboo {0}', inputs.bamboo || 'latest')
+  || inputs.component == 'lotus' && format('Lotus {0}', inputs.lotus || 'latest')
+  || format('Bamboo {0} and Lotus {1}', inputs.bamboo, inputs.lotus) }}
 
 on:
   workflow_dispatch:
     inputs:
+      component:
+        description: Component to verify
+        type: choice
+        default: pair
+        options:
+          - pair
+          - bamboo
+          - lotus
       bamboo:
-        description: Exact published Bamboo version
+        description: Exact published Bamboo version (required for pair, defaults to latest for bamboo)
         type: string
-        required: true
       lotus:
-        description: Exact published Lotus Next npm version
+        description: Exact published Lotus Next npm version (required for pair, defaults to latest for lotus)
         type: string
-        required: true
       previous_bamboo:
         description: Previously accepted Bamboo version for the change history
         type: string
@@ -43,16 +52,53 @@ jobs:
       - name: Read and verify upstream outputs without building the shell
         env:
           GH_TOKEN: ${{ github.token }}
+          COMPONENT_SELECTION: ${{ inputs.component || 'pair' }}
           COMPONENT_BAMBOO: ${{ inputs.bamboo }}
           COMPONENT_LOTUS: ${{ inputs.lotus }}
           COMPONENT_PRIOR_BAMBOO: ${{ inputs.previous_bamboo }}
           COMPONENT_PRIOR_LOTUS: ${{ inputs.previous_lotus }}
         run: |
           set -euo pipefail
-          args=("$COMPONENT_BAMBOO" "$COMPONENT_LOTUS")
-          if [[ -n "$COMPONENT_PRIOR_BAMBOO" || -n "$COMPONENT_PRIOR_LOTUS" ]]; then
-            args+=(--from "$COMPONENT_PRIOR_BAMBOO" "$COMPONENT_PRIOR_LOTUS")
-          fi
+          case "$COMPONENT_SELECTION" in
+            pair)
+              if [[ -z "$COMPONENT_BAMBOO" || -z "$COMPONENT_LOTUS" ]]; then
+                echo '::error::Pair mode requires exact published Bamboo and Lotus versions.'
+                exit 1
+              fi
+              args=("$COMPONENT_BAMBOO" "$COMPONENT_LOTUS")
+              if [[ -n "$COMPONENT_PRIOR_BAMBOO" || -n "$COMPONENT_PRIOR_LOTUS" ]]; then
+                if [[ -z "$COMPONENT_PRIOR_BAMBOO" || -z "$COMPONENT_PRIOR_LOTUS" ]]; then
+                  echo '::error::Pair change history requires both previous versions.'
+                  exit 1
+                fi
+                args+=(--from "$COMPONENT_PRIOR_BAMBOO" "$COMPONENT_PRIOR_LOTUS")
+              fi
+              ;;
+            bamboo)
+              if [[ -n "$COMPONENT_LOTUS" || -n "$COMPONENT_PRIOR_LOTUS" ]]; then
+                echo '::error::Leave both Lotus version fields blank for a Bamboo component.'
+                exit 1
+              fi
+              args=(--component bamboo "${COMPONENT_BAMBOO:-latest}")
+              if [[ -n "$COMPONENT_PRIOR_BAMBOO" ]]; then
+                args+=(--from "$COMPONENT_PRIOR_BAMBOO")
+              fi
+              ;;
+            lotus)
+              if [[ -n "$COMPONENT_BAMBOO" || -n "$COMPONENT_PRIOR_BAMBOO" ]]; then
+                echo '::error::Leave both Bamboo version fields blank for a Lotus component.'
+                exit 1
+              fi
+              args=(--component lotus "${COMPONENT_LOTUS:-latest}")
+              if [[ -n "$COMPONENT_PRIOR_LOTUS" ]]; then
+                args+=(--from "$COMPONENT_PRIOR_LOTUS")
+              fi
+              ;;
+            *)
+              echo '::error::Select pair, bamboo or lotus.'
+              exit 1
+              ;;
+          esac
           node scripts/prepare-component-candidate.cjs "${args[@]}" > "$RUNNER_TEMP/component-candidate.json"
       - uses: actions/upload-artifact@v7
         with:

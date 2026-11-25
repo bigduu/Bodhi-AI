@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { browserArtifacts, changeNotes, releaseChanges } = require("./prepare-component-candidate.cjs");
+const {
+  browserArtifacts, changeNotes, parseSingleComponentArgs, releaseChanges, resolveLatestVersion,
+} = require("./prepare-component-candidate.cjs");
 
 function fixture() {
   const version = "2026.11.39", sourceRevision = "a".repeat(40), manifestSha256 = "b".repeat(64);
@@ -31,6 +33,65 @@ test("desktop browser inputs belong to the exact Bamboo release and all five tar
   const changed = structuredClone(release);
   changed.assets[1].digest = changed.assets[0].digest;
   assert.throws(() => browserArtifacts(manifest, expected, changed));
+});
+
+test("single-component arguments allow independent latest and exact release selection", () => {
+  assert.deepEqual(parseSingleComponentArgs(["bamboo"]), {
+    component: "bamboo", version: "latest", previousVersion: undefined,
+  });
+  assert.deepEqual(parseSingleComponentArgs(["bamboo", "--from", "2026.11.39"]), {
+    component: "bamboo", version: "latest", previousVersion: "2026.11.39",
+  });
+  assert.deepEqual(parseSingleComponentArgs(["lotus", "latest", "--from", "2026.11.27"]), {
+    component: "lotus", version: "latest", previousVersion: "2026.11.27",
+  });
+  assert.deepEqual(parseSingleComponentArgs(["lotus", "2026.11.30"]), {
+    component: "lotus", version: "2026.11.30", previousVersion: undefined,
+  });
+});
+
+test("single-component arguments reject unstable or ambiguous release selections", () => {
+  for (const args of [
+    [], ["bamboo", "--from"], ["bamboo", "--from", "latest"], ["bamboo", "--from", "2026.11.38-rc.1"],
+    ["lotus", "v2026.11.30"], ["lotus", "2026.11.30-rc.1"], ["lotus", "2026.11.30+build"],
+    ["lotus", "2026.11.30", "2026.11.29"], ["lotus", "latest", "--unknown", "2026.11.29"],
+    ["lotus", "latest", "--from", "2026.11.29", "2026.11.28"], ["nova", "latest"],
+  ]) {
+    assert.throws(() => parseSingleComponentArgs(args), `Invalid arguments ${JSON.stringify(args)}`);
+  }
+});
+
+test("Bamboo latest reads only the official published GitHub release", async () => {
+  const release = {
+    tag_name: "v2026.11.44", draft: false, prerelease: false, published_at: "2026-11-25T02:48:22Z",
+  };
+  const npmRead = () => assert.fail("Bamboo must not read the Lotus npm registry");
+  const bambooRequest = (value) => (endpoint) => {
+    assert.equal(endpoint, "repos/bigduu/Bamboo-agent/releases/latest");
+    return value;
+  };
+
+  assert.equal(await resolveLatestVersion("bamboo", bambooRequest(release), npmRead), "2026.11.44");
+  for (const invalid of [
+    { draft: true }, { prerelease: true }, { published_at: null },
+    { tag_name: "2026.11.44" }, { tag_name: "v2026.11.44-rc.1" },
+  ]) {
+    await assert.rejects(() => resolveLatestVersion("bamboo", bambooRequest({ ...release, ...invalid }), npmRead));
+  }
+});
+
+test("Lotus latest reads only the official package dist-tag", async () => {
+  const metadata = { name: "@bigduu/lotus-next", version: "2026.11.30" };
+  const githubRequest = () => assert.fail("Lotus must not read the Bamboo GitHub release");
+  const lotusRead = (value) => async (url) => {
+    assert.equal(url, "https://registry.npmjs.org/%40bigduu%2Flotus-next/latest");
+    return Buffer.from(JSON.stringify(value));
+  };
+
+  assert.equal(await resolveLatestVersion("lotus", githubRequest, lotusRead(metadata)), "2026.11.30");
+  for (const invalid of [{ name: "lotus-next" }, { version: "2026.11.30-rc.1" }, { version: null }]) {
+    await assert.rejects(() => resolveLatestVersion("lotus", githubRequest, lotusRead({ ...metadata, ...invalid })));
+  }
 });
 
 test("change history reads all comparison pages and gives bounded notes a full-history link", () => {
