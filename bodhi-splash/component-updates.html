@@ -24,6 +24,7 @@
     .setting { display: grid; gap: 4px; }
     .setting[hidden] { display: none; }
     .settings-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    #offer-selection { margin-top: 12px; }
     #update-actions { margin-top: 12px; }
     p { margin: 9px 0; overflow-wrap: anywhere; }
     progress { width: 100%; accent-color: #8ab4f8; }
@@ -76,6 +77,10 @@
         </div>
       </fieldset>
     </form>
+    <div class="setting" id="offer-selection" hidden>
+      <label for="component-offer" data-i18n="updates.selectOffer">Update to review</label>
+      <select id="component-offer"></select>
+    </div>
     <p id="phase" role="status"></p>
     <div id="download" hidden>
       <progress id="progress" aria-label="Download progress" data-i18n-label="progress.label"></progress>

@@ -109,6 +109,7 @@
   "updates.retryRestart": "Réessayer le redémarrage",
   "updates.remindLater": "Me le rappeler plus tard",
   "updates.retry": "Réessayer le démarrage",
+  "updates.selectOffer": "Mise à jour à consulter",
   "updates.skipVersion": "Ignorer cette version",
   "updates.undoSkip": "Annuler l’exclusion",
   "updates.undoSkipRequired": "Réactivez cette version avant de la télécharger ou de l’appliquer.",

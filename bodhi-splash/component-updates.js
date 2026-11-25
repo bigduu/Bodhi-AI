@@ -1,9 +1,11 @@
 const get = (id) => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
 const i18n = window.bodhiI18n;
+const offerSelect = get("component-offer");
+const componentNames = { bamboo: "Bamboo", lotus: "Lotus Next" };
 let currentSnapshot = null;
 let actionPending = false;
-let actionError = "";
+let actionError = null;
 let mirrorUrl = null;
 let dirty = false;
 let saving = false;
@@ -39,21 +41,51 @@ function append(list, value) {
   list.append(item);
 }
 
-function renderActions({ running, queued, offer, display }) {
+function offerKey({ sequence, identity }) {
+  return `${sequence}:${identity}`;
+}
+
+function offerLabel({ kind, versions }) {
+  const components = kind === "pair" ? Object.keys(componentNames) : [kind];
+  return components.map((key) => `${componentNames[key]} ${versions[key]}`).join(" · ");
+}
+
+function selectedOffer() {
+  return currentSnapshot?.offers.find((offer) => offerKey(offer) === offerSelect.value);
+}
+
+function renderOfferSelection({ offers, queued }) {
+  const selected = selectedOffer();
+  const staged = offers.find((offer) => offer.downloaded && (queued == null || offer.sequence === queued));
+  const offer = queued != null ? staged || selected : selected || staged || offers[0];
+  const options = offers.map((item) => ({ value: offerKey(item), label: offerLabel(item) }));
+  if (options.length !== offerSelect.options.length || options.some(({ value, label }, index) => {
+    const option = offerSelect.options[index];
+    return option.value !== value || option.textContent !== label;
+  })) {
+    offerSelect.replaceChildren(...options.map(({ value, label }) => new Option(label, value)));
+  }
+  if (offer && offerSelect.value !== offerKey(offer)) offerSelect.value = offerKey(offer);
+  get("offer-selection").hidden = offers.length < 2;
+  return offer;
+}
+
+function renderActions({ running, queued }, offer, phase) {
   const busy = actionPending || [
     "checking", "preparing", "downloading", "starting", "saving", "shuttingDown", "restarting",
-  ].includes(display.phase);
+  ].includes(phase);
   const pendingRestart = queued != null;
   const canSkip = running && !pendingRestart && !!offer;
   const canDownload = canSkip && !offer.skipped && !offer.downloaded;
   const canApply = running && (pendingRestart || (!!offer?.downloaded && !offer.skipped));
+  offerSelect.disabled = actionPending || pendingRestart;
   get("check").textContent = i18n.text(running ? "updates.check" : "updates.retry");
-  get("check").disabled = busy || (running ? pendingRestart : display.phase !== "startupFailed");
+  get("check").disabled = busy || (running ? pendingRestart : phase !== "startupFailed");
   get("update-actions").hidden = !(canSkip || canApply);
   get("download-update").hidden = !canDownload;
   get("download-update").disabled = busy;
   get("download-update").textContent = i18n.text(
-    display.phase === "downloadFailed" ? "updates.retryDownload" : "updates.download",
+    phase === "downloadFailed" ? "updates.retryDownload" : "updates.download",
   );
   get("apply-update").hidden = !canApply;
   get("apply-update").disabled = busy;
@@ -64,17 +96,46 @@ function renderActions({ running, queued, offer, display }) {
   get("restart-hint").hidden = !canApply;
 }
 
+function renderSelectedUpdate(snapshot) {
+  const offer = renderOfferSelection(snapshot);
+  const { active, display, queued } = snapshot;
+  const otherDownloadFailed = ["downloadFailed", "saveFailed"].includes(display.phase)
+    && display.downloadSequence != null && display.downloadSequence !== offer?.sequence;
+  let phase = otherDownloadFailed ? "current" : display.phase;
+  if (offer && queued == null && ["ready", "current", "available", "skipped", "verified"].includes(phase)) {
+    phase = offer.skipped ? "skipped" : offer.downloaded ? "verified" : "available";
+  }
+  renderActions(snapshot, offer, phase);
+  const status = get("phase");
+  const phaseText = i18n.text(`phase.${phase}`);
+  if (status.textContent !== phaseText) status.textContent = phaseText;
+  const offerActionError = actionError?.identity == null || actionError.identity === offer?.identity
+    ? actionError?.message : "";
+  const error = offerActionError || (!otherDownloadFailed && display.error) || "";
+  get("error").hidden = !error;
+  get("error").textContent = error;
+
+  const changes = get("changes");
+  changes.replaceChildren();
+  get("notes").hidden = !offer;
+  if (offer) {
+    for (const [key, name] of Object.entries(componentNames)) {
+      if (active?.[key] === offer.versions[key]) continue;
+      append(changes, `${name} ${active?.[key] || "—"} → ${offer.versions[key]}`);
+      for (const line of offer.changes[key]) append(changes, line);
+      if (offer.changes[key].length === 0) append(changes, i18n.text("updates.noNotes"));
+    }
+  }
+}
+
 function render(snapshot) {
   currentSnapshot = snapshot;
-  const { active, display, history, offer } = snapshot;
+  const { active, display, history } = snapshot;
   get("bodhi").textContent = snapshot.bodhi;
   get("bamboo").textContent = active?.bamboo || "—";
   get("lotus").textContent = active?.lotus || "—";
   renderSettings(snapshot.settings);
-  renderActions(snapshot);
-  get("phase").textContent = i18n.text(`phase.${display.phase}`);
-  get("error").hidden = !(actionError || display.error);
-  get("error").textContent = actionError || display.error || "";
+  renderSelectedUpdate(snapshot);
   get("last-check").textContent = snapshot.lastCheck
     ? i18n.text("updates.lastCheck", { date: i18n.date(snapshot.lastCheck) })
     : "";
@@ -91,18 +152,6 @@ function render(snapshot) {
       meter.removeAttribute("value");
     }
     get("download-detail").textContent = i18n.transferText(transfer);
-  }
-
-  const changes = get("changes");
-  changes.replaceChildren();
-  get("notes").hidden = !offer;
-  if (offer) {
-    for (const [key, name] of [["bamboo", "Bamboo"], ["lotus", "Lotus Next"]]) {
-      if (active?.[key] === offer.versions[key]) continue;
-      append(changes, `${name} ${active?.[key] || "—"} → ${offer.versions[key]}`);
-      for (const line of offer.changes[key]) append(changes, line);
-      if (offer.changes[key].length === 0) append(changes, i18n.text("updates.noNotes"));
-    }
   }
 
   const historyList = get("history");
@@ -135,12 +184,12 @@ async function refresh() {
 async function runAction(command, args) {
   if (actionPending || !currentSnapshot) return;
   actionPending = true;
-  actionError = "";
-  renderActions(currentSnapshot);
+  actionError = null;
+  renderSelectedUpdate(currentSnapshot);
   try {
     await invoke(command, args);
   } catch (error) {
-    actionError = String(error);
+    actionError = { identity: args?.identity, message: String(error) };
   } finally {
     actionPending = false;
   }
@@ -150,18 +199,27 @@ get("check").addEventListener("click", () => {
   void runAction(currentSnapshot?.running ? "check_components" : "retry_component_startup");
 });
 
+offerSelect.addEventListener("change", () => {
+  if (currentSnapshot) renderSelectedUpdate(currentSnapshot);
+});
+
 get("download-update").addEventListener("click", () => {
-  const sequence = currentSnapshot?.offer?.sequence;
-  if (sequence != null) void runAction("download_component_update", { sequence });
+  const offer = selectedOffer();
+  if (offer) void runAction("download_component_update", { sequence: offer.sequence, identity: offer.identity });
 });
 
 get("apply-update").addEventListener("click", () => {
-  const sequence = currentSnapshot?.queued ?? currentSnapshot?.offer?.sequence;
-  if (sequence != null) void runAction("apply_component_update", { sequence });
+  const queued = currentSnapshot?.queued;
+  if (queued != null) {
+    void runAction("apply_component_update", { sequence: queued });
+    return;
+  }
+  const offer = selectedOffer();
+  if (offer) void runAction("apply_component_update", { sequence: offer.sequence, identity: offer.identity });
 });
 
 get("skip-version").addEventListener("click", () => {
-  const offer = currentSnapshot?.offer;
+  const offer = selectedOffer();
   if (offer && currentSnapshot.queued == null) {
     void runAction("set_component_version_skipped", {
       sequence: offer.sequence,
