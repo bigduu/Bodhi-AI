@@ -6,6 +6,7 @@ use crate::{bamboo_update::RELEASES, component_download::DownloadSettings};
 use reqwest::{Client, Url};
 use serde::{de::DeserializeOwned, Deserialize};
 use sha2::{Digest, Sha256};
+use std::future::Future;
 use std::time::Duration;
 
 const API: &str = "https://api.github.com/repos/bigduu/Bamboo-agent";
@@ -196,6 +197,15 @@ async fn download_manifest<T: DeserializeOwned>(
     Ok((identity, parse(&bytes, name)?))
 }
 
+async fn prioritize_rejection<T>(
+    check: impl Future<Output = Result<T, ReleaseCheckError>>,
+) -> Result<Result<T, ReleaseCheckError>, ReleaseCheckError> {
+    match check.await {
+        Err(error @ ReleaseCheckError::Rejected(_)) => Err(error),
+        result => Ok(result),
+    }
+}
+
 fn browser_host(release: &GitHubRelease, host: BrowserHost) -> Result<Asset, String> {
     let mut paths = host.files.each_ref().map(|file| file.path.as_str());
     paths.sort_unstable();
@@ -320,21 +330,23 @@ async fn load(
     let download_origin = url(RELEASES)?;
     let client = settings.artifact_client(&download_origin, &download_origin)?;
     let commit_url = format!("{API}/commits/{}", release.tag_name);
-    let (commit, sidecars, browser_runtime) = tokio::join!(
-        get_json::<GitHubCommit>(&api, &commit_url, 8 * 1024 * 1024, "Bamboo tag commit"),
-        download_manifest::<SidecarManifest>(&client, &release, SIDECARS),
-        download_manifest::<BrowserRuntimeManifest>(&client, &release, BROWSER_RUNTIMES),
-    );
-    // Prefer an authoritative rejection over an unavailable parallel request.
-    for result in [
-        commit.as_ref().err(),
-        sidecars.as_ref().err(),
-        browser_runtime.as_ref().err(),
-    ] {
-        if let Some(ReleaseCheckError::Rejected(message)) = result {
-            return Err(message.clone().into());
-        }
-    }
+    // An available rejection must reach the caller even if a sibling stalls.
+    let (commit, sidecars, browser_runtime) = tokio::try_join!(
+        prioritize_rejection(get_json::<GitHubCommit>(
+            &api,
+            &commit_url,
+            8 * 1024 * 1024,
+            "Bamboo tag commit",
+        )),
+        prioritize_rejection(download_manifest::<SidecarManifest>(
+            &client, &release, SIDECARS
+        )),
+        prioritize_rejection(download_manifest::<BrowserRuntimeManifest>(
+            &client,
+            &release,
+            BROWSER_RUNTIMES,
+        )),
+    )?;
     let (manifest, sidecars) = sidecars?;
     let (_, browser_runtime) = browser_runtime?;
     let verified = verified_release(
@@ -380,6 +392,24 @@ mod tests {
     const VERSION: &str = "2026.11.47";
     const SOURCE: &str = "f8f9b0bc98025ae3acd0c771dc98b96e33c1bfba";
     const SHA: &str = "0e9e01b2d19cae262b4171d24bc9a24f297351e9a37c98c27817ac5f1a6de462";
+
+    #[tokio::test(start_paused = true)]
+    async fn release_rejection_is_returned_even_when_another_request_stalls() {
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::try_join!(
+                prioritize_rejection(async {
+                    Err::<(), _>(ReleaseCheckError::Unavailable("offline".into()))
+                }),
+                prioritize_rejection(std::future::pending::<Result<(), ReleaseCheckError>>()),
+                prioritize_rejection(async { Err::<(), _>("Bamboo manifest changed".into()) }),
+            )
+        })
+        .await
+        .expect("the authoritative rejection must arrive before the offline deadline");
+        assert!(
+            matches!(result, Err(ReleaseCheckError::Rejected(message)) if message == "Bamboo manifest changed")
+        );
+    }
 
     fn entry(name: &str, size: u64) -> Value {
         json!({
