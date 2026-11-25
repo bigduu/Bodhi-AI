@@ -529,7 +529,10 @@ impl Manager {
                 return Err(locale.text("updates.downloadRequired").into());
             }
             self.updates.status(Phase::Saving, None);
-            if let Err(error) = self.reconfirm(active, &update, locale).await {
+            if let Err(error) = self
+                .reconfirm(active, &update, locale, self.load_catalog())
+                .await
+            {
                 self.updates.status(Phase::SaveFailed, Some(error));
                 return Ok(());
             }
@@ -569,8 +572,9 @@ impl Manager {
         active: &Combination,
         update: &SelectedUpdate,
         locale: Locale,
+        load_catalog: impl Future<Output = Result<VerifiedChannel, String>>,
     ) -> Result<(), String> {
-        let channel = self.load_catalog().await?;
+        let channel = load_catalog.await?;
         if !channel.select_updates(active)?.contains(&&update.candidate) {
             return Err(locale.text("updates.catalogChanged").into());
         }
@@ -901,6 +905,72 @@ mod tests {
             assert_eq!(remaining.len(), 1);
             assert!(remaining[0].kind != kind && remaining[0].kind != UpdateKind::Pair);
         }
+    }
+
+    #[tokio::test]
+    async fn a_selected_bamboo_version_stays_staged_when_a_newer_version_appears() {
+        use crate::component_channel::tests::{
+            fixture_channel, fixture_channel_with_independent_bamboo_versions,
+            fixture_channel_with_independent_updates, initial_combination,
+        };
+
+        let state = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(state.path()).unwrap();
+        let original = initial_combination().await;
+        Journal {
+            active: Some(original.clone()),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let locale = Locale::English;
+        manager
+            .detect(async { Ok(fixture_channel_with_independent_updates()) })
+            .await
+            .unwrap();
+        let offered = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+        let chosen = offered
+            .iter()
+            .find(|offer| offer.kind == UpdateKind::Bamboo)
+            .unwrap();
+        let selected = manager
+            .updates
+            .selected(chosen.sequence, &chosen.identity, locale)
+            .unwrap();
+        manager.record_download(&selected, Ok(())).unwrap();
+
+        manager
+            .detect(async { Ok(fixture_channel_with_independent_bamboo_versions()) })
+            .await
+            .unwrap();
+        let refreshed = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+        let bamboo: Vec<_> = refreshed
+            .iter()
+            .filter(|offer| offer.kind == UpdateKind::Bamboo)
+            .collect();
+        assert_eq!(bamboo[0].versions.bamboo, "2026.11.40");
+        assert!(!bamboo[0].downloaded);
+        assert_eq!(bamboo[1].identity, chosen.identity);
+        assert!(bamboo[1].downloaded);
+        assert_eq!(bamboo.len(), 2);
+        manager
+            .reconfirm(&original, &selected, locale, async {
+                Ok(fixture_channel_with_independent_bamboo_versions())
+            })
+            .await
+            .unwrap();
+        assert!(manager
+            .reconfirm(&original, &selected, locale, async {
+                Ok(fixture_channel().await)
+            })
+            .await
+            .is_err());
+
+        manager.queue(&selected).unwrap();
+        let queued = Journal::read(&profile).unwrap().queued.unwrap();
+        assert_eq!(queued.bamboo.version, "2026.11.39");
+        assert_eq!(queued.lotus, original.lotus);
     }
 
     #[tokio::test]

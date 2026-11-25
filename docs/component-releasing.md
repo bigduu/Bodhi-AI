@@ -36,9 +36,13 @@ Review catalog changes on the publication branch. The shell fetches its fixed of
 ## Applying an update in Bodhi
 
 Automatic and manual checks read the official catalog. Open **Versions and
-Updates** and choose Bamboo or Lotus Next when the catalog approves separate
-updates for the versions you are running. If the catalog only approves changing
-both together, the window offers the combined update.
+Updates** and choose the target version when the catalog approves separate
+updates for the versions you are running. Bamboo lists all compatible newer
+versions, highest first. You can choose another listed version and Bodhi applies
+that selection, even if a higher version appears before you restart. The profile
+minimum Bamboo version applies at startup and during updates. If the catalog
+only approves changing both components together, the window offers the
+combined update.
 
 Choose **Download update** for the selected item. Bodhi downloads its changed
 assets and verifies the cached peer. One verified selection can be staged for

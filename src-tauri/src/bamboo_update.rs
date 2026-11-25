@@ -184,7 +184,7 @@ pub struct Updates {
     running_version: Mutex<Option<(String, StartupStatus)>>,
 }
 
-fn version(value: &str) -> Option<[u32; 3]> {
+pub(crate) fn version(value: &str) -> Option<[u32; 3]> {
     let mut parts = value.split('.');
     let mut numbers = [0; 3];
     for number in &mut numbers {
