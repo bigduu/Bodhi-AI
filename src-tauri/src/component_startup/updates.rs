@@ -128,6 +128,12 @@ struct ForceOffer {
     shutdown_started: bool,
 }
 
+#[derive(Serialize)]
+struct LotusRollbackOffer {
+    identity: String,
+    versions: Versions,
+}
+
 fn artifact_identity(candidate: &Combination) -> Result<String, String> {
     let descriptor = serde_json::to_vec(candidate).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", Sha256::digest(descriptor)))
@@ -146,6 +152,8 @@ pub(crate) struct Snapshot {
     display: Display,
     offers: Vec<Offer>,
     force_update: Option<ForceOffer>,
+    lotus_rollback: Option<LotusRollbackOffer>,
+    lotus_update_suppressed: bool,
     history: Vec<History>,
 }
 
@@ -229,6 +237,23 @@ impl Manager {
     fn snapshot(&self, bodhi: String, locale: Locale) -> Result<Snapshot, String> {
         let journal = Journal::read(&self.profile)?;
         let planned = super::PlannedRestart::read(&self.profile)?;
+        let lotus_rollback = if planned.is_none()
+            && journal.queued.is_none()
+            && journal.trial.is_none()
+            && !self.restart_in_progress()
+        {
+            journal
+                .lotus_rollback_target()
+                .map(|pair| {
+                    Ok::<_, String>(LotusRollbackOffer {
+                        identity: artifact_identity(pair)?,
+                        versions: Versions::from(pair),
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let display = self
             .updates
             .display
@@ -296,6 +321,9 @@ impl Manager {
             display,
             offers,
             force_update,
+            lotus_rollback,
+            lotus_update_suppressed: journal.suppressed_lotus.is_some()
+                && !self.restart_in_progress(),
             history: journal.history,
         })
     }
@@ -365,7 +393,7 @@ impl Manager {
         self.record_check()?;
         let identity = current.identity();
         let selections = channel
-            .select_updates(&current)?
+            .select_updates(&current, journal.suppressed_lotus.as_deref())?
             .into_iter()
             .map(|candidate| {
                 Arc::new(SelectedUpdate {
@@ -602,6 +630,95 @@ impl Manager {
         Ok(())
     }
 
+    fn restart_in_progress(&self) -> bool {
+        self.updates.restart_requested.load(Ordering::Acquire)
+            || self.updates.restoring.load(Ordering::Acquire)
+            || self.updates.force_shutdown_started.load(Ordering::Acquire)
+    }
+
+    fn require_idle_journal(&self, journal: &Journal, locale: Locale) -> Result<(), String> {
+        if self.restart_in_progress()
+            || journal.queued.is_some()
+            || journal.trial.is_some()
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
+            return Err(locale.text("updates.restartPending").into());
+        }
+        Ok(())
+    }
+
+    async fn rollback_lotus<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        identity: &str,
+    ) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        let locale = i18n::active(app);
+        let journal = Journal::read(&self.profile)?;
+        self.require_idle_journal(&journal, locale)?;
+        let pair = journal
+            .lotus_rollback_target()
+            .ok_or_else(|| locale.text("updates.catalogChanged").to_string())?;
+        if artifact_identity(pair)? != identity {
+            return Err(locale.text("updates.catalogChanged").into());
+        }
+        self.updates.status(Phase::Saving, None);
+        let result = async {
+            self.reopen_prepared(pair).await?;
+            self.updates.status(Phase::ShuttingDown, None);
+            let runtime = app.state::<crate::sidecar::SidecarState>();
+            self.queue_lotus_rollback(
+                pair,
+                runtime.stop_for_update(Duration::from_secs(90)),
+                crate::web_service_port(),
+                locale,
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = result {
+            self.updates.status(Phase::RestartFailed, Some(error));
+        } else {
+            self.request_restart(app);
+        }
+        Ok(())
+    }
+
+    async fn queue_lotus_rollback(
+        &self,
+        pair: &Combination,
+        shutdown: impl Future<Output = Result<(), String>>,
+        port: u16,
+        locale: Locale,
+    ) -> Result<(), String> {
+        shutdown.await?;
+        let _writer = self.profile.writer()?;
+        crate::sidecar::require_available_port(port)?;
+        let _update = self.profile.update_lock()?;
+        let mut journal = Journal::read(&self.profile)?;
+        self.require_idle_journal(&journal, locale)?;
+        if journal.lotus_rollback_target() != Some(pair) {
+            return Err(locale.text("updates.catalogChanged").into());
+        }
+        journal.queued = Some(pair.clone());
+        journal.save(&self.profile)
+    }
+
+    async fn resume_lotus_updates(&self, locale: Locale) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        {
+            let _update = self.profile.update_lock()?;
+            let mut journal = Journal::read(&self.profile)?;
+            self.require_idle_journal(&journal, locale)?;
+            if journal.suppressed_lotus.take().is_none() {
+                return Ok(());
+            }
+            journal.save(&self.profile)?;
+        }
+        self.check().await;
+        Ok(())
+    }
+
     fn force_target(
         &self,
         sequence: u64,
@@ -701,7 +818,11 @@ impl Manager {
         load_catalog: impl Future<Output = Result<VerifiedChannel, String>>,
     ) -> Result<(), String> {
         let channel = load_catalog.await?;
-        if !channel.select_updates(active)?.contains(&&update.candidate) {
+        let journal = Journal::read(&self.profile)?;
+        if !channel
+            .select_updates(active, journal.suppressed_lotus.as_deref())?
+            .contains(&&update.candidate)
+        {
             return Err(locale.text("updates.catalogChanged").into());
         }
         Ok(())
@@ -855,6 +976,27 @@ pub(crate) async fn force_component_update<R: Runtime>(
         .await
 }
 
+#[tauri::command]
+pub(crate) async fn rollback_lotus_component<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    identity: String,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    running_manager(&app)?.rollback_lotus(&app, &identity).await
+}
+
+#[tauri::command]
+pub(crate) async fn resume_lotus_updates<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    running_manager(&app)?
+        .resume_lotus_updates(i18n::active(&app))
+        .await
+}
+
 fn running_manager<R: Runtime>(app: &AppHandle<R>) -> Result<tauri::State<'_, Manager>, String> {
     app.try_state::<Manager>()
         .filter(|manager| manager.updates.ready.load(Ordering::Acquire))
@@ -918,6 +1060,103 @@ mod tests {
                 .is_err()
         );
         assert_eq!(interval.tick().await, start + Duration::from_secs(1800));
+    }
+
+    #[tokio::test]
+    async fn lotus_rollback_preserves_bamboo_and_recovers_a_failed_start() {
+        use crate::component_channel::tests::{
+            fixture_channel_with_lotus_only_update, initial_combination,
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(directory.path()).unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let locale = Locale::English;
+        let previous = initial_combination().await;
+        let channel = fixture_channel_with_lotus_only_update();
+        let current = channel.select_updates(&previous, None).unwrap()[0].clone();
+        Journal {
+            active: Some(previous.clone()),
+            queued: Some(current.clone()),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        assert!(Journal::read(&profile)
+            .unwrap()
+            .lotus_rollback_target()
+            .is_none());
+        manager.begin(&current).unwrap();
+        manager.finish(&current, Ok(())).unwrap();
+        let offer = manager
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .lotus_rollback
+            .unwrap();
+        assert_eq!(offer.identity, artifact_identity(&previous).unwrap());
+        assert_eq!(offer.versions, Versions::from(&previous));
+        assert_eq!(previous.bamboo, current.bamboo);
+        assert_ne!(previous.lotus, current.lotus);
+
+        assert!(manager.reopen_prepared(&previous).await.is_err());
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        assert!(manager
+            .queue_lotus_rollback(&previous, async { Ok(()) }, port, locale)
+            .await
+            .is_err());
+        drop(occupied);
+        assert!(manager
+            .queue_lotus_rollback(
+                &previous,
+                async { Err("shutdown failed".into()) },
+                port,
+                locale
+            )
+            .await
+            .is_err());
+        assert_eq!(manager.choose().await.unwrap(), current);
+
+        manager
+            .queue_lotus_rollback(&previous, async { Ok(()) }, port, locale)
+            .await
+            .unwrap();
+        assert_eq!(manager.choose().await.unwrap(), previous);
+        manager.begin(&previous).unwrap();
+        // Recover the old active selection even after a persisted trial checkpoint.
+        let restarted = Manager::new(profile.clone()).unwrap();
+        assert_eq!(
+            restarted
+                .recover_lotus_rollback(&previous, "replacement failed")
+                .unwrap(),
+            current
+        );
+        assert_eq!(restarted.choose().await.unwrap(), current);
+        assert!(Journal::read(&profile).unwrap().suppressed_lotus.is_none());
+        restarted
+            .queue_lotus_rollback(&previous, async { Ok(()) }, port, locale)
+            .await
+            .unwrap();
+        restarted.begin(&previous).unwrap();
+        restarted.finish(&previous, Ok(())).unwrap();
+
+        let reopened = Manager::new(profile.clone()).unwrap();
+        let journal = Journal::read(&profile).unwrap();
+        assert_eq!(reopened.choose().await.unwrap(), previous);
+        assert_eq!(
+            journal.suppressed_lotus.as_deref(),
+            Some(current.lotus.manifest_sha256.as_str())
+        );
+        assert!(journal.lotus_rollback_target().is_none());
+        assert!(reopened.detect(async { Ok(channel) }).await.unwrap());
+        let snapshot = reopened.snapshot("0.0.0".into(), locale).unwrap();
+        assert!(snapshot.lotus_update_suppressed);
+        assert_eq!(snapshot.offers.len(), 1);
+        assert_ne!(snapshot.offers[0].versions.lotus, current.lotus.version);
+        assert!(snapshot
+            .history
+            .iter()
+            .any(|event| event.error.as_deref() == Some("replacement failed")));
     }
 
     #[tokio::test]

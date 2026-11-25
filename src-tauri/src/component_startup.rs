@@ -186,12 +186,28 @@ impl Manager {
         }
         journal.record(pair, outcome.as_ref().err().cloned());
         if outcome.is_ok() {
-            journal.active = Some(pair.clone());
-            journal.trial = None;
-            journal.queued = None;
+            journal.activate(pair);
         }
         journal.save(&self.profile)?;
         outcome
+    }
+
+    fn recover_lotus_rollback(
+        &self,
+        pair: &Combination,
+        error: &str,
+    ) -> Result<Combination, String> {
+        let _update = self.profile.update_lock()?;
+        let mut journal = Journal::read(&self.profile)?;
+        if journal.lotus_rollback_target() != Some(pair) || journal.queued.as_ref() != Some(pair) {
+            return Err("The Lotus Next rollback checkpoint changed".into());
+        }
+        let active = journal.active.clone().ok_or("No active components")?;
+        journal.record(pair, Some(error.into()));
+        journal.queued = None;
+        journal.trial = None;
+        journal.save(&self.profile)?;
+        Ok(active)
     }
 
     pub(crate) async fn launch<R: Runtime>(&self, app: &AppHandle<R>) -> Result<bool, String> {
@@ -230,7 +246,71 @@ impl Manager {
             (handoff, unconfirmed)
         };
         let pair = self.choose().await?;
-        let prepared = self.prepare(&pair).await?;
+        let journal = Journal::read(&self.profile)?;
+        let rollback = journal.lotus_rollback_target() == Some(&pair)
+            && journal.queued.as_ref() == Some(&pair);
+        if !rollback
+            && journal
+                .active
+                .as_ref()
+                .is_some_and(|active| pair.sequence < active.sequence)
+        {
+            return Err(
+                "The prior component release was not approved as a Lotus Next rollback".into(),
+            );
+        }
+        let mut rollback_error = None;
+        if let Err(error) = self.launch_component(app, port, &pair, rollback).await {
+            if !rollback {
+                return Err(error);
+            }
+            let active = self.recover_lotus_rollback(&pair, &error)?;
+            self.launch_component(app, port, &active, false).await?;
+            rollback_error = Some(error);
+        }
+        if unconfirmed {
+            self.updates.status(updates::Phase::RestartFailed, Some(
+                "The prior Bamboo did not confirm a safe shutdown. Your current version is running, and the saved sessions are still pending recovery.".into(),
+            ));
+        } else {
+            self.updates.status(updates::Phase::Ready, rollback_error);
+        }
+        if let Some(handoff) = handoff {
+            self.updates.restoring.store(true, Ordering::Release);
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let manager = handle.state::<Self>();
+                let runtime = handle.state::<crate::sidecar::SidecarState>();
+                loop {
+                    match manager.resume_planned_restart(&runtime, &handoff).await {
+                        Ok(()) => {
+                            manager.updates.restoring.store(false, Ordering::Release);
+                            manager.updates.status(updates::Phase::Ready, None);
+                            break;
+                        }
+                        Err(error) => {
+                            manager.updates.status(updates::Phase::Ready, Some(error));
+                            tokio::time::sleep(Duration::from_secs(10)).await;
+                        }
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+
+    async fn launch_component<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        port: u16,
+        pair: &Combination,
+        rollback: bool,
+    ) -> Result<(), String> {
+        let prepared = if rollback {
+            self.reopen_prepared(pair).await?
+        } else {
+            self.prepare(pair).await?
+        };
         self.updates.status(updates::Phase::Starting, None);
         let writer = self.profile.writer()?;
         let command = crate::sidecar::command(
@@ -245,7 +325,7 @@ impl Manager {
         let window = app
             .get_webview_window("main")
             .ok_or("Bodhi's main window is unavailable")?;
-        self.begin(&pair)?;
+        self.begin(pair)?;
         let outcome = async {
             let status = runtime.start(command, writer, port, Some(&self.profile.state_dir))?;
             crate::sidecar::wait_for_health(
@@ -270,39 +350,14 @@ impl Manager {
             window.navigate(url).map_err(|error| error.to_string())
         }
         .await;
-        let result = self.finish(&pair, outcome);
+        let result = if rollback && outcome.is_err() {
+            outcome
+        } else {
+            self.finish(pair, outcome)
+        };
         if result.is_err() {
             if let Err(error) = runtime.stop().await {
                 log::warn!("Cannot stop Bamboo after a failed component launch: {error}");
-            }
-        } else {
-            if unconfirmed {
-                self.updates.status(updates::Phase::RestartFailed, Some(
-                    "The prior Bamboo did not confirm a safe shutdown. Your current version is running, and the saved sessions are still pending recovery.".into(),
-                ));
-            } else {
-                self.updates.status(updates::Phase::Ready, None);
-            }
-            if let Some(handoff) = handoff {
-                self.updates.restoring.store(true, Ordering::Release);
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let manager = handle.state::<Self>();
-                    let runtime = handle.state::<crate::sidecar::SidecarState>();
-                    loop {
-                        match manager.resume_planned_restart(&runtime, &handoff).await {
-                            Ok(()) => {
-                                manager.updates.restoring.store(false, Ordering::Release);
-                                manager.updates.status(updates::Phase::Ready, None);
-                                break;
-                            }
-                            Err(error) => {
-                                manager.updates.status(updates::Phase::Ready, Some(error));
-                                tokio::time::sleep(Duration::from_secs(10)).await;
-                            }
-                        }
-                    }
-                });
             }
         }
         result

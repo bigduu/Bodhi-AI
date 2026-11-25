@@ -17,6 +17,7 @@ const componentViews = [...document.querySelectorAll("[data-update-kind]")].map(
 let currentSnapshot = null;
 let actionPending = false;
 let actionError = null;
+let rollbackAttempt = null;
 let mirrorUrl = null;
 let dirty = false;
 let saving = false;
@@ -165,10 +166,33 @@ function renderPanel(view, snapshot, busy) {
   return renderPanelActions(view, offer, snapshot, phase, busy);
 }
 
+function renderLotusRollbackActions(snapshot, busy) {
+  const { lotusRollback, lotusUpdateSuppressed, display, running, queued, forceUpdate, restoring } = snapshot;
+  const canChangeLotus = running && queued == null && !forceUpdate?.shutdownStarted && !restoring;
+  const available = canChangeLotus && !!lotusRollback;
+  const showVersion = get("show-rolled-back-lotus");
+  showVersion.hidden = !(canChangeLotus && lotusUpdateSuppressed && !busy);
+  get("lotus-rollback").hidden = !available;
+  const button = get("rollback-lotus");
+  button.disabled = !available || busy;
+  if (!available) return;
+
+  let label = "updates.rollbackLotus";
+  if (rollbackAttempt === lotusRollback.identity) {
+    if (actionPending || ["shuttingDown", "restarting"].includes(display.phase)) {
+      label = "updates.rollingBackLotus";
+    } else if (["restartFailed", "saveFailed"].includes(display.phase) || actionError?.identity === rollbackAttempt) {
+      label = "updates.retryRollbackLotus";
+    }
+  }
+  setText(button, i18n.text(label, { version: lotusRollback.versions.lotus }));
+}
+
 function renderUpdates(snapshot) {
   const { display, queued, running, offers } = snapshot;
   const busy = actionPending || busyPhases.includes(display.phase);
   const canApply = componentViews.map((view) => renderPanel(view, snapshot, busy)).some(Boolean);
+  renderLotusRollbackActions(snapshot, busy);
   const pendingRestart = running && queued != null;
   get("retry-restart").hidden = !pendingRestart;
   get("retry-restart").disabled = busy;
@@ -248,6 +272,7 @@ async function runAction(command, args) {
   if (actionPending || !currentSnapshot) return;
   actionPending = true;
   actionError = null;
+  rollbackAttempt = command === "rollback_lotus_component" ? args.identity : null;
   renderUpdates(currentSnapshot);
   try {
     await invoke(command, args);
@@ -265,6 +290,17 @@ get("check").addEventListener("click", () => {
 get("retry-restart").addEventListener("click", () => {
   const queued = currentSnapshot?.queued;
   if (queued != null) void runAction("apply_component_update", { sequence: queued });
+});
+
+get("rollback-lotus").addEventListener("click", () => {
+  const rollback = currentSnapshot?.lotusRollback;
+  if (!rollback || get("rollback-lotus").disabled) return;
+  void runAction("rollback_lotus_component", { identity: rollback.identity });
+});
+
+get("show-rolled-back-lotus").addEventListener("click", () => {
+  if (get("show-rolled-back-lotus").hidden) return;
+  void runAction("resume_lotus_updates");
 });
 
 for (const view of componentViews) {
