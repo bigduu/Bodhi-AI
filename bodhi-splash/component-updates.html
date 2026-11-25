@@ -21,6 +21,7 @@
     button, select, input { font: inherit; border: 1px solid #454c57; border-radius: 7px; padding: 7px 10px; background: #2b3038; color: inherit; }
     button { background: #c2dcff; color: #132642; border-color: transparent; font-weight: 600; overflow-wrap: anywhere; max-width: 100%; }
     button.secondary { background: #2b3038; color: inherit; border-color: #454c57; }
+    button.tertiary { background: transparent; color: #c2dcff; padding-left: 0; }
     button:disabled { opacity: .55; }
     button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 3px; }
     fieldset { display: grid; gap: 12px; border: 0; margin: 0; padding: 0; min-width: 0; }
@@ -31,6 +32,8 @@
     .component-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .component-actions[hidden], #phase:empty, .component-phase:empty, #last-check:empty { display: none; }
     .force-warning { color: #f3cd92; }
+    .component-rollback { border-top: 1px solid #353a44; margin-top: 12px; padding-top: 12px; }
+    #rollback-lotus-hint { display: block; margin-top: 8px; }
     details { margin-top: 12px; }
     summary { cursor: pointer; color: #c2dcff; }
     #retry-restart { margin-bottom: 16px; }
@@ -78,6 +81,11 @@
         <dt data-i18n="updates.installedVersion">Installed version</dt><dd id="lotus">—</dd>
       </dl>
       <div class="component-controls" data-part="controls"></div>
+      <div id="lotus-rollback" class="component-rollback" hidden>
+        <button id="rollback-lotus" class="secondary" type="button" aria-describedby="rollback-lotus-hint"></button>
+        <small id="rollback-lotus-hint" data-i18n="updates.rollbackLotusHint">Finish running tasks before rolling back.</small>
+      </div>
+      <button id="show-rolled-back-lotus" class="tertiary" type="button" data-i18n="updates.showRolledBackLotus" hidden>Show the version I rolled back from</button>
     </section>
   </div>
   <section data-update-kind="pair" aria-labelledby="pair-title" hidden>

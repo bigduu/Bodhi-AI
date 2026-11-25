@@ -130,7 +130,7 @@ async fn selects_exact_native_asset_and_only_an_approved_transition() {
 fn independent_selection_keeps_the_approved_peer_and_works_in_either_order() {
     let channel = fixture_channel_with_independent_updates();
     let current = &channel.0.combinations[0];
-    let options = channel.select_updates(current).unwrap();
+    let options = channel.select_updates(current, None).unwrap();
     assert_eq!(options.len(), 2);
     let bamboo = options[0];
     let lotus = options[1];
@@ -142,27 +142,79 @@ fn independent_selection_keeps_the_approved_peer_and_works_in_either_order() {
     assert_eq!(lotus.bamboo, current.bamboo);
 
     let after_either = &channel.0.combinations[4];
-    assert_eq!(channel.select_updates(bamboo).unwrap(), vec![after_either]);
+    assert_eq!(
+        channel.select_updates(bamboo, None).unwrap(),
+        vec![after_either]
+    );
     assert_eq!(after_either.update_kind(bamboo), Some(UpdateKind::Lotus));
-    assert_eq!(channel.select_updates(lotus).unwrap(), vec![after_either]);
+    assert_eq!(
+        channel.select_updates(lotus, None).unwrap(),
+        vec![after_either]
+    );
     assert_eq!(after_either.update_kind(lotus), Some(UpdateKind::Bamboo));
-    assert!(channel.select_updates(after_either).unwrap().is_empty());
+    assert!(channel
+        .select_updates(after_either, None)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn suppressed_lotus_leaves_other_approved_offers_available() {
+    let mut channel = fixture_channel_with_independent_updates();
+    let current = channel.0.combinations[0].clone();
+    let mut later = channel.0.combinations[3].clone();
+    later.sequence = 7;
+    later.lotus.manifest_sha256 = "ef".repeat(32);
+    let suppressed = later.lotus.manifest_sha256.clone();
+    channel.0.combinations.push(later);
+
+    let sequences = |suppressed| {
+        channel
+            .select_updates(&current, suppressed)
+            .unwrap()
+            .into_iter()
+            .map(|candidate| candidate.sequence)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sequences(None), vec![3, 7]);
+    assert_eq!(sequences(Some(&suppressed)), vec![3, 4]);
+    assert_eq!(sequences(Some(&current.lotus.manifest_sha256)), vec![3, 7]);
+}
+
+#[test]
+fn suppressed_lotus_is_excluded_from_combined_fallback_offers() {
+    let mut channel = parse(CATALOG).unwrap();
+    let mut later = channel.0.combinations[1].clone();
+    later.sequence = 3;
+    later.lotus.manifest_sha256 = "ef".repeat(32);
+    let suppressed = later.lotus.manifest_sha256.clone();
+    channel.0.combinations.push(later);
+    let current = &channel.0.combinations[0];
+
+    assert_eq!(
+        channel.select_updates(current, None).unwrap(),
+        vec![&channel.0.combinations[2]]
+    );
+    assert_eq!(
+        channel.select_updates(current, Some(&suppressed)).unwrap(),
+        vec![&channel.0.combinations[1]]
+    );
 }
 
 #[test]
 fn independent_selection_lists_each_approved_bamboo_version_and_one_lotus() {
     let channel = fixture_channel_with_independent_bamboo_versions();
     let current = &channel.0.combinations[0];
-    let options = channel.select_updates(current).unwrap();
+    let options = channel.select_updates(current, None).unwrap();
     let sequences: Vec<_> = options.iter().map(|option| option.sequence).collect();
     assert_eq!(sequences, vec![7, 3, 4]);
     assert_eq!(options[0].lotus, current.lotus);
     assert_eq!(options[1].lotus, current.lotus);
     assert_eq!(
-        channel.select_updates(options[1]).unwrap(),
+        channel.select_updates(options[1], None).unwrap(),
         vec![options[0], &channel.0.combinations[4]]
     );
-    assert!(channel.select_updates(options[0]).unwrap().is_empty());
+    assert!(channel.select_updates(options[0], None).unwrap().is_empty());
 }
 
 #[test]
@@ -170,7 +222,9 @@ fn bamboo_options_sort_by_numeric_version_even_out_of_catalog_order() {
     let mut channel = fixture_channel_with_independent_bamboo_versions();
     channel.0.combinations[2].bamboo.version = "2027.1.10".into();
     channel.0.combinations[6].bamboo.version = "2027.1.9".into();
-    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    let options = channel
+        .select_updates(&channel.0.combinations[0], None)
+        .unwrap();
     let selections: Vec<_> = options
         .iter()
         .map(|option| (option.sequence, option.bamboo.version.as_str()))
@@ -192,7 +246,9 @@ fn equivalent_duplicate_does_not_replace_the_earliest_selectable_bamboo_offer() 
         .push("Additional release notes".into());
     channel.0.combinations.push(duplicate);
 
-    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    let options = channel
+        .select_updates(&channel.0.combinations[0], None)
+        .unwrap();
     assert_eq!(options[1], &channel.0.combinations[2]);
     assert_eq!(options.len(), 3);
 }
@@ -208,7 +264,9 @@ fn conflicting_bamboo_descriptor_excludes_its_version_despite_later_duplicates()
     repeat_original.sequence = 9;
     channel.0.combinations.extend([conflict, repeat_original]);
 
-    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    let options = channel
+        .select_updates(&channel.0.combinations[0], None)
+        .unwrap();
     let sequences: Vec<_> = options.iter().map(|option| option.sequence).collect();
     assert_eq!(sequences, vec![7, 4]);
 }
@@ -235,7 +293,9 @@ fn bamboo_options_require_a_supported_newer_version_and_the_exact_lotus_peer() {
         .combinations
         .extend([downgrade, same_version, changed_peer, unsupported_version]);
 
-    let options = channel.select_updates(&channel.0.combinations[0]).unwrap();
+    let options = channel
+        .select_updates(&channel.0.combinations[0], None)
+        .unwrap();
     let sequences: Vec<_> = options.iter().map(|option| option.sequence).collect();
     assert_eq!(sequences, vec![7, 3, 4]);
 }
@@ -245,13 +305,13 @@ fn combined_update_is_a_fallback_when_neither_component_has_its_own_edge() {
     let channel = parse(CATALOG).unwrap();
     let current = &channel.0.combinations[0];
     let pair = &channel.0.combinations[1];
-    assert_eq!(channel.select_updates(current).unwrap(), vec![pair]);
+    assert_eq!(channel.select_updates(current, None).unwrap(), vec![pair]);
     assert_eq!(pair.update_kind(current), Some(UpdateKind::Pair));
 
     let mut current_at_same_sequence = current.clone();
     current_at_same_sequence.sequence = pair.sequence;
     assert!(channel
-        .select_updates(&current_at_same_sequence)
+        .select_updates(&current_at_same_sequence, None)
         .unwrap()
         .is_empty());
 }
@@ -270,7 +330,7 @@ fn update_kind_checks_full_descriptors_but_selection_requires_an_identity_change
     assert_eq!(changed.update_kind(&current), Some(UpdateKind::Bamboo));
     channel.0.combinations.push(changed);
     assert_eq!(
-        channel.select_updates(&current).unwrap(),
+        channel.select_updates(&current, None).unwrap(),
         vec![&channel.0.combinations[1]]
     );
 }

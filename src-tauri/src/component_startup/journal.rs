@@ -53,6 +53,10 @@ pub(super) struct Journal {
     pub last_check: Option<String>,
     #[serde(default)]
     pub remind_after: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_lotus: Option<Combination>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suppressed_lotus: Option<String>,
 }
 
 impl Journal {
@@ -69,6 +73,35 @@ impl Journal {
             .as_ref()
             .or(self.queued.as_ref())
             .or(self.active.as_ref())
+    }
+
+    pub(super) fn lotus_rollback_target(&self) -> Option<&Combination> {
+        let active = self.active.as_ref()?;
+        let previous = self.previous_lotus.as_ref()?;
+        (previous.sequence < active.sequence
+            && previous.bamboo == active.bamboo
+            && previous.lotus != active.lotus)
+            .then_some(previous)
+    }
+
+    pub(super) fn activate(&mut self, pair: &Combination) {
+        if let Some(active) = &self.active {
+            if self.lotus_rollback_target() == Some(pair) {
+                self.suppressed_lotus = Some(active.lotus.manifest_sha256.clone());
+                self.previous_lotus = None;
+            } else if active.bamboo != pair.bamboo || active.lotus != pair.lotus {
+                self.previous_lotus = (active.bamboo == pair.bamboo
+                    && active.lotus != pair.lotus
+                    && pair.sequence > active.sequence)
+                    .then(|| active.clone());
+                if active.lotus != pair.lotus {
+                    self.suppressed_lotus = None;
+                }
+            }
+        }
+        self.active = Some(pair.clone());
+        self.trial = None;
+        self.queued = None;
     }
 
     pub fn record(&mut self, selected: &Combination, error: Option<String>) {

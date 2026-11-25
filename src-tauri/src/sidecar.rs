@@ -19,7 +19,7 @@ pub(crate) mod planned_update;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -42,7 +42,7 @@ const SHUTDOWN_DIR_ENV: &str = "BAMBOO_MANAGED_SHUTDOWN_DIR";
 
 #[derive(Debug)]
 pub(crate) enum UpdateShutdownError {
-    /// The immediate stop was rejected and the exact child is still running.
+    /// The stop was rejected and the exact child is still running.
     RequestRejected(String),
     /// The stop may have started, or the exact child's outcome is uncertain.
     Unconfirmed(String),
@@ -66,13 +66,60 @@ impl ManagedChild {
         if *requested {
             return Ok(());
         }
+        self.send_shutdown_request()?;
+        *requested = true;
+        Ok(())
+    }
+
+    fn request_rollback_shutdown(&self) -> Result<(), UpdateShutdownError> {
+        use UpdateShutdownError::{RequestRejected, Unconfirmed};
+
+        let mut requested = self.shutdown_requested.lock().map_err(|error| {
+            self.committing_update.store(true, Ordering::SeqCst);
+            Unconfirmed(error.to_string())
+        })?;
+        // Keep the exact child alive for its graceful drain if the request is accepted.
+        let was_committing = self.committing_update.swap(true, Ordering::SeqCst);
+        if *requested {
+            return Ok(());
+        }
+        let dispatch = if self.valid_stop_marker().map_err(Unconfirmed)? {
+            Ok(())
+        } else {
+            self.send_shutdown_request()
+        };
+        if let Err(error) = dispatch {
+            match self.valid_stop_marker() {
+                Ok(true) => (),
+                Ok(false) if !was_committing && matches!(self.process.try_wait(), Ok(None)) => {
+                    self.committing_update.store(false, Ordering::SeqCst);
+                    return Err(RequestRejected(error));
+                }
+                _ => return Err(Unconfirmed(error)),
+            }
+        }
+        *requested = true;
+        Ok(())
+    }
+
+    fn valid_stop_marker(&self) -> Result<bool, String> {
+        let Some(directory) = &self.shutdown else {
+            return Ok(false);
+        };
+        match fs::symlink_metadata(directory.path().join("stop")) {
+            Ok(metadata) => Ok(metadata.is_file() && metadata.len() == 0),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("Cannot inspect managed Bamboo shutdown: {error}")),
+        }
+    }
+
+    fn send_shutdown_request(&self) -> Result<(), String> {
         if let Some(directory) = &self.shutdown {
             match fs::symlink_metadata(directory.path().join("ready")) {
                 Ok(metadata) if metadata.is_file() && metadata.len() == 0 => {
                     File::create_new(directory.path().join("stop")).map_err(|error| {
                         format!("Cannot request managed Bamboo shutdown: {error}")
                     })?;
-                    *requested = true;
                     return Ok(());
                 }
                 Ok(_) => return Err("Invalid managed Bamboo shutdown marker.".into()),
@@ -80,9 +127,7 @@ impl ManagedChild {
                 Err(error) => return Err(error.to_string()),
             }
         }
-        request_legacy_shutdown(&self.process)?;
-        *requested = true;
-        Ok(())
+        request_legacy_shutdown(&self.process)
     }
 }
 
@@ -165,6 +210,26 @@ impl SidecarState {
         self.wait_for_update_exit(timeout, true).await
     }
 
+    /// Drain the exact owned Bamboo before switching to a previously verified Lotus release.
+    pub(crate) async fn stop_for_rollback(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), UpdateShutdownError> {
+        use UpdateShutdownError::Unconfirmed;
+
+        let child = self.owned_child().map_err(Unconfirmed)?;
+        let exited = child.process.try_wait().map_err(|error| {
+            child.committing_update.store(true, Ordering::SeqCst);
+            Unconfirmed(error.to_string())
+        })?;
+        if exited.is_none() {
+            child.request_rollback_shutdown()?;
+        }
+        Self::wait_for_graceful_exit(&child, exited, timeout)
+            .await
+            .map_err(Unconfirmed)
+    }
+
     /// Terminate only the recorded Bamboo process and wait for it to be reaped.
     pub(crate) async fn force_stop_for_update(
         &self,
@@ -239,16 +304,24 @@ impl SidecarState {
         request_shutdown: bool,
     ) -> Result<(), String> {
         let child = self.owned_child()?;
-        let exited = match child
+        let exited = child
             .process
             .try_wait()
-            .map_err(|error| error.to_string())?
-        {
+            .map_err(|error| error.to_string())?;
+        if request_shutdown && exited.is_none() {
+            child.request_shutdown()?;
+        }
+        Self::wait_for_graceful_exit(&child, exited, timeout).await
+    }
+
+    async fn wait_for_graceful_exit(
+        child: &ManagedChild,
+        exited: Option<ExitStatus>,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let exited = match exited {
             Some(exited) => exited,
             None => {
-                if request_shutdown {
-                    child.request_shutdown()?;
-                }
                 let process = child.process.clone();
                 tokio::task::spawn_blocking(move || process.wait_timeout(timeout))
                     .await
@@ -606,10 +679,11 @@ mod tests {
         File::create_new(work.join("clean-exit")).unwrap();
     }
 
-    #[tokio::test]
-    async fn update_shutdown_waits_without_killing_the_child_and_can_retry() {
-        let work = tempfile::tempdir().unwrap();
-        let profile = crate::bamboo_profile::Profile::open(work.path()).unwrap();
+    async fn start_shutdown_fixture(
+        runtime: &SidecarState,
+        work: &Path,
+        profile: &crate::bamboo_profile::Profile,
+    ) -> (u16, StartupStatus) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -621,10 +695,9 @@ mod tests {
                 "sidecar::tests::shutdown_fixture_entry",
                 "--nocapture",
             ])
-            .env(TEST_SHUTDOWN_WORK, work.path())
+            .env(TEST_SHUTDOWN_WORK, work)
             .env(TEST_SHUTDOWN_PORT, port.to_string());
 
-        let runtime = SidecarState::default();
         let status = runtime
             .start(
                 fixture,
@@ -642,6 +715,17 @@ mod tests {
         })
         .await
         .unwrap();
+        (port, status)
+    }
+
+    #[tokio::test]
+    async fn update_shutdown_waits_without_killing_the_child_and_can_retry() {
+        let work = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(work.path()).unwrap();
+        let runtime = SidecarState::default();
+        let (port, _) = start_shutdown_fixture(&runtime, work.path(), &profile).await;
+        let child = runtime.owned_child().unwrap();
+        let control = child.shutdown.as_ref().unwrap().path();
         assert!(profile.writer().is_err());
 
         assert!(runtime
@@ -666,41 +750,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rollback_shutdown_distinguishes_rejection_from_an_accepted_drain() {
+        let work = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(work.path()).unwrap();
+        let runtime = SidecarState::default();
+        let (port, status) = start_shutdown_fixture(&runtime, work.path(), &profile).await;
+        let child = runtime.owned_child().unwrap();
+        let control = child.shutdown.as_ref().unwrap().path();
+        let ready = control.join("ready");
+        fs::write(&ready, b"invalid").unwrap();
+        assert!(matches!(
+            runtime.stop_for_rollback(Duration::ZERO).await,
+            Err(UpdateShutdownError::RequestRejected(message)) if message.contains("Invalid")
+        ));
+        assert!(!control.join("stop").exists());
+        assert!(!runtime.update_requires_process());
+        assert!(status.is_ready());
+
+        fs::write(&ready, []).unwrap();
+        assert!(matches!(
+            runtime.stop_for_rollback(Duration::from_millis(100)).await,
+            Err(UpdateShutdownError::Unconfirmed(message)) if message.contains("still shutting down")
+        ));
+        assert!(child.valid_stop_marker().unwrap());
+        assert!(runtime.update_requires_process());
+        assert!(profile.writer().is_err());
+        assert!(require_available_port(port).is_err());
+
+        // An accepted request remains idempotent even if a later ready marker is invalid.
+        fs::write(&ready, b"invalid").unwrap();
+        File::create_new(work.path().join("finish")).unwrap();
+        runtime
+            .stop_for_rollback(Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert!(work.path().join("clean-exit").is_file());
+        assert!(!runtime.update_requires_process());
+        assert!(!status.is_ready());
+        assert!(profile.writer().is_ok());
+        assert!(require_available_port(port).is_ok());
+        runtime.stop_for_rollback(Duration::ZERO).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn force_update_terminates_and_reaps_the_owned_child_without_requesting_shutdown() {
         let work = tempfile::tempdir().unwrap();
         let profile = crate::bamboo_profile::Profile::open(work.path()).unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let mut fixture = Command::new(std::env::current_exe().unwrap());
-        fixture
-            .args([
-                "--ignored",
-                "--exact",
-                "sidecar::tests::shutdown_fixture_entry",
-                "--nocapture",
-            ])
-            .env(TEST_SHUTDOWN_WORK, work.path())
-            .env(TEST_SHUTDOWN_PORT, port.to_string());
-
         let runtime = SidecarState::default();
-        let status = runtime
-            .start(
-                fixture,
-                profile.writer().unwrap(),
-                port,
-                Some(&profile.state_dir),
-            )
-            .unwrap();
+        let (port, status) = start_shutdown_fixture(&runtime, work.path(), &profile).await;
         let child = runtime.owned_child().unwrap();
         let control = child.shutdown.as_ref().unwrap().path();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !control.join("ready").is_file() || !status.is_ready() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
         assert!(profile.writer().is_err());
         assert!(require_available_port(port).is_err());
 
