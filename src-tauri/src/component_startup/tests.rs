@@ -1,6 +1,64 @@
 use super::*;
 use std::fs;
 
+#[tokio::test]
+async fn force_update_only_queues_after_clean_shutdown_and_released_ownership() {
+    let directory = tempfile::tempdir().unwrap();
+    let profile = Profile::open(directory.path()).unwrap();
+    let manager = Manager::new(profile.clone()).unwrap();
+    let original = component_channel::tests::initial_combination().await;
+    let channel = component_channel::tests::fixture_channel().await;
+    let candidate = channel.select_updates(&original).unwrap()[0].clone();
+    let update = SelectedUpdate {
+        current_sequence: original.sequence,
+        current: original.identity(),
+        candidate: candidate.clone(),
+    };
+    Journal {
+        active: Some(original.clone()),
+        ..Journal::default()
+    }
+    .save(&profile)
+    .unwrap();
+    journal::save_downloaded(&profile, &candidate).unwrap();
+    let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = occupied.local_addr().unwrap().port();
+    assert!(manager
+        .queue_after_force_shutdown(
+            &update,
+            async {
+                Err(crate::sidecar::UpdateShutdownError::Unconfirmed(
+                    "shutdown timed out".into(),
+                ))
+            },
+            port,
+        )
+        .await
+        .is_err());
+    assert!(manager
+        .queue_after_force_shutdown(&update, async { Ok(()) }, port)
+        .await
+        .is_err());
+    assert!(Journal::read(&profile).unwrap().queued.is_none());
+    drop(occupied);
+    let writer = profile.writer().unwrap();
+    assert!(manager
+        .queue_after_force_shutdown(&update, async { Ok(()) }, port)
+        .await
+        .is_err());
+    assert_eq!(manager.choose().await.unwrap(), original);
+    assert_eq!(
+        journal::read_downloaded(&profile).unwrap(),
+        Some(candidate.clone())
+    );
+    drop(writer);
+    manager
+        .queue_after_force_shutdown(&update, async { Ok(()) }, port)
+        .await
+        .unwrap();
+    assert_eq!(manager.choose().await.unwrap(), candidate);
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Bootstrap {
@@ -69,7 +127,9 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
     let writer = profile.writer().unwrap();
     let _lease = writer.try_clone().unwrap();
     manager.begin(&pair).unwrap();
-    let status = runtime.start(child, writer, port).unwrap();
+    let status = runtime
+        .start(child, writer, port, Some(&profile.state_dir))
+        .unwrap();
     let readiness = crate::sidecar::wait_for_health(
         port,
         60,
@@ -82,9 +142,18 @@ async fn published_thin_bootstrap_is_bootable_on_native_target() {
     } else {
         Err("Cannot start the published pair".into())
     };
+    #[cfg(unix)]
+    runtime
+        .stop_for_update(Duration::from_secs(90))
+        .await
+        .unwrap();
+    #[cfg(not(unix))]
     runtime.stop().await.unwrap();
     readiness.unwrap();
     assert_eq!(version.unwrap(), pair.bamboo.version);
+    drop(_lease);
+    assert!(profile.writer().is_ok());
+    crate::sidecar::require_available_port(port).unwrap();
     manager.finish(&pair, Ok(())).unwrap();
     assert_eq!(manager.choose().await.unwrap(), pair);
     let evidence = format!(
@@ -115,14 +184,23 @@ async fn ready_history_and_data_floor_survive_a_failed_start() {
     manager.finish(&original, Ok(())).unwrap();
     assert_eq!(Journal::read(&profile).unwrap().history.len(), 1);
 
-    let update = PreparedUpdate {
+    let update = SelectedUpdate {
         current: original.identity(),
         current_sequence: original.sequence,
         candidate: next.clone(),
     };
+    assert!(manager.queue(&update).is_err());
+    journal::save_downloaded(&profile, &next).unwrap();
+    assert_eq!(manager.choose().await.unwrap(), original);
     manager.queue(&update).unwrap();
     assert!(manager.queue(&update).is_err());
     assert_eq!(manager.choose().await.unwrap(), next);
+    let unowned = crate::sidecar::SidecarState::default();
+    assert!(manager.prepare_restart(&unowned, 9562).await.is_err());
+    let still_queued = Journal::read(&profile).unwrap();
+    assert_eq!(still_queued.active.as_ref(), Some(&original));
+    assert_eq!(still_queued.queued.as_ref(), Some(&next));
+    assert!(still_queued.trial.is_none());
     manager.begin(&next).unwrap();
     assert!(manager
         .finish(&next, Err("test startup failure".into()))

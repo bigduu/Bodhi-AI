@@ -1,5 +1,5 @@
 use crate::bamboo_profile::{is_link, persist, Profile};
-use crate::component_channel::Combination;
+use crate::component_channel::{Combination, PairIdentity};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -8,6 +8,8 @@ use std::io::{self, Read};
 
 const JOURNAL: &str = "components-v1.json";
 const DOWNLOAD_SETTINGS: &str = "component-download-settings-v1.json";
+const VERIFIED_DOWNLOAD: &str = "component-verified-download-v1.json";
+const SKIPPED_VERSIONS: &str = "component-skipped-versions-v1.json";
 const MAX_STATE: u64 = 2 * 1024 * 1024;
 const HISTORY_LIMIT: usize = 40;
 
@@ -107,7 +109,33 @@ pub(super) fn save_settings(profile: &Profile, settings: &DownloadSettings) -> R
     save_json(profile, DOWNLOAD_SETTINGS, settings)
 }
 
-fn read_json<T: DeserializeOwned>(profile: &Profile, name: &str) -> Result<Option<T>, String> {
+pub(super) fn read_downloaded(profile: &Profile) -> Result<Option<Combination>, String> {
+    read_json(profile, VERIFIED_DOWNLOAD)
+}
+
+pub(super) fn save_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
+    save_json(profile, VERIFIED_DOWNLOAD, pair)
+}
+
+pub(super) fn read_skipped(profile: &Profile) -> Result<Vec<PairIdentity>, String> {
+    Ok(read_json(profile, SKIPPED_VERSIONS)?.unwrap_or_default())
+}
+
+pub(super) fn save_skipped(profile: &Profile, pairs: &[PairIdentity]) -> Result<(), String> {
+    save_json(profile, SKIPPED_VERSIONS, &pairs)
+}
+
+pub(super) fn clear_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
+    if read_downloaded(profile)?.as_ref() == Some(pair) {
+        fs::remove_file(profile.state_dir.join(VERIFIED_DOWNLOAD)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub(super) fn read_json<T: DeserializeOwned>(
+    profile: &Profile,
+    name: &str,
+) -> Result<Option<T>, String> {
     let path = profile.state_dir.join(name);
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -131,7 +159,11 @@ fn read_json<T: DeserializeOwned>(profile: &Profile, name: &str) -> Result<Optio
         .map_err(|error| error.to_string())
 }
 
-fn save_json(profile: &Profile, name: &str, state: &impl Serialize) -> Result<(), String> {
+pub(super) fn save_json(
+    profile: &Profile,
+    name: &str,
+    state: &impl Serialize,
+) -> Result<(), String> {
     let bytes = serde_json::to_vec(state).map_err(|error| error.to_string())?;
     if bytes.len() as u64 > MAX_STATE {
         return Err("The component profile state exceeds its size limit".into());

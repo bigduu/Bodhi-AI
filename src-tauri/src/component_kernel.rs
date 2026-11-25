@@ -19,6 +19,41 @@ pub struct VerifiedKernel {
     pub version: String,
 }
 
+fn cache_root(profile: &Profile, artifact: &NativeArtifact) -> PathBuf {
+    profile
+        .state_dir
+        .join(format!("bamboo-{}", artifact.executable.sha256))
+}
+
+fn executable_in(root: &Path) -> PathBuf {
+    root.join(format!("bamboo{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Reopen the staged native executable without starting an asset transfer.
+pub(crate) async fn reopen_kernel(
+    profile: &Profile,
+    candidate: &Candidate<'_>,
+) -> Result<VerifiedKernel, String> {
+    validate_artifact(candidate.artifact)?;
+    let root = cache_root(profile, candidate.artifact);
+    let version = candidate.combination.bamboo.version.clone();
+    let expected = candidate.artifact.executable.clone();
+    tokio::task::spawn_blocking(move || {
+        let meta = fs::symlink_metadata(&root).map_err(|error| error.to_string())?;
+        if !meta.is_dir() || is_link(&meta) {
+            return Err("Invalid cached Bamboo executable directory".into());
+        }
+        let executable = executable_in(&root);
+        verify_cached(&executable, &expected)?;
+        Ok(VerifiedKernel {
+            executable,
+            version,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Verify the catalog's executable before placing it in the native cache.
 pub(crate) async fn prepare_kernel(
     profile_data: &Path,
@@ -32,12 +67,9 @@ pub(crate) async fn prepare_kernel(
     let parsed = semver::Version::parse(version).map_err(|error| error.to_string())?;
     let official = format!("{RELEASES}/v{parsed}/{}", artifact.asset_name);
     let profile = Profile::open(profile_data).map_err(|error| error.to_string())?;
-    let root = profile
-        .state_dir
-        .join(format!("bamboo-{}", artifact.executable.sha256));
+    let root = cache_root(&profile, artifact);
     create_directory(&root).map_err(|error| error.to_string())?;
-    let suffix = std::env::consts::EXE_SUFFIX;
-    let executable = root.join(format!("bamboo{suffix}"));
+    let executable = executable_in(&root);
     let result = || VerifiedKernel {
         executable: executable.clone(),
         version: version.clone(),

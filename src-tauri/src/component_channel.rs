@@ -1,7 +1,10 @@
 //! Selection from the official catalog of independently published components.
+use crate::bamboo_update::version as bamboo_version;
 use crate::component_download::DownloadSettings;
 use reqwest::{redirect::Policy, StatusCode};
+use semver::Version;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 pub const STABLE_CATALOG_URL: &str =
@@ -75,6 +78,14 @@ pub struct Changes {
     pub lotus: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum UpdateKind {
+    Bamboo,
+    Lotus,
+    Pair,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Combination {
@@ -92,6 +103,19 @@ impl Combination {
             bamboo_manifest_sha256: self.bamboo.manifest.sha256.clone(),
             lotus_manifest_sha256: self.lotus.manifest_sha256.clone(),
         }
+    }
+
+    pub(crate) fn update_kind(&self, current: &Combination) -> Option<UpdateKind> {
+        match (self.bamboo != current.bamboo, self.lotus != current.lotus) {
+            (true, false) => Some(UpdateKind::Bamboo),
+            (false, true) => Some(UpdateKind::Lotus),
+            (true, true) => Some(UpdateKind::Pair),
+            (false, false) => None,
+        }
+    }
+
+    fn accepts_update_from(&self, sequence: u64, identity: &PairIdentity) -> bool {
+        self.sequence > sequence && self.identity() != *identity && self.accepts.contains(identity)
     }
 
     pub(crate) fn candidate(&self) -> Result<Candidate<'_>, String> {
@@ -132,6 +156,54 @@ pub struct Candidate<'a> {
 }
 
 impl VerifiedChannel {
+    pub(crate) fn select_updates(
+        &self,
+        current: &Combination,
+    ) -> Result<Vec<&Combination>, String> {
+        native_target_index(env!("BODHI_BUILD_TARGET"))?;
+        let identity = current.identity();
+        let active_bamboo =
+            bamboo_version(&current.bamboo.version).ok_or("Invalid active Bamboo version")?;
+        let mut bamboo = BTreeMap::<[u32; 3], Option<&Combination>>::new();
+        let mut lotus = None;
+        let mut pair = None;
+        for combination in &self.0.combinations {
+            if !combination.accepts_update_from(current.sequence, &identity) {
+                continue;
+            }
+            match combination.update_kind(current) {
+                Some(UpdateKind::Bamboo) => {
+                    let Some(version) = bamboo_version(&combination.bamboo.version) else {
+                        continue;
+                    };
+                    if version > active_bamboo {
+                        bamboo
+                            .entry(version)
+                            .and_modify(|earliest| {
+                                // Keep the first equivalent offer. Once any record conflicts,
+                                // an additional record cannot restore the ambiguous version.
+                                if earliest
+                                    .is_some_and(|record| record.bamboo != combination.bamboo)
+                                {
+                                    *earliest = None;
+                                }
+                            })
+                            .or_insert(Some(combination));
+                    }
+                }
+                Some(UpdateKind::Lotus) => lotus = Some(combination),
+                Some(UpdateKind::Pair) => pair = Some(combination),
+                None => {}
+            }
+        }
+        let mut updates: Vec<_> = bamboo.into_values().rev().flatten().collect();
+        updates.extend(lotus);
+        if updates.is_empty() {
+            updates.extend(pair);
+        }
+        Ok(updates)
+    }
+
     pub fn select(
         &self,
         current: Option<(u64, &PairIdentity)>,
@@ -144,18 +216,11 @@ impl VerifiedChannel {
         current: Option<(u64, &PairIdentity)>,
         target: &str,
     ) -> Result<Option<Candidate<'_>>, String> {
-        let target_index = NATIVE_TARGETS
-            .iter()
-            .position(|supported| *supported == target)
-            .ok_or("The component channel does not support this native target")?;
+        let target_index = native_target_index(target)?;
         Ok(self.0.combinations.iter().rev().find_map(|combination| {
             let compatible = match current {
                 None => combination.bootstrap,
-                Some((sequence, identity)) => {
-                    combination.sequence > sequence
-                        && combination.identity() != *identity
-                        && combination.accepts.contains(identity)
-                }
+                Some((sequence, identity)) => combination.accepts_update_from(sequence, identity),
             };
             compatible.then(|| Candidate {
                 combination,
@@ -163,6 +228,13 @@ impl VerifiedChannel {
             })
         }))
     }
+}
+
+fn native_target_index(target: &str) -> Result<usize, String> {
+    NATIVE_TARGETS
+        .iter()
+        .position(|supported| *supported == target)
+        .ok_or_else(|| "The component channel does not support this native target".into())
 }
 
 /// The catalog comes from the official repository over HTTPS. Download
@@ -281,7 +353,7 @@ fn hex(value: &str, length: usize) -> bool {
 }
 
 fn stable_version(version: &str) -> bool {
-    semver::Version::parse(version)
+    Version::parse(version)
         .is_ok_and(|parsed| parsed.major > 0 && parsed.pre.is_empty() && parsed.build.is_empty())
 }
 

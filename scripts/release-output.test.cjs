@@ -959,7 +959,8 @@ test("release/recovery graph has one build owner, no release runtime tests, expl
   assert.ok(workflow.includes("ref: ${{ github.workflow_sha }}")); assert.ok(workflow.includes("ref: ${{ inputs.expected_source_sha }}"));
   assert.doesNotMatch(workflow + recovery, /GITHUB_SHA:\s|export GITHUB_SHA|GITHUB_WORKFLOW_SHA:\s/);
   for (const body of [workflow, recovery]) assert.match(body, /group: bodhi-release-\$\{\{ inputs.bodhi_version \}\}\n  cancel-in-progress: false/);
-  assert.match(recovery, /if: inputs\.evidence_schema == '1'/); assert.match(recovery, /if: inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3'/);
+  assert.match(recovery, /if: github\.ref == 'refs\/heads\/main' && inputs\.evidence_schema == '1'/);
+  assert.match(recovery, /if: github\.ref == 'refs\/heads\/main' && \(inputs\.evidence_schema == '2' \|\| inputs\.evidence_schema == '3'/);
   assert.match(recovery, /scripts\/release-finalizer\.cjs recover/); assert.match(recovery, /scripts\/release-finalizer-v2\.cjs recover/);
   assert.equal(out.NATIVE_TARGETS.length, 3); assert.equal(out.NATIVE_TARGETS.flatMap(target => out.names(ctx.version, target)).length, 6);
 });

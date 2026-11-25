@@ -116,6 +116,12 @@ the original physical times; current protection cannot waive a post-merge run.
   merge, frozen source and final main merge identities in every receipt.
 - Preserve original run/attempt, artifact IDs and hashes. Publication recovery
   reuses the original successful native assets; it does not rebuild them.
+- The fixed 2026.11.37 capture recovery may verify the saved Windows ARM64
+  output from run 45432961380 attempt 1 and publish its original reservation
+  after the recovery controller passes feature admission into protected Dev.
+  Require the original emergency archive, exact installer digest and all four
+  other retained targets. Record the original build and separate recovery
+  identities. The normal Main recovery and admission rules still apply.
 - Reserve the final version in the existing GitHub draft and version concurrency
   domain before building. The Tauri hook alone stages upstream artifacts. Each
   supported target builds once, passes static version/architecture/resource and

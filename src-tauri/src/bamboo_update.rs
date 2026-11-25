@@ -184,7 +184,7 @@ pub struct Updates {
     running_version: Mutex<Option<(String, StartupStatus)>>,
 }
 
-fn version(value: &str) -> Option<[u32; 3]> {
+pub(crate) fn version(value: &str) -> Option<[u32; 3]> {
     let mut parts = value.split('.');
     let mut numbers = [0; 3];
     for number in &mut numbers {
@@ -606,7 +606,7 @@ impl Updates {
         state.started_version = Some(kernel.version.clone());
         state.save(&self.profile)?;
 
-        let startup = runtime.start(command, writer, port)?;
+        let startup = runtime.start(command, writer, port, None)?;
         if let Err(error) =
             verify_ready_kernel(port, 60, index_hash, &startup, &kernel.version).await
         {

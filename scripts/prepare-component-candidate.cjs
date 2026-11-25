@@ -66,6 +66,27 @@ function asset(assets, name) {
   return { sha256, sizeBytes: row.size };
 }
 
+function publishedBambooVersion(release) {
+  assert.ok(release.draft === false && release.prerelease === false && release.published_at,
+    "Expected a published stable Bamboo release");
+  const version = typeof release.tag_name === "string" && release.tag_name.startsWith("v")
+    ? release.tag_name.slice(1)
+    : "";
+  assert.match(version, VERSION, "Invalid stable Bamboo release tag");
+  return version;
+}
+
+async function resolveLatestVersion(component, request = api, read = readBytes) {
+  if (component === "bamboo") {
+    return publishedBambooVersion(request(`repos/${BAMBOO}/releases/latest`));
+  }
+  assert.equal(component, "lotus", "Expected Bamboo or Lotus Next");
+  const registry = JSON.parse(await read(`${NPM}/${encodeURIComponent(PACKAGE)}/latest`, 1024 * 1024));
+  assert.equal(registry.name, PACKAGE, "Unexpected Lotus Next package name");
+  assert.match(registry.version, VERSION, "Invalid stable Lotus Next version");
+  return registry.version;
+}
+
 async function releaseManifest(release, name) {
   const identity = asset(release.assets, name);
   assert.ok(identity.sizeBytes <= 1024 * 1024);
@@ -95,8 +116,7 @@ function browserArtifacts(companion, expected, release) {
 
 async function bambooRelease(version) {
   const release = api(`repos/${BAMBOO}/releases/tags/v${version}`);
-  assert.equal(release.tag_name, `v${version}`);
-  assert.ok(!release.draft && !release.prerelease && release.published_at);
+  assert.equal(publishedBambooVersion(release), version);
   const { sha: sourceRevision } = api(`repos/${BAMBOO}/commits/v${version}`);
   requireAcceptedSource(BAMBOO, sourceRevision);
   const { bytes, identity: manifestAsset } = await releaseManifest(release, MANIFEST_V3);
@@ -211,9 +231,46 @@ async function prepare(bamboo, lotus, previous) {
   };
 }
 
+function parseSingleComponentArgs(args) {
+  const [component, ...options] = args;
+  assert.ok(component === "bamboo" || component === "lotus",
+    "Choose one component: --component bamboo|lotus [VERSION|latest] [--from PREVIOUS_VERSION]");
+  const version = options.length > 0 && options[0] !== "--from" ? options.shift() : "latest";
+  if (version !== "latest") assert.match(version, VERSION, "Expected a stable component version or latest");
+  if (options.length === 0) return { component, version, previousVersion: undefined };
+  assert.ok(options.length === 2 && options[0] === "--from",
+    "Expected --from PREVIOUS_VERSION after the selected component and version");
+  const previousVersion = options[1];
+  assert.match(previousVersion, VERSION, "Expected an exact stable previous component version");
+  return { component, version, previousVersion };
+}
+
+async function prepareSingle({ component, version, previousVersion }) {
+  const selected = version === "latest" ? await resolveLatestVersion(component) : version;
+  const verify = component === "bamboo" ? bambooRelease : lotusRelease;
+  const [release, previous] = await Promise.all([
+    verify(selected),
+    previousVersion && previousVersion !== selected ? verify(previousVersion) : undefined,
+  ]);
+  const changeHistory = releaseChanges(component === "bamboo" ? BAMBOO : LOTUS, previous, release);
+  const candidate = {
+    kind: "bodhi-single-component-candidate/v1",
+    component,
+    release,
+    changes: changeNotes(changeHistory),
+    changeHistory,
+  };
+  if (component === "bamboo") {
+    candidate.missingBrowserRuntime = release.artifacts.filter((item) => !item.browserRuntime).map((item) => item.target);
+  }
+  return candidate;
+}
+
 if (require.main === module) {
-  const [bamboo, lotus, previous, oldBamboo, oldLotus] = process.argv.slice(2);
+  const args = process.argv.slice(2);
   Promise.resolve().then(async () => {
+    if (args[0] === "--component") return prepareSingle(parseSingleComponentArgs(args.slice(1)));
+    const [bamboo, lotus, previous, oldBamboo, oldLotus] = args;
     if (previous === "--from") {
       assert.match(oldBamboo, VERSION);
       assert.match(oldLotus, VERSION);
@@ -226,4 +283,4 @@ if (require.main === module) {
     .catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { browserArtifacts, changeNotes, prepare, releaseChanges };
+module.exports = { browserArtifacts, changeNotes, parseSingleComponentArgs, prepare, releaseChanges, resolveLatestVersion };

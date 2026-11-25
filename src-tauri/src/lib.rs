@@ -316,7 +316,7 @@ fn setup<R: Runtime>(app: &mut App<R>) -> std::result::Result<(), Box<dyn std::e
                 selected.as_ref().map(|kernel| kernel.executable.as_path()),
                 None,
             )?;
-            let status = runtime.start(command, writer, port)?;
+            let status = runtime.start(command, writer, port, None)?;
             Ok::<_, String>((Some(status), selected))
         };
         let (owned, selected) = match launch.await {
@@ -646,12 +646,24 @@ pub fn run() {
             component_startup::updates::shell_translations,
             component_startup::updates::component_snapshot,
             component_startup::updates::check_components,
+            component_startup::updates::download_component_update,
+            component_startup::updates::set_component_version_skipped,
+            component_startup::updates::apply_component_update,
+            component_startup::updates::force_component_update,
+            component_startup::updates::retry_component_startup,
             component_startup::updates::open_component_updates,
             component_startup::updates::set_component_download_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(move |app_handle, event| match &event {
+            tauri::RunEvent::ExitRequested { api, .. }
+                if app_handle
+                    .try_state::<sidecar::SidecarState>()
+                    .is_some_and(|state| state.update_requires_process()) =>
+            {
+                api.prevent_exit();
+            }
             // App is exiting (incl. after `app_handle.exit(0)` below): make sure the
             // bamboo sidecar goes with us. Its parent-pid guard is the crash-safe
             // backstop; this is the clean path.
@@ -683,6 +695,15 @@ pub fn run() {
                 let is_close_requested =
                     matches!(window_event, tauri::WindowEvent::CloseRequested { .. });
                 if should_exit_on_main_window_close(label, is_close_requested) {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = window_event {
+                        if app_handle
+                            .try_state::<sidecar::SidecarState>()
+                            .is_some_and(|state| state.update_requires_process())
+                        {
+                            api.prevent_close();
+                            return;
+                        }
+                    }
                     log::info!("Main window close requested, exiting application...");
                     app_handle.exit(0);
                 }

@@ -1,5 +1,6 @@
 //! Plan and record startup of an authenticated component combination.
 mod journal;
+mod planned_restart;
 pub(crate) mod updates;
 
 use crate::bamboo_profile::Profile;
@@ -9,8 +10,10 @@ use crate::component_download::{while_selected, DownloadSettings};
 use crate::component_kernel::{self, VerifiedKernel};
 use crate::frontend::VerifiedFrontend;
 use journal::Journal;
+use planned_restart::PlannedRestart;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use tauri::{AppHandle, Manager as _, Runtime};
 use tokio::sync::watch;
 
@@ -64,6 +67,19 @@ impl Manager {
 
     async fn prepare(&self, pair: &Combination) -> Result<Prepared, String> {
         check_component_floor(&self.profile, &pair.bamboo.version)?;
+        let (kernel, browser) = self.prepare_bamboo(pair).await?;
+        let frontend = self.prepare_lotus(pair).await?;
+        Ok(Prepared {
+            kernel,
+            frontend,
+            browser,
+        })
+    }
+
+    async fn prepare_bamboo(
+        &self,
+        pair: &Combination,
+    ) -> Result<(VerifiedKernel, Option<[PathBuf; 3]>), String> {
         let candidate = pair.candidate()?;
         let kernel = component_kernel::prepare_kernel(
             &self.profile.data,
@@ -72,17 +88,6 @@ impl Manager {
             |source, received, total| {
                 self.updates
                     .progress(&candidate.artifact.asset_name, source, received, total)
-            },
-        )
-        .await?;
-        let lotus_archive = format!("lotus-next-{}.tgz", pair.lotus.version);
-        let frontend = crate::frontend::prepare_release(
-            &self.profile.data,
-            &pair.lotus,
-            self.settings.subscribe(),
-            |source, received, total| {
-                self.updates
-                    .progress(&lotus_archive, source, received, total)
             },
         )
         .await?;
@@ -102,11 +107,63 @@ impl Manager {
         } else {
             None
         };
-        Ok(Prepared {
-            kernel,
-            frontend,
-            browser,
+        Ok((kernel, browser))
+    }
+
+    async fn prepare_lotus(&self, pair: &Combination) -> Result<VerifiedFrontend, String> {
+        let lotus_archive = format!("lotus-next-{}.tgz", pair.lotus.version);
+        crate::frontend::prepare_release(
+            &self.profile.data,
+            &pair.lotus,
+            self.settings.subscribe(),
+            |source, received, total| {
+                self.updates
+                    .progress(&lotus_archive, source, received, total)
+            },
+        )
+        .await
+    }
+
+    async fn prepare_update(&self, active: &Combination, pair: &Combination) -> Result<(), String> {
+        check_component_floor(&self.profile, &pair.bamboo.version)?;
+        if pair.bamboo != active.bamboo {
+            self.prepare_bamboo(pair).await?;
+        }
+        if pair.lotus != active.lotus {
+            self.prepare_lotus(pair).await?;
+        }
+        self.reopen_prepared(pair).await.map(|_| ())
+    }
+
+    async fn reopen_prepared(&self, pair: &Combination) -> Result<Prepared, String> {
+        check_component_floor(&self.profile, &pair.bamboo.version)?;
+        let kernel = component_kernel::reopen_kernel(&self.profile, &pair.candidate()?).await?;
+        let profile = self.profile.clone();
+        let pair = pair.clone();
+        tokio::task::spawn_blocking(move || {
+            let frontend = crate::frontend::reopen_release(&profile, &pair.lotus)?;
+            let browser = crate::component_browser::reopen_runtime(&profile, &pair.candidate()?)?;
+            Ok(Prepared {
+                kernel,
+                frontend,
+                browser,
+            })
         })
+        .await
+        .map_err(|e| e.to_string())?
+    }
+
+    async fn reopen_downloaded_update(&self, pair: &Combination) -> Result<Prepared, String> {
+        match self.reopen_prepared(pair).await {
+            Ok(prepared) => Ok(prepared),
+            Err(error) => {
+                let _lock = self.profile.update_lock()?;
+                journal::clear_downloaded(&self.profile, pair)?;
+                Err(format!(
+                    "Cannot verify the cached update: {error}. Download this update again."
+                ))
+            }
+        }
     }
 
     fn begin(&self, pair: &Combination) -> Result<(), String> {
@@ -158,6 +215,20 @@ impl Manager {
     async fn launch_once<R: Runtime>(&self, app: &AppHandle<R>) -> Result<(), String> {
         let port = crate::web_service_port();
         crate::sidecar::require_available_port(port)?;
+        let (handoff, unconfirmed) = {
+            let _writer = self.profile.writer()?;
+            let handoff = self.arm_authorized_restart()?;
+            let mut unconfirmed = false;
+            if handoff.is_none() {
+                if let Some(abandoned) = PlannedRestart::read(&self.profile)? {
+                    unconfirmed = abandoned.has_intent(&self.profile)?;
+                    if !unconfirmed {
+                        abandoned.clear(&self.profile)?;
+                    }
+                }
+            }
+            (handoff, unconfirmed)
+        };
         let pair = self.choose().await?;
         let prepared = self.prepare(&pair).await?;
         self.updates.status(updates::Phase::Starting, None);
@@ -176,7 +247,7 @@ impl Manager {
             .ok_or("Bodhi's main window is unavailable")?;
         self.begin(&pair)?;
         let outcome = async {
-            let status = runtime.start(command, writer, port)?;
+            let status = runtime.start(command, writer, port, Some(&self.profile.state_dir))?;
             crate::sidecar::wait_for_health(
                 port,
                 60,
@@ -205,25 +276,63 @@ impl Manager {
                 log::warn!("Cannot stop Bamboo after a failed component launch: {error}");
             }
         } else {
-            self.updates.status(updates::Phase::Ready, None);
+            if unconfirmed {
+                self.updates.status(updates::Phase::RestartFailed, Some(
+                    "The prior Bamboo did not confirm a safe shutdown. Your current version is running, and the saved sessions are still pending recovery.".into(),
+                ));
+            } else {
+                self.updates.status(updates::Phase::Ready, None);
+            }
+            if let Some(handoff) = handoff {
+                self.updates.restoring.store(true, Ordering::Release);
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let manager = handle.state::<Self>();
+                    let runtime = handle.state::<crate::sidecar::SidecarState>();
+                    loop {
+                        match manager.resume_planned_restart(&runtime, &handoff).await {
+                            Ok(()) => {
+                                manager.updates.restoring.store(false, Ordering::Release);
+                                manager.updates.status(updates::Phase::Ready, None);
+                                break;
+                            }
+                            Err(error) => {
+                                manager.updates.status(updates::Phase::Ready, Some(error));
+                                tokio::time::sleep(Duration::from_secs(10)).await;
+                            }
+                        }
+                    }
+                });
+            }
         }
         result
     }
 
-    fn queue(&self, update: &PreparedUpdate) -> Result<(), String> {
+    async fn prepare_restart(
+        &self,
+        runtime: &crate::sidecar::SidecarState,
+        port: u16,
+    ) -> Result<(), String> {
+        let _update = self.profile.update_lock()?;
+        let journal = Journal::read(&self.profile)?;
+        if journal.queued.is_none() || journal.active.is_none() || journal.trial.is_some() {
+            return Err("There is no approved component update to restart into.".into());
+        }
+
+        self.updates.status(updates::Phase::ShuttingDown, None);
+        runtime.stop_for_update(Duration::from_secs(90)).await?;
+        // Take the writer lease again to prove the old runtime and anything
+        // inheriting its handle have released the profile.
+        let _writer = self.profile.writer()?;
+        crate::sidecar::require_available_port(port)
+    }
+
+    fn queue(&self, update: &SelectedUpdate) -> Result<(), String> {
         let _update = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
-        let active = journal
-            .active
-            .as_ref()
-            .ok_or("The current component pair is unavailable")?;
-        if journal.trial.is_some()
-            || journal.queued.is_some()
-            || active.sequence != update.current_sequence
-            || active.identity() != update.current
-            || update.candidate.sequence <= active.sequence
-        {
-            return Err("This component update is no longer applicable".into());
+        update.validate_transition(&journal)?;
+        if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
+            return Err("Download and verify this component update before applying it".into());
         }
         check_component_floor(&self.profile, &update.candidate.bamboo.version)?;
         journal.queued = Some(update.candidate.clone());
@@ -231,10 +340,27 @@ impl Manager {
     }
 }
 
-struct PreparedUpdate {
+#[derive(PartialEq, Eq)]
+struct SelectedUpdate {
     current_sequence: u64,
     current: PairIdentity,
     candidate: Combination,
+}
+
+impl SelectedUpdate {
+    fn validate_transition<'a>(&self, journal: &'a Journal) -> Result<&'a Combination, String> {
+        journal
+            .active
+            .as_ref()
+            .filter(|active| {
+                journal.trial.is_none()
+                    && journal.queued.is_none()
+                    && active.sequence == self.current_sequence
+                    && active.identity() == self.current
+                    && self.candidate.sequence > active.sequence
+            })
+            .ok_or_else(|| "This component update is no longer applicable".into())
+    }
 }
 
 #[cfg(test)]
