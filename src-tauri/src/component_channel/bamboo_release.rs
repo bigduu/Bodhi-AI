@@ -1,6 +1,6 @@
 use super::{
     asset, bamboo_version, hex, native_asset_name, producer_client, read_limited, Asset,
-    BambooRelease, BrowserRuntimeArtifact, NativeArtifact, NATIVE_TARGETS,
+    BambooRelease, BrowserRuntimeArtifact, NativeArtifact, ReleaseCheckError, NATIVE_TARGETS,
 };
 use crate::{bamboo_update::RELEASES, component_download::DownloadSettings};
 use reqwest::{Client, Url};
@@ -163,9 +163,9 @@ async fn get_json<T: DeserializeOwned>(
     address: &str,
     limit: usize,
     label: &str,
-) -> Result<T, String> {
+) -> Result<T, ReleaseCheckError> {
     let bytes = read_limited(client, url(address)?, limit, label).await?;
-    parse(&bytes, label)
+    Ok(parse(&bytes, label)?)
 }
 
 fn verify_manifest_bytes(bytes: &[u8], identity: &Asset, name: &str) -> Result<(), String> {
@@ -183,7 +183,7 @@ async fn download_manifest<T: DeserializeOwned>(
     client: &Client,
     release: &GitHubRelease,
     name: &str,
-) -> Result<(Asset, T), String> {
+) -> Result<(Asset, T), ReleaseCheckError> {
     let identity = release.asset(name, 1, MANIFEST_LIMIT)?;
     let address = url(&release.asset_url(name))?;
     let bytes = tokio::time::timeout(
@@ -191,7 +191,7 @@ async fn download_manifest<T: DeserializeOwned>(
         read_limited(client, address, identity.size_bytes as usize, name),
     )
     .await
-    .map_err(|_| format!("Timed out reading Bamboo {name}"))??;
+    .map_err(|_| ReleaseCheckError::Unavailable(format!("Timed out reading Bamboo {name}")))??;
     verify_manifest_bytes(&bytes, &identity, name)?;
     Ok((identity, parse(&bytes, name)?))
 }
@@ -299,7 +299,7 @@ fn verified_release(
 async fn load(
     settings: &DownloadSettings,
     expected_version: Option<&str>,
-) -> Result<(BambooRelease, Vec<String>), String> {
+) -> Result<(BambooRelease, Vec<String>), ReleaseCheckError> {
     let suffix = match expected_version {
         Some(version) if bamboo_version(version).is_some() => format!("tags/v{version}"),
         Some(_) => return Err("Invalid Bamboo stable release version".into()),
@@ -320,15 +320,27 @@ async fn load(
     let download_origin = url(RELEASES)?;
     let client = settings.artifact_client(&download_origin, &download_origin)?;
     let commit_url = format!("{API}/commits/{}", release.tag_name);
-    let (commit, (manifest, sidecars), (_, browser_runtime)): (GitHubCommit, _, _) = tokio::try_join!(
-        get_json(&api, &commit_url, 8 * 1024 * 1024, "Bamboo tag commit"),
-        download_manifest(&client, &release, SIDECARS),
-        download_manifest(&client, &release, BROWSER_RUNTIMES),
-    )?;
+    let (commit, sidecars, browser_runtime) = tokio::join!(
+        get_json::<GitHubCommit>(&api, &commit_url, 8 * 1024 * 1024, "Bamboo tag commit"),
+        download_manifest::<SidecarManifest>(&client, &release, SIDECARS),
+        download_manifest::<BrowserRuntimeManifest>(&client, &release, BROWSER_RUNTIMES),
+    );
+    // Prefer an authoritative rejection over an unavailable parallel request.
+    for result in [
+        commit.as_ref().err(),
+        sidecars.as_ref().err(),
+        browser_runtime.as_ref().err(),
+    ] {
+        if let Some(ReleaseCheckError::Rejected(message)) = result {
+            return Err(message.clone().into());
+        }
+    }
+    let (manifest, sidecars) = sidecars?;
+    let (_, browser_runtime) = browser_runtime?;
     let verified = verified_release(
         &release,
         version,
-        commit.sha,
+        commit?.sha,
         manifest,
         sidecars,
         browser_runtime,
@@ -350,13 +362,13 @@ async fn load(
 pub(super) async fn load_latest(
     settings: &DownloadSettings,
 ) -> Result<(BambooRelease, Vec<String>), String> {
-    load(settings, None).await
+    Ok(load(settings, None).await?)
 }
 
 pub(super) async fn load_version(
     settings: &DownloadSettings,
     version: &str,
-) -> Result<(BambooRelease, Vec<String>), String> {
+) -> Result<(BambooRelease, Vec<String>), ReleaseCheckError> {
     load(settings, Some(version)).await
 }
 

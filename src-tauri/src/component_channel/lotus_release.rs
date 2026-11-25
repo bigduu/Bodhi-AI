@@ -1,5 +1,5 @@
 //! Resolve and verify an exact Lotus Next package from the official npm registry.
-use super::{producer_client, read_limited, stable_version, LotusRelease};
+use super::{producer_client, read_limited, stable_version, LotusRelease, ReleaseCheckError};
 use crate::component_download::DownloadSettings;
 use crate::frontend::{inspect_release_archive, read_release_resource};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -50,7 +50,7 @@ struct RequirementsDeclaration {
 pub(crate) async fn discover_lotus(
     settings: &DownloadSettings,
     version: Option<&str>,
-) -> Result<DiscoveredLotus, String> {
+) -> Result<DiscoveredLotus, ReleaseCheckError> {
     if version.is_some_and(|version| !stable_version(version)) {
         return Err("Invalid Lotus Next release version".into());
     }
@@ -75,9 +75,11 @@ pub(crate) async fn discover_lotus(
         "Lotus Next npm archive",
     )
     .await?;
-    tokio::task::spawn_blocking(move || inspect_archive(metadata, &archive))
-        .await
-        .map_err(|error| error.to_string())?
+    Ok(
+        tokio::task::spawn_blocking(move || inspect_archive(metadata, &archive))
+            .await
+            .map_err(|error| error.to_string())??,
+    )
 }
 
 fn parse_metadata(bytes: &[u8], version: Option<&str>) -> Result<(RegistryMetadata, Url), String> {

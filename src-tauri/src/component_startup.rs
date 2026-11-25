@@ -44,7 +44,7 @@ impl Manager {
         })
     }
 
-    async fn load_catalog(&self) -> Result<VerifiedChannel, String> {
+    async fn load_catalog(&self) -> Result<VerifiedChannel, component_channel::ReleaseCheckError> {
         let mut settings = self.settings.subscribe();
         loop {
             let selected = settings.borrow_and_update().clone();

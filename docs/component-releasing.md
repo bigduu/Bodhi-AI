@@ -69,11 +69,12 @@ for the owned process to release its profile lease and port, then reopens and
 checks the effective Bamboo and Lotus versions.
 
 For a one-click switch, choose **Update and restart now** for any downloaded,
-verified target that is still eligible. Bodhi rechecks the target and
-terminates its current managed Bamboo process immediately. This interrupts
-running tasks, which need to be started again. Bodhi confirms the old process
-has ended and released the profile writer lease and port before switching to
-the exact selected versions.
+verified target that is still eligible. If the remote release check is
+unreachable or times out, Bodhi can use the locally verified selection after
+rechecking its exact cached bytes. A returned release identity change blocks
+the update. Bodhi terminates its current managed Bamboo process immediately,
+interrupting running tasks. It confirms that the process has ended and released
+the profile writer lease and port before switching to the exact selected versions.
 
 If an approved update is queued and shutdown takes longer than the wait, use
 **Retry restart** after shutdown finishes, or reopen Bodhi to apply the queued
