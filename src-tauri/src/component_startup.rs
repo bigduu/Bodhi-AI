@@ -25,6 +25,7 @@ pub(crate) fn enabled() -> bool {
 pub(crate) struct Manager {
     profile: Profile,
     settings: watch::Sender<DownloadSettings>,
+    auto_check_hours: watch::Sender<u16>,
     updates: updates::Updates,
 }
 
@@ -37,9 +38,11 @@ struct Prepared {
 impl Manager {
     pub(crate) fn new(profile: Profile) -> Result<Self, String> {
         let (settings, _) = watch::channel(journal::read_settings(&profile)?);
+        let (auto_check_hours, _) = watch::channel(journal::read_check_hours(&profile)?);
         Ok(Self {
             profile,
             settings,
+            auto_check_hours,
             updates: updates::Updates::default(),
         })
     }
