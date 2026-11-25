@@ -27,6 +27,7 @@
     fieldset { display: grid; gap: 12px; border: 0; margin: 0; padding: 0; min-width: 0; }
     .setting { display: grid; gap: 4px; }
     .setting[hidden] { display: none; }
+    #auto-check-hours { width: 8ch; }
     .settings-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
     .component-controls select { min-width: 0; max-width: 100%; }
     .component-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -94,6 +95,25 @@
   </section>
   <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
   <button id="retry-restart" type="button" data-i18n="updates.retryRestart" aria-describedby="restart-hint" hidden>Retry restart</button>
+  <section aria-labelledby="check-interval-title">
+    <h2 id="check-interval-title" data-i18n="updates.autoCheckSettings">Automatic checks</h2>
+    <form id="check-interval-settings">
+      <fieldset id="check-interval-fields" disabled>
+        <div class="setting">
+          <div class="row">
+            <label for="auto-check-hours" data-i18n="updates.autoCheckHours">Check interval (hours)</label>
+            <input type="number" id="auto-check-hours" min="0" max="65535" step="1" inputmode="numeric"
+              aria-describedby="auto-check-hint" required>
+          </div>
+          <small id="auto-check-hint" data-i18n="updates.autoCheckHint">Set to 0 to check manually only.</small>
+        </div>
+        <div class="settings-footer">
+          <button id="save-check-interval" type="submit" data-i18n="updates.saveCheckInterval" disabled>Save interval</button>
+          <small id="check-interval-status" role="status"></small>
+        </div>
+      </fieldset>
+    </form>
+  </section>
   <section aria-labelledby="download-settings-title">
     <h2 id="download-settings-title" data-i18n="updates.downloadSettings">Download settings</h2>
     <form id="download-settings">
