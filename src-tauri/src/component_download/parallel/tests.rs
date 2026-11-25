@@ -1,5 +1,9 @@
+use super::super::{transfer as transfer_serial, Partial};
 use super::transfer;
+use crate::bamboo_profile::Profile;
+use crate::component_channel::Asset;
 use reqwest::{Client, Url};
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::sync::Arc;
@@ -46,7 +50,7 @@ async fn accept_range(listener: &TcpListener) -> (String, BufReader<TcpStream>) 
     let range = headers
         .lines()
         .find_map(|line| line.strip_prefix("range: "))
-        .expect("expected one closed range request")
+        .expect("expected one range request")
         .to_owned();
     (range, stream)
 }
@@ -197,7 +201,7 @@ async fn an_ignored_or_rejected_probe_preserves_the_existing_prefix() {
 }
 
 #[tokio::test]
-async fn a_malformed_or_truncated_chunk_leaves_only_the_committed_prefix() {
+async fn a_malformed_or_disconnected_chunk_resumes_from_the_committed_prefix() {
     const BODY: &[u8] = b"abcdefgh";
     for (content_range, payload) in [
         ("bytes 5-7/9", b"fgh".as_slice()),
@@ -238,14 +242,21 @@ async fn a_malformed_or_truncated_chunk_leaves_only_the_committed_prefix() {
             )
             .await;
         });
-        let mut file = partial(&BODY[..2]);
+        let directory = tempfile::tempdir().unwrap();
+        let profile = Profile::open(directory.path()).unwrap();
+        let expected = Asset {
+            size_bytes: BODY.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(BODY)),
+        };
+        let mut pending = Partial::open(&profile, &url, &expected).unwrap();
+        pending.file.write_all(&BODY[..2]).unwrap();
         let completed = timeout(
             DEADLINE,
             transfer(
                 &client(),
                 &url,
-                &mut file,
-                BODY.len() as u64,
+                &mut pending.file,
+                expected.size_bytes,
                 &mut |size| {
                     if size == 5 {
                         committed.notify_one();
@@ -259,6 +270,42 @@ async fn a_malformed_or_truncated_chunk_leaves_only_the_committed_prefix() {
         .unwrap();
         assert!(!completed);
         timeout(DEADLINE, server).await.unwrap().unwrap();
-        assert_eq!(contents(&mut file), &BODY[..5]);
+        assert_eq!(contents(&mut pending.file), &BODY[..5]);
+        let path = pending.path.clone();
+        drop(pending);
+
+        let (listener, recovery_url) = listen().await;
+        let recovery = tokio::spawn(async move {
+            let (request, stream) = accept_range(&listener).await;
+            assert_eq!(request, "bytes=5-");
+            reply(
+                stream,
+                "206 Partial Content",
+                Some("bytes 5-7/8"),
+                3,
+                b"fgh",
+            )
+            .await
+            .unwrap();
+        });
+        let mut pending = Partial::open(&profile, &recovery_url, &expected).unwrap();
+        assert_eq!(pending.path, path);
+        let offset = timeout(
+            DEADLINE,
+            transfer_serial(
+                &client(),
+                &recovery_url,
+                &mut pending.file,
+                expected.size_bytes,
+                &mut |_| {},
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(offset, 5);
+        timeout(DEADLINE, recovery).await.unwrap().unwrap();
+        assert!(pending.matches(&expected).unwrap());
+        assert_eq!(contents(&mut pending.file), BODY);
     }
 }
