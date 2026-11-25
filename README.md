@@ -1,152 +1,35 @@
 # Bodhi AI
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[Download Bodhi](https://github.com/bigduu/Bodhi-AI/releases/latest) · [简体中文](README.zh-CN.md)
 
-**Your local-first AI agent, in a desktop window.** Hand it a task, watch every
-tool call and approval, and keep working without a backend terminal open. Bodhi
-starts and stops its bundled Bamboo agent runtime for you and opens the Lotus
-Next interface.
+Bodhi is an open-source desktop agent for your projects. Pick a folder and a model, then ask it to read files, run commands, or make changes. Review its tool calls and approvals in the chat.
 
-[Download](https://github.com/bigduu/Bodhi-AI/releases/latest) · Part of [Bodhi / Zenith](https://github.com/bigduu/Zenith) · [Development guide](docs/development.md) · [MIT](LICENSE)
+![Bodhi's English interface showing a file read and the test command it found.](docs/demos/first-task-en.gif)
 
-<p align="center"><img src="https://raw.githubusercontent.com/bigduu/Zenith/main/docs/readme-refresh/demos/project-workspace.gif" alt="Lotus Next, the interface Bodhi opens, creates a project and selects its workspace for a new task." width="760"></p>
-
-*Lotus Next recorded in a browser against Bamboo source with demo data; no model call. The packaged app may use an earlier Lotus Next build.*
-
-- **Works on your projects:** reads and edits files, runs commands and searches
-  or fetches web pages, asking for approval before risky actions.
-- **Keeps working on a schedule:** cron-style schedules and workflows in the
-  bundled Bamboo runtime.
-- **Your choice of model:** Anthropic, OpenAI (and OpenAI-compatible endpoints),
-  Gemini or GitHub Copilot.
-- **Extends with MCP:** the Homebrew install also adds the
-  [Jiandu](https://github.com/bigduu/Jiandu) (shared memory) and
-  [Nova](https://github.com/bigduu/Nova) (native app control) command-line
-  tools, which you can add as MCP servers.
+Recorded in Bodhi 2026.11.39 on macOS with a local model and a sample project.
 
 ## Install
 
-### Install from the terminal
+The release has installers for Apple Silicon Macs (macOS 13.5+), Windows x64 and ARM64, and Linux x64 and ARM64.
 
-On Apple Silicon Macs with macOS 13.5 or later and x64 Linux distributions that use APT, run:
+On Apple Silicon Macs or APT-based Linux x64, you can also install from the terminal.
 
 ```sh
 curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL https://bigduu.github.io/Pavilion/install.sh | sh
 ```
 
-- **macOS** installation places Bodhi in `~/Applications`. If macOS blocks the first launch, go to **System Settings → Privacy & Security → Open Anyway**.
-- **Linux** needs Python 3 or `jq`. Follow the `sudo` and APT prompts to install the official `.deb` and its dependencies.
+[Homebrew and download troubleshooting](docs/download-settings.md#english)
 
-[Bodhi download page](https://bigduu.github.io/Pavilion/download?lang=en#terminal-install)
+## Run your first task
 
-| Platform | How |
-|---|---|
-| macOS Apple Silicon (recommended) | `brew tap bigduu/tap && brew trust bigduu/tap && brew install --cask bigduu/tap/bodhi` |
-| macOS (manual) | Apple Silicon `.dmg` from [Releases](https://github.com/bigduu/Bodhi-AI/releases/latest); not notarized yet, so run the [self-sign script](./scripts/self-sign-macos-app.sh) or use Homebrew |
-| Windows x64 | `-setup.exe` (unsigned; SmartScreen may warn) |
-| Linux x64 | `.AppImage`, `.deb` or `.rpm` (needs a graphical session and WebKitGTK runtime) |
+1. Open Bodhi and wait for the components to download.
+2. Open **Settings → Provider**. Add a provider, enter its key, add a model, and save. Under **Default model preferences**, choose it for **Chat**, then select **Verify and use model** or **Save preferences**, as shown.
+3. Open a conversation and pick a project folder. Try this with a project that documents its test command.
 
-Then open **Settings → Provider** (shown as **设置 → 提供方** in the current release, whose settings screen is not translated yet), add a key for a provider you can access, and
-try: *"Explain this folder, then suggest one small improvement."* Start with a
-small sample project before asking for file changes. A model provider is still
-required: local execution does not mean the model runs locally or that requests
-never leave your machine.
+   > Read this project's README and tell me the command to run its tests. Leave the files unchanged.
 
-This release supports Apple Silicon macOS, Windows x64 and Linux x64; Intel macOS packaging is excluded. Platform support does not substitute for each release's source-bound asset and native acceptance evidence. For source builds, follow the [Tauri platform prerequisites](https://v2.tauri.app/start/prerequisites/).
+Sessions are saved on your computer. The model provider and remote tools you set up may receive task data.
 
-### Homebrew details
+## Docs
 
-```sh
-brew tap bigduu/tap
-brew trust bigduu/tap
-brew install --cask bigduu/tap/bodhi
-```
-
-`brew trust` explicitly trusts this third-party tap, including future packages from it, so Homebrew can load the cask's formula dependencies. The [Bodhi cask](https://github.com/bigduu/homebrew-tap) installs the Apple Silicon DMG; Intel Macs are not supported by this cask. It installs the **Jiandu** and **Nova** command-line tools. Bodhi already bundles its Bamboo engine. Installing Jiandu and Nova does not configure an MCP host; Nova also needs macOS permissions for computer control.
-
-**Current macOS signing:** the published DMG is ad-hoc signed and is not Developer ID notarized. During Homebrew installation, the cask automatically removes quarantine from the installed app, re-signs it locally with an ad-hoc signature while preserving the hardened runtime, and verifies the signature. No manual self-sign step is needed for this installation path. This does not provide Developer ID trust or notarization, and macOS privacy permissions may need to be granted again after upgrades. Direct DMG installations can use [the self-sign script](./scripts/self-sign-macos-app.sh); formal signing is tracked in [Bodhi #75](https://github.com/bigduu/Bodhi-AI/issues/75).
-
-### Thin-shell component downloads
-
-Open **Versions and Updates** or select **Download settings** on the
-startup screen. Choose GitHub, an existing GitHub mirror or **Custom mirror**.
-Set an optional HTTP, HTTPS, SOCKS5 or SOCKS5H forward proxy such as
-`http://127.0.0.1:7890`. With the field empty, Bodhi uses environment proxy
-settings. Save the settings, then choose **Retry startup** or **Retry
-download** if a transfer has stopped.
-
-**Check for updates** reads the official release catalog. Choose **Download
-update** when a compatible update is available. After verification, choose
-**Restart and update** to close Bamboo gracefully and reopen Bodhi with the
-new components.
-
-A custom mirror at `https://mirror.example.com/bodhi/` serves the original
-asset host and path under that base. For example, serve GitHub release files
-under `/bodhi/github.com/bigduu/Bamboo-agent/releases/download/` and Lotus
-Next tarballs under `/bodhi/registry.npmjs.org/@bigduu/lotus-next/-/`.
-Use an HTTPS base URL and a proxy URL without embedded credentials. Bodhi
-reads the release catalog from the official repository through the configured proxy.
-
-Bodhi keeps partial Bamboo, Lotus Next and browser runtime files across
-restarts and resumes the same assets when the source supports HTTP Range.
-A source serving a full copy restarts the transfer. Bodhi verifies the
-catalog size and SHA-256 before installing any component.
-
-
-## Work with it
-
-- **Return to your work quickly:** `Cmd+Shift+Space` on macOS or `Ctrl+Shift+Space` on Windows/Linux toggles the main window, when the OS allows the shortcut.
-- **Keep execution visible:** Lotus Next presents conversations, tool calls and permission prompts; Bamboo performs the work. Available tools and workflows depend on the bundled runtime and your configuration.
-- **Use the same engine from a terminal:** **Help → 安装 bamboo 命令行工具…** exposes the bundled CLI on your PATH. Then try `bamboo --help` or `bamboo tui`. On macOS, installation into `/usr/local/bin` may request administrator permission; Windows updates user PATH, and Linux uses `~/.local/bin`.
-- **Manage one local engine:** closing the app shuts down its owned sidecar. The default backend port is `9562`; an occupied port is reported instead of taking over another process. `BODHI_BACKEND_PORT` selects a different port.
-
-## How the pieces fit
-
-```mermaid
-flowchart LR
-  Bodhi["Bodhi: desktop window and native integration"] --> Lotus["Lotus Next: user interface"]
-  Bodhi --> Bamboo["Bamboo: managed local agent engine"]
-  Lotus <-->|"HTTP and WebSocket"| Bamboo
-  Bamboo --> Provider["Configured model provider and tools"]
-```
-
-Bodhi packages a startup page, verified frontend resources and a standalone `bamboo serve` sidecar. It does not link the Bamboo runtime as a Rust library. [Nova](https://github.com/bigduu/Nova) provides separately configured computer/browser tools; installing the shell alone does not establish that those tools are ready. [bodhi-server](https://github.com/bigduu/bodhi-server) is a separate service for hosted account/proxy use, not the local engine.
-
-## Source checkout versus released app
-
-The following table records the historical documentation audit on 2026-10-03. Current Bodhi builds use this repository's committed Bamboo and Lotus Next locks; a Zenith gitlink is an optional integration snapshot.
-
-| Layer | Identity | Frontend selection |
-|---|---|---|
-| Public desktop release | `app-v2026.9.20` | Lotus Next `2026.9.16` |
-| Zenith-pinned Bodhi source | `6d85036` | Lotus Next `2026.9.22` in the package lock |
-| Upstream `main` observed | `d0e40e8` | Contains changes after the Zenith pin |
-
-A newer npm frontend does not update an already released desktop installer. Source manifests use `0.0.0` intentionally; Bodhi's own workflow supplies the explicit app version and retains acceptance for Apple Silicon macOS, Linux x64 and Windows x64. See [independent publishing and recovery](docs/releasing.md), and the historical [evidence and limits](docs/readme-audit.md). Features on other branches are not advertised as released here.
-
-## Develop from source
-
-Check out Bodhi, Bamboo and Lotus Next as sibling directories, or use an existing Zenith checkout, then install both UI and shell dependencies. Current macOS source builds require macOS 13.5+. Use Node.js 22.12+ (Lotus Next's declared minimum), npm, Rust 1.95+ (the pinned Bamboo requirement) and the platform-specific Tauri prerequisites.
-
-```bash
-# From the directory containing bodhi/, bamboo/ and lotus-next/
-(cd lotus-next && npm ci)
-cd bodhi
-npm ci
-npm run tauri:dev
-# Equivalent: npm run tauri dev
-```
-
-This uses sibling `../lotus-next` and `../bamboo`. The development command checks port `1420` before building the real API-only Bamboo sidecar and frontend resources, verifies its own Vite process, then starts the native app. The window stays on a startup page until its managed Bamboo is ready. Exiting the command stops its owned development processes. Lotus HMR uses port `1420`, and Bamboo uses `9562` by default; an existing listener is reported and left untouched.
-
-```bash
-npm run tauri:build     # Assemble a production desktop bundle
-npm run test:build      # Source-selection and assembly tests (no Cargo)
-```
-
-For browser-only development, use the [Lotus Next README](https://github.com/bigduu/lotus-next). Detailed source selection, package verification, diagnostics, bundled browser runtime and isolated macOS restart acceptance remain in the [development guide](docs/development.md).
-
-## License
-
-Project-owned code and documentation are licensed under the [MIT License](./LICENSE).
-Third-party components retain their respective licenses and copyright notices.
+[Download settings](docs/download-settings.md#mirrors-and-proxies) · [Updates and rollback](docs/component-releasing.md#applying-an-update-in-bodhi) · [Build from source](docs/development.md) · [Bamboo runtime](https://github.com/bigduu/Bamboo-agent) · [MIT](LICENSE)
