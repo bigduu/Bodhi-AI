@@ -5,6 +5,7 @@ use super::{
 use crate::component_channel::{Changes, Combination, PairIdentity, UpdateKind, VerifiedChannel};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
+use crate::sidecar::UpdateShutdownError;
 use chrono::Utc;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -686,10 +687,6 @@ impl Manager {
             self.reconfirm(active, &update, locale, self.load_catalog())
                 .await?;
             self.reopen_downloaded_update(&update.candidate).await?;
-            self.updates
-                .force_shutdown_started
-                .store(true, Ordering::Release);
-            self.updates.status(Phase::ShuttingDown, None);
             self.queue_after_force_shutdown(
                 &update,
                 runtime.stop_for_update(Duration::from_secs(90)),
@@ -704,6 +701,35 @@ impl Manager {
         }
         self.request_restart(app);
         Ok(())
+    }
+
+    pub(super) async fn queue_after_force_shutdown(
+        &self,
+        update: &SelectedUpdate,
+        shutdown: impl Future<Output = Result<(), UpdateShutdownError>>,
+        port: u16,
+    ) -> Result<(), String> {
+        let shutdown_already_started = self
+            .updates
+            .force_shutdown_started
+            .swap(true, Ordering::AcqRel);
+        self.updates.status(Phase::ShuttingDown, None);
+        match shutdown.await {
+            Ok(()) => {}
+            Err(UpdateShutdownError::RequestRejected(error)) => {
+                self.updates
+                    .force_shutdown_started
+                    .store(shutdown_already_started, Ordering::Release);
+                return Err(error);
+            }
+            Err(UpdateShutdownError::Unconfirmed(error)) => return Err(error),
+        }
+        let _writer = self.profile.writer()?;
+        crate::sidecar::require_available_port(port)?;
+        if super::PlannedRestart::read(&self.profile)?.is_some() {
+            return Err("A planned Bamboo restart still needs to complete".into());
+        }
+        self.queue(update)
     }
 
     fn request_restart<R: Runtime>(&self, app: &AppHandle<R>) {
@@ -1135,7 +1161,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn force_update_is_offer_and_download_specific() {
+    async fn force_update_is_specific_to_the_download_and_tracks_shutdown_retries() {
         use crate::component_channel::tests::{
             fixture_channel_with_independent_updates, initial_combination,
         };
@@ -1186,10 +1212,55 @@ mod tests {
         assert!(manager
             .force_target(other.sequence, &other.identity, locale)
             .is_err());
-        manager
-            .updates
-            .force_shutdown_started
-            .store(true, Ordering::Release);
+        let rejected = || async {
+            Err(UpdateShutdownError::RequestRejected(
+                "shutdown request was rejected".into(),
+            ))
+        };
+        assert_eq!(
+            manager
+                .queue_after_force_shutdown(&update, rejected(), 0)
+                .await
+                .unwrap_err(),
+            "shutdown request was rejected"
+        );
+        assert!(manager
+            .download(chosen.sequence, &chosen.identity, locale)
+            .await
+            .is_ok());
+        assert!(
+            !manager
+                .snapshot("0.0.0".into(), locale)
+                .unwrap()
+                .force_update
+                .unwrap()
+                .shutdown_started
+        );
+
+        assert!(manager
+            .queue_after_force_shutdown(
+                &update,
+                async {
+                    Err(UpdateShutdownError::Unconfirmed(
+                        "shutdown timed out".into(),
+                    ))
+                },
+                0,
+            )
+            .await
+            .is_err());
+        assert!(manager
+            .queue_after_force_shutdown(&update, rejected(), 0)
+            .await
+            .is_err());
+        assert!(
+            manager
+                .snapshot("0.0.0".into(), locale)
+                .unwrap()
+                .force_update
+                .unwrap()
+                .shutdown_started
+        );
         assert!(manager
             .download(other.sequence, &other.identity, locale)
             .await

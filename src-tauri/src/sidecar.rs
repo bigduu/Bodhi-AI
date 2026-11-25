@@ -40,6 +40,23 @@ pub struct SidecarState {
 
 const SHUTDOWN_DIR_ENV: &str = "BAMBOO_MANAGED_SHUTDOWN_DIR";
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UpdateShutdownError {
+    /// The exact child is still running and no shutdown request was accepted.
+    RequestRejected(String),
+    /// Shutdown may have started, or the exact child's outcome is uncertain.
+    Unconfirmed(String),
+}
+
+impl From<UpdateShutdownError> for String {
+    fn from(error: UpdateShutdownError) -> Self {
+        match error {
+            UpdateShutdownError::RequestRejected(message)
+            | UpdateShutdownError::Unconfirmed(message) => message,
+        }
+    }
+}
+
 struct ManagedChild {
     process: Arc<SharedChild>,
     startup: StartupStatus,
@@ -50,21 +67,60 @@ struct ManagedChild {
 }
 
 impl ManagedChild {
-    fn request_shutdown(&self) -> Result<(), String> {
+    fn request_shutdown(&self) -> Result<(), UpdateShutdownError> {
         let mut requested = self
             .shutdown_requested
             .lock()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| UpdateShutdownError::Unconfirmed(error.to_string()))?;
+        // Do not let application close kill the child while it drains.
+        let was_committing = self.committing_update.swap(true, Ordering::SeqCst);
         if *requested {
             return Ok(());
         }
+        let result = self.shutdown_marker_exists().and_then(|present| {
+            if present {
+                Ok(())
+            } else {
+                self.send_shutdown_request()
+            }
+        });
+        if let Err(error) = result {
+            match self.shutdown_marker_exists() {
+                Ok(true) => (),
+                Ok(false) => {
+                    self.committing_update
+                        .store(was_committing, Ordering::SeqCst);
+                    return if !was_committing && matches!(self.process.try_wait(), Ok(None)) {
+                        Err(UpdateShutdownError::RequestRejected(error))
+                    } else {
+                        Err(UpdateShutdownError::Unconfirmed(error))
+                    };
+                }
+                Err(_) => return Err(UpdateShutdownError::Unconfirmed(error)),
+            }
+        }
+        *requested = true;
+        Ok(())
+    }
+
+    fn shutdown_marker_exists(&self) -> Result<bool, String> {
+        let Some(directory) = &self.shutdown else {
+            return Ok(false);
+        };
+        match fs::symlink_metadata(directory.path().join("stop")) {
+            Ok(metadata) => Ok(metadata.is_file() && metadata.len() == 0),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("Cannot inspect managed Bamboo shutdown: {error}")),
+        }
+    }
+
+    fn send_shutdown_request(&self) -> Result<(), String> {
         if let Some(directory) = &self.shutdown {
             match fs::symlink_metadata(directory.path().join("ready")) {
                 Ok(metadata) if metadata.is_file() && metadata.len() == 0 => {
                     File::create_new(directory.path().join("stop")).map_err(|error| {
                         format!("Cannot request managed Bamboo shutdown: {error}")
                     })?;
-                    *requested = true;
                     return Ok(());
                 }
                 Ok(_) => return Err("Invalid managed Bamboo shutdown marker.".into()),
@@ -72,9 +128,7 @@ impl ManagedChild {
                 Err(error) => return Err(error.to_string()),
             }
         }
-        request_legacy_shutdown(&self.process)?;
-        *requested = true;
-        Ok(())
+        request_legacy_shutdown(&self.process)
     }
 }
 
@@ -153,8 +207,11 @@ impl SidecarState {
     }
 
     /// Stop this exact child through the server's normal cleanup path.
-    pub(crate) async fn stop_for_update(&self, timeout: Duration) -> Result<(), String> {
-        self.wait_for_update_exit(timeout, true).await
+    pub(crate) async fn stop_for_update(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), UpdateShutdownError> {
+        self.wait_for_update_exit_inner(timeout, true).await
     }
 
     pub(crate) fn set_committing_update(&self, committing: bool) -> Result<(), String> {
@@ -179,35 +236,50 @@ impl SidecarState {
         timeout: Duration,
         request_shutdown: bool,
     ) -> Result<(), String> {
-        let child = self.owned_child()?;
+        self.wait_for_update_exit_inner(timeout, request_shutdown)
+            .await
+            .map_err(String::from)
+    }
+
+    async fn wait_for_update_exit_inner(
+        &self,
+        timeout: Duration,
+        request_shutdown: bool,
+    ) -> Result<(), UpdateShutdownError> {
+        let child = self
+            .owned_child()
+            .map_err(UpdateShutdownError::Unconfirmed)?;
         let exited = match child
             .process
             .try_wait()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| UpdateShutdownError::Unconfirmed(error.to_string()))?
         {
             Some(exited) => exited,
             None => {
                 if request_shutdown {
-                    // Closing Bodhi must not kill the child while its normal
-                    // shutdown is draining, even if this wait times out.
-                    let was_committing = child.committing_update.swap(true, Ordering::SeqCst);
-                    if let Err(error) = child.request_shutdown() {
-                        child
-                            .committing_update
-                            .store(was_committing, Ordering::SeqCst);
-                        return Err(error);
-                    }
+                    child.request_shutdown()?;
                 }
                 let process = child.process.clone();
                 tokio::task::spawn_blocking(move || process.wait_timeout(timeout))
                     .await
-                    .map_err(|error| error.to_string())?
-                    .map_err(|error| format!("Cannot wait for managed Bamboo shutdown: {error}"))?
-                    .ok_or("Bamboo is still shutting down. Retry the update after it exits.")?
+                    .map_err(|error| UpdateShutdownError::Unconfirmed(error.to_string()))?
+                    .map_err(|error| {
+                        UpdateShutdownError::Unconfirmed(format!(
+                            "Cannot wait for managed Bamboo shutdown: {error}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        UpdateShutdownError::Unconfirmed(
+                            "Bamboo is still shutting down. Retry the update after it exits."
+                                .into(),
+                        )
+                    })?
             }
         };
         if !exited.success() {
-            return Err(format!("Bamboo exited with {exited} during shutdown."));
+            return Err(UpdateShutdownError::Unconfirmed(format!(
+                "Bamboo exited with {exited} during shutdown."
+            )));
         }
         child.startup.0.store(2, Ordering::SeqCst);
         Ok(())
@@ -557,6 +629,12 @@ mod tests {
 
     #[tokio::test]
     async fn update_shutdown_waits_without_killing_the_child_and_can_retry() {
+        for stop_already_requested in [false, true] {
+            assert_update_shutdown_retry(stop_already_requested).await;
+        }
+    }
+
+    async fn assert_update_shutdown_retry(stop_already_requested: bool) {
         let work = tempfile::tempdir().unwrap();
         let profile = crate::bamboo_profile::Profile::open(work.path()).unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -597,27 +675,37 @@ mod tests {
         std::fs::write(control.join("ready"), b"invalid").unwrap();
         for was_committing in [false, true] {
             runtime.set_committing_update(was_committing).unwrap();
-            assert_eq!(
-                runtime.stop_for_update(Duration::ZERO).await.unwrap_err(),
-                "Invalid managed Bamboo shutdown marker."
-            );
+            let message = "Invalid managed Bamboo shutdown marker.".into();
+            let expected = if was_committing {
+                UpdateShutdownError::Unconfirmed(message)
+            } else {
+                UpdateShutdownError::RequestRejected(message)
+            };
+            assert_eq!(runtime.stop_for_update(Duration::ZERO).await, Err(expected));
             assert_eq!(runtime.update_requires_process(), was_committing);
             assert!(!control.join("stop").exists());
         }
         runtime.set_committing_update(false).unwrap();
-        std::fs::write(control.join("ready"), b"").unwrap();
+        if stop_already_requested {
+            File::create_new(control.join("stop")).unwrap();
+        } else {
+            std::fs::write(control.join("ready"), b"").unwrap();
+        }
 
-        assert!(runtime
+        let error = runtime
             .stop_for_update(Duration::from_millis(100))
             .await
-            .unwrap_err()
-            .contains("still shutting down"));
+            .unwrap_err();
+        assert!(matches!(error, UpdateShutdownError::Unconfirmed(message)
+            if message.contains("still shutting down")));
         assert!(control.join("stop").is_file());
         assert!(child.process.try_wait().unwrap().is_none());
         assert!(runtime.update_requires_process());
         assert!(require_available_port(port).is_err());
         assert!(profile.writer().is_err());
 
+        // Retry the same accepted request without relying on a second ready marker.
+        std::fs::write(control.join("ready"), b"invalid").unwrap();
         File::create_new(work.path().join("finish")).unwrap();
         runtime
             .stop_for_update(Duration::from_secs(5))

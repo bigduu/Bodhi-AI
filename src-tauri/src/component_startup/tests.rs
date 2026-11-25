@@ -24,7 +24,15 @@ async fn force_update_only_queues_after_clean_shutdown_and_released_ownership() 
     let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = occupied.local_addr().unwrap().port();
     assert!(manager
-        .queue_after_force_shutdown(&update, async { Err("shutdown timed out".into()) }, port)
+        .queue_after_force_shutdown(
+            &update,
+            async {
+                Err(crate::sidecar::UpdateShutdownError::Unconfirmed(
+                    "shutdown timed out".into(),
+                ))
+            },
+            port,
+        )
         .await
         .is_err());
     assert!(manager
