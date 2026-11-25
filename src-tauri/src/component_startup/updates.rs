@@ -25,6 +25,7 @@ pub(super) struct Updates {
     display: Mutex<Display>,
     action: tokio::sync::Mutex<()>,
     restart_requested: AtomicBool,
+    force_shutdown_started: AtomicBool,
     dialog_open: AtomicBool,
     pub(super) boot: tokio::sync::Mutex<()>,
     pub(super) ready: AtomicBool,
@@ -40,6 +41,8 @@ struct Display {
     download_sequence: Option<u64>,
     #[serde(skip)]
     selections: Vec<Arc<SelectedUpdate>>,
+    #[serde(skip)]
+    force: Option<Arc<SelectedUpdate>>,
 }
 
 impl Display {
@@ -118,6 +121,14 @@ struct Offer {
     skipped: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ForceOffer {
+    sequence: u64,
+    identity: String,
+    shutdown_started: bool,
+}
+
 fn artifact_identity(candidate: &Combination) -> Result<String, String> {
     let descriptor = serde_json::to_vec(candidate).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", Sha256::digest(descriptor)))
@@ -135,10 +146,25 @@ pub(crate) struct Snapshot {
     last_check: Option<String>,
     display: Display,
     offers: Vec<Offer>,
+    force_update: Option<ForceOffer>,
     history: Vec<History>,
 }
 
 impl Updates {
+    pub(super) fn enable_force_update(&self, update: SelectedUpdate) -> Result<(), String> {
+        self.display
+            .lock()
+            .map_err(|_| "Cannot set the update status")?
+            .force = Some(Arc::new(update));
+        Ok(())
+    }
+
+    fn clear_force_update(&self) {
+        if let Ok(mut display) = self.display.lock() {
+            display.force = None;
+        }
+    }
+
     pub(super) fn progress(
         &self,
         file: &str,
@@ -217,6 +243,7 @@ impl Updates {
 impl Manager {
     fn snapshot(&self, bodhi: String, locale: Locale) -> Result<Snapshot, String> {
         let journal = Journal::read(&self.profile)?;
+        let planned = super::PlannedRestart::read(&self.profile)?;
         let display = self
             .updates
             .display
@@ -224,6 +251,7 @@ impl Manager {
             .map_err(|_| "Cannot read the update status")?
             .clone();
         let mut offers = Vec::new();
+        let mut force_update = None;
         if !display.selections.is_empty() {
             let skipped = journal::read_skipped(&self.profile)?;
             let downloaded = journal::read_downloaded(&self.profile)?;
@@ -234,14 +262,33 @@ impl Manager {
                 let Some(kind) = update.candidate.update_kind(active) else {
                     continue;
                 };
+                let identity = artifact_identity(&update.candidate)?;
+                let skipped_offer = skipped.contains(&update.candidate.identity());
+                let downloaded_offer = downloaded.as_ref() == Some(&update.candidate);
+                if planned.is_none()
+                    && !self.updates.restoring.load(Ordering::Acquire)
+                    && !self.updates.restart_requested.load(Ordering::Acquire)
+                    && display.force.as_deref() == Some(update.as_ref())
+                    && downloaded_offer
+                    && !skipped_offer
+                {
+                    force_update = Some(ForceOffer {
+                        sequence: update.candidate.sequence,
+                        identity: identity.clone(),
+                        shutdown_started: self
+                            .updates
+                            .force_shutdown_started
+                            .load(Ordering::Acquire),
+                    });
+                }
                 offers.push(Offer {
                     kind,
                     sequence: update.candidate.sequence,
-                    skipped: skipped.contains(&update.candidate.identity()),
-                    identity: artifact_identity(&update.candidate)?,
+                    skipped: skipped_offer,
+                    identity,
                     versions: Versions::from(&update.candidate),
                     changes: update.candidate.changes.clone(),
-                    downloaded: downloaded.as_ref() == Some(&update.candidate),
+                    downloaded: downloaded_offer,
                 });
             }
         }
@@ -254,7 +301,7 @@ impl Manager {
                 .queued
                 .as_ref()
                 .map(|candidate| candidate.sequence)
-                .or(super::PlannedRestart::read(&self.profile)?
+                .or(planned
                     .filter(|plan| {
                         journal.active.as_ref() != Some(&plan.candidate)
                             && !self.updates.restoring.load(Ordering::Acquire)
@@ -264,6 +311,7 @@ impl Manager {
             last_check: journal.last_check,
             display,
             offers,
+            force_update,
             history: journal.history,
         })
     }
@@ -323,6 +371,7 @@ impl Manager {
         };
         if journal.trial.is_some()
             || journal.queued.is_some()
+            || self.updates.force_shutdown_started.load(Ordering::Acquire)
             || super::PlannedRestart::read(&self.profile)?.is_some()
         {
             return Ok(false);
@@ -387,7 +436,9 @@ impl Manager {
 
     async fn download(&self, sequence: u64, identity: &str, locale: Locale) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
-        if super::PlannedRestart::read(&self.profile)?.is_some() {
+        if self.updates.force_shutdown_started.load(Ordering::Acquire)
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
             return Err(locale.text("updates.restartPending").into());
         }
         let update = self.updates.selected(sequence, identity, locale)?;
@@ -427,6 +478,7 @@ impl Manager {
         let journal = Journal::read(&self.profile)?;
         if self.updates.restart_requested.load(Ordering::Acquire)
             || self.updates.restoring.load(Ordering::Acquire)
+            || self.updates.force_shutdown_started.load(Ordering::Acquire)
             || journal.trial.is_some()
             || journal.queued.is_some()
             || super::PlannedRestart::read(&self.profile)?.is_some()
@@ -494,6 +546,9 @@ impl Manager {
             return Err("Wait for Bamboo to restore the previous sessions".into());
         }
         let locale = i18n::active(app);
+        if self.updates.force_shutdown_started.load(Ordering::Acquire) {
+            return Err(locale.text("updates.restartPending").into());
+        }
         let journal = Journal::read(&self.profile)?;
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let port = crate::web_service_port();
@@ -528,6 +583,7 @@ impl Manager {
             if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
                 return Err(locale.text("updates.downloadRequired").into());
             }
+            self.updates.clear_force_update();
             self.updates.status(Phase::Saving, None);
             if let Err(error) = self
                 .reconfirm(active, &update, locale, self.load_catalog())
@@ -559,12 +615,104 @@ impl Manager {
             self.updates.status(Phase::RestartFailed, Some(error));
             return Ok(());
         }
+        self.request_restart(app);
+        Ok(())
+    }
+
+    fn force_target(
+        &self,
+        sequence: u64,
+        identity: &str,
+        locale: Locale,
+    ) -> Result<(Arc<SelectedUpdate>, Journal), String> {
+        if self.updates.restoring.load(Ordering::Acquire)
+            || self.updates.restart_requested.load(Ordering::Acquire)
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
+            return Err(locale.text("updates.restartPending").into());
+        }
+        let update = self.updates.selected(sequence, identity, locale)?;
+        let display = self
+            .updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot read the update status")?;
+        if display.force.as_deref() != Some(update.as_ref()) {
+            return Err(locale.text("updates.catalogChanged").into());
+        }
+        drop(display);
+        let journal = Journal::read(&self.profile)?;
+        update.validate_transition(&journal)?;
+        self.require_unskipped(&update, locale)?;
+        if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
+            return Err(locale.text("updates.downloadRequired").into());
+        }
+        Ok((update, journal))
+    }
+
+    async fn force_apply<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        sequence: u64,
+        identity: &str,
+    ) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        let locale = i18n::active(app);
+        let (update, _) = self.force_target(sequence, identity, locale)?;
+        let prompt = locale
+            .text("updates.forceBody")
+            .replace("{bamboo}", &update.candidate.bamboo.version)
+            .replace("{lotus}", &update.candidate.lotus.version);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        app.dialog()
+            .message(prompt)
+            .title(locale.text("updates.forceTitle"))
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                locale.text("updates.forceUpdate").into(),
+                locale.text("dialog.cancel").into(),
+            ))
+            .show(move |confirmed| {
+                let _ = sender.send(confirmed);
+            });
+        if !receiver.await.unwrap_or(false) {
+            return Ok(());
+        }
+        let (update, journal) = self.force_target(sequence, identity, locale)?;
+        let active = update.validate_transition(&journal)?;
+        self.updates.status(Phase::Saving, None);
+        let runtime = app.state::<crate::sidecar::SidecarState>();
+        let result = async {
+            self.reconfirm(active, &update, locale, self.load_catalog())
+                .await?;
+            self.reopen_downloaded_update(&update.candidate).await?;
+            self.updates
+                .force_shutdown_started
+                .store(true, Ordering::Release);
+            self.updates.status(Phase::ShuttingDown, None);
+            self.queue_after_force_shutdown(
+                &update,
+                runtime.stop_for_update(Duration::from_secs(90)),
+                crate::web_service_port(),
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = result {
+            self.updates.status(Phase::RestartFailed, Some(error));
+            return Ok(());
+        }
+        self.request_restart(app);
+        Ok(())
+    }
+
+    fn request_restart<R: Runtime>(&self, app: &AppHandle<R>) {
+        self.updates.clear_force_update();
         self.updates
             .restart_requested
             .store(true, Ordering::Release);
         self.updates.status(Phase::Restarting, None);
         app.request_restart();
-        Ok(())
     }
 
     async fn reconfirm(
@@ -714,6 +862,19 @@ pub(crate) async fn apply_component_update<R: Runtime>(
 ) -> Result<(), String> {
     authorize(&window, false)?;
     running_manager(&app)?.apply(&app, sequence, identity).await
+}
+
+#[tauri::command]
+pub(crate) async fn force_component_update<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    sequence: u64,
+    identity: String,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    running_manager(&app)?
+        .force_apply(&app, sequence, &identity)
+        .await
 }
 
 fn running_manager<R: Runtime>(app: &AppHandle<R>) -> Result<tauri::State<'_, Manager>, String> {
@@ -971,6 +1132,72 @@ mod tests {
         let queued = Journal::read(&profile).unwrap().queued.unwrap();
         assert_eq!(queued.bamboo.version, "2026.11.39");
         assert_eq!(queued.lotus, original.lotus);
+    }
+
+    #[tokio::test]
+    async fn force_update_is_offer_and_download_specific() {
+        use crate::component_channel::tests::{
+            fixture_channel_with_independent_updates, initial_combination,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(directory.path()).unwrap();
+        let original = initial_combination().await;
+        Journal {
+            active: Some(original),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let locale = Locale::English;
+        manager
+            .detect(async { Ok(fixture_channel_with_independent_updates()) })
+            .await
+            .unwrap();
+        let offers = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+        let chosen = &offers[0];
+        let other = &offers[1];
+        let update = manager
+            .updates
+            .selected(chosen.sequence, &chosen.identity, locale)
+            .unwrap();
+        manager.record_download(&update, Ok(())).unwrap();
+        assert!(manager
+            .force_target(chosen.sequence, &chosen.identity, locale)
+            .is_err());
+        manager
+            .updates
+            .enable_force_update(SelectedUpdate {
+                current_sequence: update.current_sequence,
+                current: update.current.clone(),
+                candidate: update.candidate.clone(),
+            })
+            .unwrap();
+        let granted = manager
+            .snapshot("0.0.0".into(), locale)
+            .unwrap()
+            .force_update
+            .unwrap();
+        assert_eq!(granted.identity, chosen.identity);
+        assert!(!granted.shutdown_started);
+        assert!(manager
+            .force_target(chosen.sequence, &chosen.identity, locale)
+            .is_ok());
+        assert!(manager
+            .force_target(other.sequence, &other.identity, locale)
+            .is_err());
+        manager
+            .updates
+            .force_shutdown_started
+            .store(true, Ordering::Release);
+        assert!(manager
+            .download(other.sequence, &other.identity, locale)
+            .await
+            .is_err());
+        assert!(manager
+            .force_target(chosen.sequence, &chosen.identity, locale)
+            .is_ok());
+        assert!(Journal::read(&profile).unwrap().queued.is_none());
     }
 
     #[tokio::test]

@@ -338,8 +338,24 @@ impl Manager {
         journal.queued = Some(update.candidate.clone());
         journal.save(&self.profile)
     }
+
+    async fn queue_after_force_shutdown(
+        &self,
+        update: &SelectedUpdate,
+        shutdown: impl std::future::Future<Output = Result<(), String>>,
+        port: u16,
+    ) -> Result<(), String> {
+        shutdown.await?;
+        let _writer = self.profile.writer()?;
+        crate::sidecar::require_available_port(port)?;
+        if PlannedRestart::read(&self.profile)?.is_some() {
+            return Err("A planned Bamboo restart still needs to complete".into());
+        }
+        self.queue(update)
+    }
 }
 
+#[derive(PartialEq, Eq)]
 struct SelectedUpdate {
     current_sequence: u64,
     current: PairIdentity,

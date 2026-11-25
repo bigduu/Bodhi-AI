@@ -19,8 +19,10 @@ const FILE: &str = "component-planned-restart-v1.json";
 const TIMEOUT: Duration = Duration::from_secs(90);
 const RESPONSE: Duration = Duration::from_secs(5);
 const MAX_INTENT: u64 = 4 * 1024 * 1024;
+const CONFIGURED_WORKERS_BLOCKED: &str =
+    "Configured Connect or MCP workers prevent a planned update";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PlannedRestart {
     pub(super) request: Uuid,
@@ -47,6 +49,25 @@ impl PlannedRestart {
             fs::remove_file(profile.state_dir.join(FILE)).map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    fn clear_refused_prepare(
+        &self,
+        profile: &Profile,
+        abort_status: Option<Status>,
+    ) -> Result<bool, String> {
+        if abort_status != Some(Status::Aborted) || self.commit_requested || self.exit_confirmed {
+            return Ok(false);
+        }
+        let _update = profile.update_lock()?;
+        if Self::read(profile)?.as_ref() != Some(self)
+            || self.has_intent(profile)?
+            || self.authorized(profile)?
+        {
+            return Ok(false);
+        }
+        fs::remove_file(profile.state_dir.join(FILE)).map_err(|e| e.to_string())?;
+        Ok(true)
     }
 
     fn receipt_root(profile: &Profile) -> Result<Option<PathBuf>, String> {
@@ -104,6 +125,63 @@ mod tests {
     use crate::component_channel::Asset;
     use serde_json::json;
     use std::path::Path;
+
+    #[tokio::test]
+    async fn force_update_requires_an_aborted_prepare_without_handoff_evidence() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile = Profile::open(directory.path()).unwrap();
+        let original = crate::component_channel::tests::initial_combination().await;
+        let plan = PlannedRestart {
+            request: Uuid::new_v4(),
+            candidate: original.clone(),
+            current_sequence: original.sequence,
+            current: original.identity(),
+            owner: "shutdown-fixture".into(),
+            commit_requested: false,
+            exit_confirmed: false,
+        };
+        plan.save(&profile).unwrap();
+        for status in [None, Some(Status::Busy), Some(Status::Error)] {
+            assert!(!plan.clear_refused_prepare(&profile, status).unwrap());
+            assert_eq!(
+                PlannedRestart::read(&profile).unwrap().as_ref(),
+                Some(&plan)
+            );
+        }
+
+        let aborted = Some(Status::Aborted);
+        let mut committed = plan.clone();
+        committed.commit_requested = true;
+        committed.save(&profile).unwrap();
+        assert!(!plan.clear_refused_prepare(&profile, aborted).unwrap());
+        assert!(!committed.clear_refused_prepare(&profile, aborted).unwrap());
+        assert_eq!(PlannedRestart::read(&profile).unwrap(), Some(committed));
+        plan.save(&profile).unwrap();
+
+        let root = profile.data.join("managed-update");
+        fs::create_dir(&root).unwrap();
+        let intent = root.join(format!("{}.json", plan.request));
+        fs::write(&intent, b"{}").unwrap();
+        assert!(!plan.clear_refused_prepare(&profile, aborted).unwrap());
+        assert_eq!(
+            PlannedRestart::read(&profile).unwrap().as_ref(),
+            Some(&plan)
+        );
+        fs::remove_file(intent).unwrap();
+
+        let ready = root.join(format!("{}.ready", plan.request));
+        fs::write(&ready, "0".repeat(64)).unwrap();
+        assert!(plan.clear_refused_prepare(&profile, aborted).is_err());
+        assert_eq!(
+            PlannedRestart::read(&profile).unwrap().as_ref(),
+            Some(&plan)
+        );
+        fs::remove_file(ready).unwrap();
+
+        assert!(plan.clear_refused_prepare(&profile, aborted).unwrap());
+        assert!(PlannedRestart::read(&profile).unwrap().is_none());
+        assert!(!plan.clear_refused_prepare(&profile, aborted).unwrap());
+    }
 
     #[tokio::test]
     async fn startup_requires_receipt_for_the_exact_committed_intent() {
@@ -513,6 +591,7 @@ impl Manager {
         }
         let deadline = tokio::time::Instant::now() + TIMEOUT;
         if !plan.commit_requested {
+            let mut configured_workers_blocked = false;
             let prepared = async {
                 loop {
                     let result = runtime.planned_update(plan.request, Action::Prepare, RESPONSE).await?;
@@ -521,6 +600,10 @@ impl Manager {
                         Status::Busy if tokio::time::Instant::now() < deadline => {
                             self.updates.status(super::updates::Phase::ShuttingDown, result.message);
                             tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                        Status::Error if result.message.as_deref() == Some(CONFIGURED_WORKERS_BLOCKED) => {
+                            configured_workers_blocked = true;
+                            return Err(CONFIGURED_WORKERS_BLOCKED.into());
                         }
                         _ => return Err(result.message.unwrap_or_else(|| format!("Bamboo could not pause {} session(s). Retry when work can be paused.", result.pending_sessions.len()))),
                     }
@@ -532,10 +615,22 @@ impl Manager {
                 plan.save(&self.profile)
             });
             if let Err(error) = issued {
-                let _ = runtime
+                let abort_status = runtime
                     .planned_update(plan.request, Action::Abort, RESPONSE)
-                    .await;
-                plan.clear(&self.profile)?;
+                    .await
+                    .ok()
+                    .map(|reply| reply.status);
+                if configured_workers_blocked {
+                    if plan.clear_refused_prepare(&self.profile, abort_status)? {
+                        self.updates.enable_force_update(SelectedUpdate {
+                            current_sequence: plan.current_sequence,
+                            current: plan.current.clone(),
+                            candidate: plan.candidate.clone(),
+                        })?;
+                    }
+                } else {
+                    plan.clear(&self.profile)?;
+                }
                 return Err(error);
             }
         }

@@ -188,7 +188,15 @@ impl SidecarState {
             Some(exited) => exited,
             None => {
                 if request_shutdown {
-                    child.request_shutdown()?;
+                    // Closing Bodhi must not kill the child while its normal
+                    // shutdown is draining, even if this wait times out.
+                    let was_committing = child.committing_update.swap(true, Ordering::SeqCst);
+                    if let Err(error) = child.request_shutdown() {
+                        child
+                            .committing_update
+                            .store(was_committing, Ordering::SeqCst);
+                        return Err(error);
+                    }
                 }
                 let process = child.process.clone();
                 tokio::task::spawn_blocking(move || process.wait_timeout(timeout))
@@ -584,6 +592,20 @@ mod tests {
         .await
         .unwrap();
         assert!(profile.writer().is_err());
+        assert!(!runtime.update_requires_process());
+
+        std::fs::write(control.join("ready"), b"invalid").unwrap();
+        for was_committing in [false, true] {
+            runtime.set_committing_update(was_committing).unwrap();
+            assert_eq!(
+                runtime.stop_for_update(Duration::ZERO).await.unwrap_err(),
+                "Invalid managed Bamboo shutdown marker."
+            );
+            assert_eq!(runtime.update_requires_process(), was_committing);
+            assert!(!control.join("stop").exists());
+        }
+        runtime.set_committing_update(false).unwrap();
+        std::fs::write(control.join("ready"), b"").unwrap();
 
         assert!(runtime
             .stop_for_update(Duration::from_millis(100))
@@ -592,6 +614,7 @@ mod tests {
             .contains("still shutting down"));
         assert!(control.join("stop").is_file());
         assert!(child.process.try_wait().unwrap().is_none());
+        assert!(runtime.update_requires_process());
         assert!(require_available_port(port).is_err());
         assert!(profile.writer().is_err());
 
@@ -601,6 +624,7 @@ mod tests {
             .await
             .unwrap();
         assert!(work.path().join("clean-exit").is_file());
+        assert!(!runtime.update_requires_process());
         assert!(require_available_port(port).is_ok());
         assert!(profile.writer().is_ok());
         runtime.stop_for_update(Duration::ZERO).await.unwrap();

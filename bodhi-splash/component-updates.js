@@ -85,14 +85,23 @@ function renderOfferSelection(view, offers, busy) {
   return offer;
 }
 
+function canForceUpdate(snapshot, offer) {
+  return snapshot.running && snapshot.queued == null && offer?.downloaded && !offer.skipped
+    && snapshot.forceUpdate?.sequence === offer.sequence
+    && snapshot.forceUpdate?.identity === offer.identity;
+}
+
 function renderPanelActions(view, offer, snapshot, phase, busy) {
-  const canSkip = snapshot.running && snapshot.queued == null && !!offer;
+  const canSkip = snapshot.running && snapshot.queued == null
+    && !snapshot.forceUpdate?.shutdownStarted && !!offer;
   const canDownload = canSkip && !offer.skipped && !offer.downloaded;
   const canApply = canSkip && !offer.skipped && offer.downloaded;
+  const canForce = canForceUpdate(snapshot, offer);
   const download = view.part("download");
   const apply = view.part("apply");
+  const force = view.part("force");
   const skip = view.part("skip");
-  view.part("actions").hidden = !canSkip;
+  view.part("actions").hidden = !(canSkip || canForce);
   download.hidden = !canDownload;
   download.disabled = busy;
   setText(download, i18n.text(
@@ -101,10 +110,12 @@ function renderPanelActions(view, offer, snapshot, phase, busy) {
   apply.hidden = !canApply;
   apply.disabled = busy;
   setText(apply, i18n.text("updates.confirmApply"));
+  force.hidden = !canForce;
+  force.disabled = busy;
   skip.hidden = !canSkip;
   skip.disabled = busy;
   setText(skip, i18n.text(offer?.skipped ? "updates.undoSkip" : "updates.skipVersion"));
-  return canApply;
+  return canApply || canForce;
 }
 
 function renderNotes(view, offer, active) {
@@ -132,7 +143,8 @@ function renderPanel(view, snapshot, busy) {
   const { active, display, queued, running } = snapshot;
   const offers = snapshot.offers.filter((offer) => offer.kind === view.kind);
   view.panel.hidden = view.kind === "pair" && offers.length === 0;
-  const offer = renderOfferSelection(view, offers, actionPending || queued != null);
+  const offer = renderOfferSelection(view, offers,
+    actionPending || queued != null || snapshot.forceUpdate?.shutdownStarted);
   const downloadIsHere = offer && display.downloadSequence === offer.sequence
     && downloadPhases.includes(display.phase);
   const phase = downloadIsHere ? display.phase
@@ -162,7 +174,9 @@ function renderUpdates(snapshot) {
 
   const check = get("check");
   setText(check, i18n.text(running ? "updates.check" : "updates.retry"));
-  check.disabled = busy || (running ? pendingRestart : display.phase !== "startupFailed");
+  check.disabled = busy || (running
+    ? pendingRestart || !!snapshot.forceUpdate?.shutdownStarted
+    : display.phase !== "startupFailed");
 
   const scopedDownload = downloadPhases.includes(display.phase)
     && offers.some((offer) => offer.sequence === display.downloadSequence);
@@ -258,11 +272,13 @@ for (const view of componentViews) {
   for (const [part, command] of [
     ["download", "download_component_update"],
     ["apply", "apply_component_update"],
+    ["force", "force_component_update"],
     ["skip", "set_component_version_skipped"],
   ]) {
     view.part(part).addEventListener("click", () => {
       const offer = selectedOffer(view);
       if (!offer || currentSnapshot.queued != null) return;
+      if (part === "force" && !canForceUpdate(currentSnapshot, offer)) return;
       const args = { sequence: offer.sequence, identity: offer.identity };
       if (part === "skip") args.skipped = !offer.skipped;
       void runAction(command, args);
