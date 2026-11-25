@@ -9,14 +9,17 @@
     body { max-width: 720px; margin: auto; padding: 28px; }
     h1 { margin: 0; font-size: 24px; font-weight: 650; }
     h2 { font-size: 15px; margin: 0 0 10px; }
-    header, .row, .versions { display: flex; align-items: center; gap: 12px; }
-    header, .row { justify-content: space-between; flex-wrap: wrap; }
-    .versions { flex-wrap: wrap; gap: 24px; margin: 22px 0; }
+    header, .row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+    .version-summary { margin: 12px 0 18px; }
+    .shell-version, .component-version dd { font-variant-numeric: tabular-nums; }
+    .component-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+    .component-grid section { min-width: 0; margin: 0; }
+    .component-version { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0 0 12px; }
     dt, small, label { color: #adb6c2; }
-    dd { margin: 0; font-variant-numeric: tabular-nums; }
+    dd { margin: 0; }
     section { margin: 0 0 16px; padding: 16px; border: 1px solid #353a44; border-radius: 10px; background: #202328; }
     button, select, input { font: inherit; border: 1px solid #454c57; border-radius: 7px; padding: 7px 10px; background: #2b3038; color: inherit; }
-    button { background: #c2dcff; color: #132642; border-color: transparent; font-weight: 600; }
+    button { background: #c2dcff; color: #132642; border-color: transparent; font-weight: 600; overflow-wrap: anywhere; max-width: 100%; }
     button.secondary { background: #2b3038; color: inherit; border-color: #454c57; }
     button:disabled { opacity: .55; }
     button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #8ab4f8; outline-offset: 3px; }
@@ -24,8 +27,12 @@
     .setting { display: grid; gap: 4px; }
     .setting[hidden] { display: none; }
     .settings-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-    #offer-selection { margin-top: 12px; }
-    #update-actions { margin-top: 12px; }
+    .component-controls select { min-width: 0; max-width: 100%; }
+    .component-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .component-actions[hidden], #phase:empty, .component-phase:empty, #last-check:empty { display: none; }
+    details { margin-top: 12px; }
+    summary { cursor: pointer; color: #c2dcff; }
+    #retry-restart { margin-bottom: 16px; }
     p { margin: 9px 0; overflow-wrap: anywhere; }
     progress { width: 100%; accent-color: #8ab4f8; }
     .error { color: #ffb8ae; }
@@ -33,6 +40,10 @@
     li { margin: 5px 0; overflow-wrap: anywhere; }
     #history li { border-bottom: 1px solid #3a3e46; padding: 7px 0; }
     #history li:last-child { border: 0; }
+    @media (max-width: 560px) {
+      body { padding: 18px; }
+      .component-grid { grid-template-columns: minmax(0, 1fr); }
+    }
   </style>
   <script src="i18n.js" defer></script>
   <script src="component-updates.js" defer></script>
@@ -42,12 +53,40 @@
     <h1 data-i18n="updates.heading">Versions and Updates</h1>
     <button id="check" type="button" data-i18n="updates.check" disabled>Check for updates</button>
   </header>
-  <dl class="versions">
-    <div><dt>Bodhi</dt><dd id="bodhi">—</dd></div>
-    <div><dt>Bamboo</dt><dd id="bamboo">—</dd></div>
-    <div><dt>Lotus Next</dt><dd id="lotus">—</dd></div>
-  </dl>
-  <section>
+  <div class="version-summary">
+    <p class="shell-version">Bodhi <span id="bodhi">—</span></p>
+    <small id="last-check"></small>
+  </div>
+  <p id="phase" role="status"></p>
+  <p id="error" class="error" role="alert" hidden></p>
+  <div id="download" hidden>
+    <progress id="progress" aria-label="Download progress" data-i18n-label="progress.label"></progress>
+    <small id="download-detail"></small>
+  </div>
+  <div class="component-grid">
+    <section data-update-kind="bamboo" aria-labelledby="bamboo-title">
+      <h2 id="bamboo-title">Bamboo</h2>
+      <dl class="component-version">
+        <dt data-i18n="updates.installedVersion">Installed version</dt><dd id="bamboo">—</dd>
+      </dl>
+      <div class="component-controls" data-part="controls"></div>
+    </section>
+    <section data-update-kind="lotus" aria-labelledby="lotus-title">
+      <h2 id="lotus-title">Lotus Next</h2>
+      <dl class="component-version">
+        <dt data-i18n="updates.installedVersion">Installed version</dt><dd id="lotus">—</dd>
+      </dl>
+      <div class="component-controls" data-part="controls"></div>
+    </section>
+  </div>
+  <section data-update-kind="pair" aria-labelledby="pair-title" hidden>
+    <h2 id="pair-title" data-i18n="updates.combined">Combined Bamboo and Lotus Next update</h2>
+    <div class="component-controls" data-part="controls"></div>
+  </section>
+  <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
+  <button id="retry-restart" type="button" data-i18n="updates.retryRestart" aria-describedby="restart-hint" hidden>Retry restart</button>
+  <section aria-labelledby="download-settings-title">
+    <h2 id="download-settings-title" data-i18n="updates.downloadSettings">Download settings</h2>
     <form id="download-settings">
       <fieldset id="settings-fields" disabled>
         <div class="row">
@@ -77,32 +116,28 @@
         </div>
       </fieldset>
     </form>
-    <div class="setting" id="offer-selection" hidden>
-      <label for="component-offer" data-i18n="updates.selectOffer">Update to review</label>
-      <select id="component-offer"></select>
-    </div>
-    <p id="phase" role="status"></p>
-    <div id="download" hidden>
-      <progress id="progress" aria-label="Download progress" data-i18n-label="progress.label"></progress>
-      <small id="download-detail"></small>
-    </div>
-    <p id="error" class="error" hidden></p>
-    <small id="last-check"></small>
-    <div id="update-actions" hidden>
-      <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
-      <button id="download-update" type="button" data-i18n="updates.download" hidden>Download update</button>
-      <button id="apply-update" type="button" aria-describedby="restart-hint" hidden></button>
-      <button id="skip-version" class="secondary" type="button" data-i18n="updates.skipVersion" hidden>Skip this version</button>
-    </div>
   </section>
-  <section id="notes" hidden>
-    <h2 data-i18n="updates.changes">Release notes</h2>
-    <ul id="changes"></ul>
-  </section>
-  <section>
-    <h2 data-i18n="updates.history">Update history</h2>
+  <section aria-labelledby="history-title">
+    <h2 id="history-title" data-i18n="updates.history">Update history</h2>
     <small id="history-empty" data-i18n="updates.noHistory">No updates recorded yet.</small>
     <ul id="history"></ul>
   </section>
+  <template id="component-controls">
+    <label class="setting" data-part="offer-field" hidden>
+      <span data-i18n="updates.targetVersion">Target version</span>
+      <select data-part="offer"></select>
+    </label>
+    <p class="component-phase" data-part="phase" role="status"></p>
+    <p class="error" data-part="error" role="alert" hidden></p>
+    <div class="component-actions" data-part="actions" hidden>
+      <button data-part="download" type="button" data-i18n="updates.download" hidden>Download update</button>
+      <button data-part="apply" type="button" data-i18n="updates.confirmApply" aria-describedby="restart-hint" hidden>Restart and update</button>
+      <button data-part="skip" class="secondary" type="button" data-i18n="updates.skipVersion" hidden>Skip this version</button>
+    </div>
+    <details data-part="notes" hidden>
+      <summary data-i18n="updates.changes">Release notes</summary>
+      <ul data-part="changes"></ul>
+    </details>
+  </template>
 </body>
 </html>
