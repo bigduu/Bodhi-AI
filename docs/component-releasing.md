@@ -19,6 +19,15 @@ Bamboo verification checks the executable manifest, five platform digests, and B
 
 The **Prepare published components** workflow runs this preflight from Main after its source is promoted. Choose `bamboo` or `lotus`, optionally enter that component's exact version and previous version, and leave the other component's fields blank. The workflow uploads `component-candidate.json` for review. This operation reads releases and produces verification evidence. Publishing and applying an update are separate operations.
 
+The same workflow checks both producers hourly on Main. Use `discover` to run
+the check on demand. Each job compares one upstream stable version with the
+highest version of that component in the protected catalog and verifies its
+published identity. A newer release produces a candidate with the exact catalog
+revision, sequence and prior version for compatibility review. An unchanged
+release produces a summary only. A producer failure leaves the peer job running.
+Use the catalog publication procedure below to make a compatible candidate
+available to clients.
+
 ## Catalog publication for existing shells
 
 The workflow defaults to `pair` for the existing catalog. Enter both exact published versions. If change history is needed, enter both previous versions too. The equivalent local command produces a `bodhi-component-candidate/v1` artifact.

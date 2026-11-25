@@ -10,6 +10,8 @@ const { LOTUS_NEXT_PACKAGE_NAME: PACKAGE, verifyLotusNextArtifact } = require(".
 
 const LOTUS = "bigduu/lotus-next";
 const NPM = "https://registry.npmjs.org";
+const BODHI = "bigduu/Bodhi-AI";
+const CATALOG_BRANCH = "components-stable";
 const BROWSER_MANIFEST = "bamboo-desktop-browser-runtimes-v1.json";
 const VERSION = /^[1-9]\d*\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -252,7 +254,11 @@ async function prepareSingle({ component, version, previousVersion }) {
     verify(selected),
     previousVersion && previousVersion !== selected ? verify(previousVersion) : undefined,
   ]);
-  const changeHistory = releaseChanges(component === "bamboo" ? BAMBOO : LOTUS, previous, release);
+  return singleCandidate(component, release, previous);
+}
+
+function singleCandidate(component, release, previous, request = api) {
+  const changeHistory = releaseChanges(component === "bamboo" ? BAMBOO : LOTUS, previous, release, request);
   const candidate = {
     kind: "bodhi-single-component-candidate/v1",
     component,
@@ -266,10 +272,69 @@ async function prepareSingle({ component, version, previousVersion }) {
   return candidate;
 }
 
+function compareVersions(left, right) {
+  assert.match(left, VERSION);
+  assert.match(right, VERSION);
+  const parts = right.split(".").map(BigInt);
+  for (const [index, value] of left.split(".").map(BigInt).entries()) {
+    if (value !== parts[index]) return value > parts[index] ? 1 : -1;
+  }
+  return 0;
+}
+
+async function readCatalog() {
+  const branch = api(`repos/${BODHI}/branches/${CATALOG_BRANCH}`);
+  assert.equal(branch.name, CATALOG_BRANCH);
+  assert.equal(branch.protected, true, "Require the protected Bodhi component catalog");
+  const revision = branch.commit.sha;
+  assert.match(revision, SHA);
+  const url = `https://raw.githubusercontent.com/${BODHI}/${revision}/channel-v1.json`;
+  const bytes = await readBytes(url, 1024 * 1024);
+  const catalog = JSON.parse(bytes);
+  assert.equal(catalog.schemaVersion, 1);
+  assert.equal(catalog.shellProtocol, 1);
+  assert.ok(Array.isArray(catalog.combinations) && catalog.combinations.length > 0, "Missing stable component combinations");
+  return { revision, combinations: catalog.combinations };
+}
+
+async function prepareSinceCatalog(component, {
+  catalog = readCatalog,
+  latest = resolveLatestVersion,
+  verify = component === "bamboo" ? bambooRelease : lotusRelease,
+  request = api,
+} = {}) {
+  assert.ok(component === "bamboo" || component === "lotus", "Choose Bamboo or Lotus Next");
+  const [{ revision, combinations }, version] = await Promise.all([catalog(), latest(component)]);
+  const previous = combinations.reduce((newest, entry) => {
+    const order = compareVersions(entry[component].version, newest[component].version);
+    if (order === 0) {
+      assert.deepEqual(entry[component], newest[component], "Matching catalog versions must have the same release identity");
+    }
+    return order >= 0 ? entry : newest;
+  });
+  const recorded = previous[component];
+  const order = compareVersions(version, recorded.version);
+  assert.ok(order >= 0, `${component} latest ${version} is older than the catalog version ${recorded.version}`);
+  const release = await verify(version);
+  if (order === 0) {
+    assert.deepEqual(release, recorded, `${component} ${version} differs from the accepted catalog identity`);
+    return null;
+  }
+  const candidate = singleCandidate(component, release, recorded, request);
+  if (component === "bamboo") {
+    assert.deepEqual(candidate.missingBrowserRuntime, [], "New Bamboo candidate is missing a desktop browser runtime");
+  }
+  return { ...candidate, catalog: { revision, sequence: previous.sequence, version: recorded.version } };
+}
+
 if (require.main === module) {
   const args = process.argv.slice(2);
   Promise.resolve().then(async () => {
     if (args[0] === "--component") return prepareSingle(parseSingleComponentArgs(args.slice(1)));
+    if (args[0] === "--since-catalog") {
+      assert.equal(args.length, 2, "Expected --since-catalog bamboo|lotus");
+      return prepareSinceCatalog(args[1]);
+    }
     const [bamboo, lotus, previous, oldBamboo, oldLotus] = args;
     if (previous === "--from") {
       assert.match(oldBamboo, VERSION);
@@ -279,8 +344,10 @@ if (require.main === module) {
     }
     return prepare(bamboo, lotus, previous && JSON.parse(fs.readFileSync(previous)).combination);
   })
-    .then((candidate) => console.log(JSON.stringify(candidate, null, 2)))
+    .then((candidate) => {
+      if (candidate) console.log(JSON.stringify(candidate, null, 2));
+    })
     .catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { browserArtifacts, changeNotes, parseSingleComponentArgs, prepare, releaseChanges, resolveLatestVersion };
+module.exports = { browserArtifacts, changeNotes, parseSingleComponentArgs, prepare, prepareSinceCatalog, releaseChanges, resolveLatestVersion };
