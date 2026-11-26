@@ -1,5 +1,6 @@
 //! Immutable component identities and the legacy bootstrap catalog.
 mod bamboo_release;
+pub(crate) use bamboo_release::{load_manual_bamboo_release, read_local_bamboo_manifest};
 pub(crate) mod lotus_release;
 pub(crate) mod producer;
 

@@ -3,7 +3,9 @@ use crate::bamboo_profile::{publish_directory, Profile};
 use crate::bamboo_update::RELEASES;
 use crate::browser_runtime::verify_published;
 use crate::component_channel::{BrowserRuntimeArtifact, Candidate};
-use crate::component_download::{acquire_asset, DownloadSettings, DownloadSource};
+use crate::component_download::{
+    acquire_asset, copy_local_asset, DownloadSettings, DownloadSource,
+};
 use crate::frontend::{safe_relative, valid_sha256};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
@@ -37,12 +39,7 @@ pub(crate) async fn prepare_runtime(
     settings: watch::Receiver<DownloadSettings>,
     progress: impl FnMut(Option<DownloadSource>, u64, u64) + Send,
 ) -> Result<[PathBuf; 3], String> {
-    let artifact = candidate
-        .artifact
-        .browser_runtime
-        .as_ref()
-        .ok_or("The component release has no browser runtime for this target")?;
-    validate_artifact(candidate.artifact.target.as_str(), artifact)?;
+    let artifact = runtime_artifact(candidate)?;
     let profile = Profile::open(profile_data).map_err(|error| error.to_string())?;
     let slot = cache_slot(&profile, artifact);
     if let Ok(paths) = verify_published(&slot, &artifact.receipt_sha256) {
@@ -63,6 +60,35 @@ pub(crate) async fn prepare_runtime(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+pub(crate) async fn prepare_local_runtime(
+    profile_data: &Path,
+    candidate: &Candidate<'_>,
+    directory: &Path,
+) -> Result<[PathBuf; 3], String> {
+    let artifact = runtime_artifact(candidate)?.clone();
+    let profile = Profile::open(profile_data).map_err(|error| error.to_string())?;
+    let path = directory.join(&artifact.asset_name);
+    tokio::task::spawn_blocking(move || {
+        let staged = copy_local_asset(&profile, &path, &artifact.archive)?;
+        let file = staged.reopen().map_err(|error| error.to_string())?;
+        install(&profile, file, &artifact)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn runtime_artifact<'a>(
+    candidate: &'a Candidate<'_>,
+) -> Result<&'a BrowserRuntimeArtifact, String> {
+    let artifact = candidate
+        .artifact
+        .browser_runtime
+        .as_ref()
+        .ok_or("The component release has no browser runtime for this target")?;
+    validate_artifact(candidate.artifact.target.as_str(), artifact)?;
+    Ok(artifact)
 }
 
 fn validate_artifact(target: &str, artifact: &BrowserRuntimeArtifact) -> Result<(), String> {

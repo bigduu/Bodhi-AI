@@ -1,6 +1,7 @@
 const get = (id) => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
 const i18n = window.bodhiI18n;
+const importBambooCommand = "import_local_bamboo_update";
 const componentNames = { bamboo: "Bamboo", lotus: "Lotus Next" };
 const busyPhases = ["checking", "preparing", "downloading", "starting", "saving", "shuttingDown", "restarting"];
 const offerPhases = ["current", "available", "skipped", "verified"];
@@ -184,7 +185,9 @@ function renderPanel(view, snapshot, busy) {
     : running && queued == null && offerPhases.includes(display.phase)
       ? i18n.text("updates.noCompatibleUpdate") : "";
   setText(view.part("phase"), status);
-  const error = (offer && actionError?.identity === offer.identity && actionError.message)
+  const localImportError = view.kind === "bamboo" && actionError?.command === importBambooCommand;
+  const error = (localImportError && actionError.message)
+    || (offer && actionError?.identity === offer.identity && actionError.message)
     || (downloadIsHere && display.error) || "";
   view.part("error").hidden = !error;
   setText(view.part("error"), error);
@@ -221,6 +224,8 @@ function renderUpdates(snapshot) {
   const canApply = componentViews.map((view) => renderPanel(view, snapshot, busy)).some(Boolean);
   renderLotusRollbackActions(snapshot, busy);
   const pendingRestart = running && queued != null;
+  get("bamboo-import").hidden = !running;
+  get("import-local-bamboo").disabled = busy || !running || pendingRestart || updateShutdownStarted(snapshot);
   get("retry-restart").hidden = !pendingRestart;
   get("retry-restart").disabled = busy;
   get("restart-hint").hidden = !(canApply || pendingRestart);
@@ -233,7 +238,8 @@ function renderUpdates(snapshot) {
 
   const scopedDownload = downloadPhases.includes(display.phase)
     && offers.some((offer) => offer.sequence === display.downloadSequence);
-  const scopedAction = actionError && offers.some((offer) => offer.identity === actionError.identity);
+  const scopedAction = actionError && (actionError.command === importBambooCommand
+    || offers.some((offer) => offer.identity === actionError.identity));
   const globalPhase = !scopedDownload && !offerPhases.includes(display.phase)
     && (display.phase !== "ready" || !running);
   setText(get("phase"), globalPhase ? i18n.text(`phase.${display.phase}`) : "");
@@ -305,7 +311,7 @@ async function runAction(command, args) {
   try {
     await invoke(command, args);
   } catch (error) {
-    actionError = { identity: args?.identity, message: String(error) };
+    actionError = { command, identity: args?.identity, message: String(error) };
   } finally {
     actionPending = false;
   }
@@ -314,6 +320,11 @@ async function runAction(command, args) {
 get("check").addEventListener("click", () => {
   if (get("check").disabled) return;
   void runAction(currentSnapshot?.running ? "check_components" : "retry_component_startup");
+});
+
+get("import-local-bamboo").addEventListener("click", () => {
+  if (get("import-local-bamboo").disabled) return;
+  void runAction(importBambooCommand);
 });
 
 get("retry-restart").addEventListener("click", () => {

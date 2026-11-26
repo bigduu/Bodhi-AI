@@ -125,6 +125,8 @@
   "updates.autoCheckHint": "設為 0 後僅手動檢查。",
   "updates.saveCheckInterval": "儲存間隔",
   "updates.checkIntervalSaved": "已儲存檢查間隔。",
+  "updates.importLocalBamboo": "從本機匯入更新…",
+  "updates.importLocalBambooHint": "從 Bamboo 同一個官方版本下載 bamboo-sidecars-v3.json、適用於此平台的執行檔和瀏覽器執行環境壓縮檔，放在同一個資料夾，接著選取資訊清單。",
   "updates.installedVersion": "已安裝版本",
   "updates.noCompatibleUpdate": "暫無個別更新",
   "updates.targetVersion": "目標版本",

@@ -33,8 +33,8 @@
     .component-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .component-actions[hidden], #phase:empty, .component-phase:empty, #last-check:empty { display: none; }
     .force-warning { color: #f3cd92; }
-    .component-rollback { border-top: 1px solid #353a44; margin-top: 12px; padding-top: 12px; }
-    #rollback-lotus-hint { display: block; margin-top: 8px; }
+    .component-import, .component-rollback { border-top: 1px solid #353a44; margin-top: 12px; padding-top: 12px; }
+    #bamboo-import-hint, #rollback-lotus-hint { display: block; margin-top: 8px; }
     details { margin-top: 12px; }
     summary { cursor: pointer; color: #c2dcff; }
     #retry-restart { margin-bottom: 16px; }
@@ -75,6 +75,11 @@
         <dt data-i18n="updates.installedVersion">Installed version</dt><dd id="bamboo">—</dd>
       </dl>
       <div class="component-controls" data-part="controls"></div>
+      <div id="bamboo-import" class="component-import" hidden>
+        <button id="import-local-bamboo" class="secondary" type="button" data-i18n="updates.importLocalBamboo"
+          aria-describedby="bamboo-import-hint" disabled>Import local update…</button>
+        <small id="bamboo-import-hint" data-i18n="updates.importLocalBambooHint">From the same official Bamboo release, put bamboo-sidecars-v3.json, the executable and the browser runtime archive for this platform in one folder. Then select the manifest.</small>
+      </div>
     </section>
     <section data-update-kind="lotus" aria-labelledby="lotus-title">
       <h2 id="lotus-title">Lotus Next</h2>

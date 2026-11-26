@@ -4,11 +4,14 @@ mod native;
 use crate::bamboo_profile::{create_directory, is_link, persist, Profile};
 use crate::bamboo_update::{check_executable_version, RELEASES};
 use crate::component_channel::{Asset, Candidate, NativeArtifact};
-use crate::component_download::{acquire_asset, DownloadSettings, DownloadSource};
+use crate::component_download::{
+    acquire_asset, copy_local_asset, DownloadSettings, DownloadSource,
+};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 use tokio::sync::watch;
 
 const TARGET: &str = env!("BODHI_BUILD_TARGET");
@@ -84,7 +87,7 @@ pub(crate) async fn prepare_kernel(
         return Ok(result());
     }
 
-    let mut download = acquire_asset(
+    let download = acquire_asset(
         &profile,
         &official,
         &artifact.executable,
@@ -92,29 +95,61 @@ pub(crate) async fn prepare_kernel(
         progress,
     )
     .await?;
-    native::verify(download.file.as_file_mut(), TARGET)?;
+    install_kernel(&profile, artifact, version, executable, download.file).await
+}
+
+pub(crate) async fn prepare_local_kernel(
+    profile_data: &Path,
+    candidate: &Candidate<'_>,
+    directory: &Path,
+) -> Result<VerifiedKernel, String> {
+    let artifact = candidate.artifact;
+    validate_artifact(artifact)?;
+    let version = &candidate.combination.bamboo.version;
+    semver::Version::parse(version).map_err(|error| error.to_string())?;
+    let profile = Profile::open(profile_data).map_err(|error| error.to_string())?;
+    let root = cache_root(&profile, artifact);
+    create_directory(&root).map_err(|error| error.to_string())?;
+    let path = directory.join(&artifact.asset_name);
+    let expected = artifact.executable.clone();
+    let staging_profile = profile.clone();
+    let file =
+        tokio::task::spawn_blocking(move || copy_local_asset(&staging_profile, &path, &expected))
+            .await
+            .map_err(|error| error.to_string())??;
+    install_kernel(&profile, artifact, version, executable_in(&root), file).await
+}
+
+async fn install_kernel(
+    profile: &Profile,
+    artifact: &NativeArtifact,
+    version: &str,
+    executable: PathBuf,
+    mut file: NamedTempFile,
+) -> Result<VerifiedKernel, String> {
+    native::verify(file.as_file_mut(), TARGET)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        download
-            .file
-            .as_file()
+        file.as_file()
             .set_permissions(fs::Permissions::from_mode(0o700))
             .map_err(|error| error.to_string())?;
     }
-    let file = download.file.into_temp_path();
+    let file = file.into_temp_path();
     check_executable_version(&file, version).await?;
     let _update = profile.update_lock()?;
-    if verify_cached(&executable, &artifact.executable).is_ok() {
-        return Ok(result());
+    if verify_cached(&executable, &artifact.executable).is_err() {
+        let _writer = match fs::symlink_metadata(&executable) {
+            Ok(_) => Some(profile.writer()?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+        };
+        persist(file, &executable).map_err(|error| error.to_string())?;
     }
-    let _writer = match fs::symlink_metadata(&executable) {
-        Ok(_) => Some(profile.writer()?),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.to_string()),
-    };
-    persist(file, &executable).map_err(|error| error.to_string())?;
-    Ok(result())
+    Ok(VerifiedKernel {
+        executable,
+        version: version.to_owned(),
+    })
 }
 
 fn validate_artifact(artifact: &NativeArtifact) -> Result<(), String> {

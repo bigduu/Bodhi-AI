@@ -125,6 +125,8 @@
   "updates.autoCheckHint": "Set to 0 to check manually only.",
   "updates.saveCheckInterval": "Save interval",
   "updates.checkIntervalSaved": "Check interval saved.",
+  "updates.importLocalBamboo": "Import local update…",
+  "updates.importLocalBambooHint": "From the same official Bamboo release, put bamboo-sidecars-v3.json, the executable and the browser runtime archive for this platform in one folder. Then select the manifest.",
   "updates.installedVersion": "Installed version",
   "updates.noCompatibleUpdate": "No separate update available",
   "updates.targetVersion": "Target version",

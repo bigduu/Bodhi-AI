@@ -125,6 +125,8 @@
   "updates.autoCheckHint": "सिर्फ़ मैन्युअल रूप से जाँचने के लिए 0 डालें।",
   "updates.saveCheckInterval": "अंतराल सहेजें",
   "updates.checkIntervalSaved": "जाँच का अंतराल सहेजा गया।",
+  "updates.importLocalBamboo": "स्थानीय अपडेट इंपोर्ट करें…",
+  "updates.importLocalBambooHint": "Bamboo की एक ही आधिकारिक रिलीज़ से bamboo-sidecars-v3.json, इस प्लेटफ़ॉर्म की एक्ज़ीक्यूटेबल फ़ाइल और ब्राउज़र रनटाइम आर्काइव एक फ़ोल्डर में रखें। फिर मैनिफ़ेस्ट चुनें।",
   "updates.installedVersion": "इंस्टॉल किया गया वर्शन",
   "updates.noCompatibleUpdate": "कोई अलग अपडेट उपलब्ध नहीं है",
   "updates.targetVersion": "लक्ष्य वर्शन",

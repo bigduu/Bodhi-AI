@@ -125,6 +125,8 @@
   "updates.autoCheckHint": "Saisissez 0 pour vérifier uniquement manuellement.",
   "updates.saveCheckInterval": "Enregistrer l’intervalle",
   "updates.checkIntervalSaved": "Intervalle de vérification enregistré.",
+  "updates.importLocalBamboo": "Importer une mise à jour locale…",
+  "updates.importLocalBambooHint": "Placez bamboo-sidecars-v3.json, l’exécutable et l’archive du moteur de navigateur pour cette plateforme dans le même dossier. Prenez les trois fichiers dans la même version officielle de Bamboo, puis sélectionnez le manifeste.",
   "updates.installedVersion": "Version installée",
   "updates.noCompatibleUpdate": "Aucune mise à jour séparée disponible",
   "updates.targetVersion": "Version cible",

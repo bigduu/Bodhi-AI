@@ -5,7 +5,8 @@ use super::{
 };
 use crate::component_channel::producer::{self, Discovery};
 use crate::component_channel::{
-    Changes, Combination, PairIdentity, ReleaseCheckError, UpdateKind, VerifiedChannel,
+    load_manual_bamboo_release, read_local_bamboo_manifest, Changes, Combination, PairIdentity,
+    ReleaseCheckError, UpdateKind, VerifiedChannel,
 };
 use crate::component_download::{while_selected, DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
@@ -15,6 +16,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -503,6 +505,7 @@ impl Manager {
                     .cloned()
                     .collect(),
                 failures: Vec::new(),
+                bamboo_download_changed: false,
             })
         })
         .await
@@ -532,8 +535,20 @@ impl Manager {
             .as_ref()
             .expect("check requires active components");
         self.updates.status(Phase::Checking, None);
-        let Discovery { offers, failures } =
-            discovery(current, &journal, downloaded.as_ref()).await?;
+        let Discovery {
+            offers,
+            failures,
+            bamboo_download_changed,
+        } = discovery(current, &journal, downloaded.as_ref()).await?;
+        let downloaded = if bamboo_download_changed {
+            if let Some(candidate) = &downloaded {
+                let _lock = self.profile.update_lock()?;
+                journal::clear_downloaded(&self.profile, candidate)?;
+            }
+            None
+        } else {
+            downloaded
+        };
         if failures.len() == 2 && offers.is_empty() {
             return Err(failures.join("\n"));
         }
@@ -589,6 +604,139 @@ impl Manager {
                     manager.updates.dialog_open.store(false, Ordering::Release);
                 });
             });
+    }
+
+    async fn import_local_bamboo(&self, manifest: PathBuf, locale: Locale) -> Result<(), String> {
+        let _action = self.updates.action.lock().await;
+        let journal = Journal::read(&self.profile)?;
+        if !self.check_allowed(&journal)? {
+            return Err(locale.text("updates.restartPending").into());
+        }
+        let active = journal
+            .active
+            .as_ref()
+            .ok_or("Bodhi components are not ready")?;
+        self.updates.status(Phase::Checking, None);
+        match self.stage_local_bamboo(manifest, active).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.updates.status(Phase::DownloadFailed, None);
+                Err(error)
+            }
+        }
+    }
+
+    async fn stage_local_bamboo(
+        &self,
+        manifest: PathBuf,
+        active: &Combination,
+    ) -> Result<(), String> {
+        let directory = manifest
+            .parent()
+            .ok_or("Cannot locate the Bamboo release folder")?
+            .to_path_buf();
+        let (version, manifest_identity) =
+            tokio::task::spawn_blocking(move || read_local_bamboo_manifest(&manifest))
+                .await
+                .map_err(|error| error.to_string())??;
+        let release = {
+            let mut settings = self.settings.subscribe();
+            loop {
+                let route = settings.borrow_and_update().clone();
+                let work = load_manual_bamboo_release(&route, &version);
+                if let Some(result) = while_selected(&mut settings, &route, work).await {
+                    break result?;
+                }
+            }
+        };
+        let pair = producer::bamboo_offer(active, release, Vec::new())?
+            .ok_or("Choose a Bamboo release newer than the installed version")?;
+        let update = self.select_local_bamboo_offer(active, pair)?;
+        self.verify_local_bamboo_offer(&update)?;
+        let pair = &update.candidate;
+        if pair.bamboo.manifest != manifest_identity {
+            return Err("The selected Bamboo manifest differs from the official release".into());
+        }
+        crate::bamboo_update::check_component_floor(&self.profile, &pair.bamboo.version)?;
+        let candidate = pair.candidate()?;
+        self.updates.status(Phase::Downloading, None);
+        crate::component_kernel::prepare_local_kernel(&self.profile.data, &candidate, &directory)
+            .await?;
+        crate::component_browser::prepare_local_runtime(&self.profile.data, &candidate, &directory)
+            .await?;
+        self.prove_prepared_update(pair).await?;
+        {
+            let _lock = self.profile.update_lock()?;
+            update.validate_transition(&Journal::read(&self.profile)?)?;
+            journal::save_local_bamboo_download(&self.profile, pair, &artifact_identity(pair)?)?;
+        }
+
+        let skipped = journal::read_skipped(&self.profile)?;
+        let mut display = self
+            .updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot set the update status")?;
+        display
+            .selections
+            .retain(|selection| selection.candidate.update_kind(active) == Some(UpdateKind::Lotus));
+        display.selections.push(update.clone());
+        display.refresh_offers(Some(pair), &skipped);
+        Ok(())
+    }
+
+    fn select_local_bamboo_offer(
+        &self,
+        active: &Combination,
+        mut candidate: Combination,
+    ) -> Result<Arc<SelectedUpdate>, String> {
+        let display = self
+            .updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot read the update status")?;
+        // Older catalog offers may use the same sequence as a producer offer.
+        while display.selections.iter().any(|selection| {
+            selection.candidate.sequence == candidate.sequence
+                && selection.candidate.update_kind(active) == Some(UpdateKind::Lotus)
+        }) {
+            candidate.sequence = candidate
+                .sequence
+                .checked_add(2)
+                .ok_or("Bamboo update sequence overflow")?;
+        }
+        Ok(Arc::new(SelectedUpdate {
+            current_sequence: active.sequence,
+            current: active.identity(),
+            candidate,
+        }))
+    }
+
+    fn verify_local_bamboo_offer(&self, update: &SelectedUpdate) -> Result<(), String> {
+        let release = &update.candidate.bamboo;
+        let changed =
+            |pair: &Combination| pair.bamboo.version == release.version && pair.bamboo != *release;
+        let mut downloaded_changed = false;
+        {
+            let _lock = self.profile.update_lock()?;
+            if let Some(staged) = journal::read_downloaded(&self.profile)?.filter(changed) {
+                journal::clear_downloaded(&self.profile, &staged)?;
+                downloaded_changed = true;
+            }
+        }
+        let mut display = self
+            .updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot read the update status")?;
+        let prior_count = display.selections.len();
+        display.selections.retain(|item| !changed(&item.candidate));
+        if downloaded_changed || display.selections.len() != prior_count {
+            return Err(
+                "The local Bamboo release differs from an already verified release of the same version".into(),
+            );
+        }
+        Ok(())
     }
 
     async fn download(&self, sequence: u64, identity: &str, locale: Locale) -> Result<(), String> {
@@ -991,6 +1139,17 @@ impl Manager {
         update: &SelectedUpdate,
         locale: Locale,
     ) -> Result<(), ReleaseCheckError> {
+        // Manual imports were authenticated at staging. The normal restart paths
+        // reopen and verify the exact cached files before taking the writer offline.
+        if update.candidate.update_kind(active) == Some(UpdateKind::Bamboo)
+            && journal::matches_local_bamboo_download(
+                &self.profile,
+                &update.candidate,
+                &artifact_identity(&update.candidate)?,
+            )?
+        {
+            return Ok(());
+        }
         if !update.candidate.producer_release {
             return self
                 .reconfirm(active, update, locale, self.load_catalog())
@@ -1168,6 +1327,32 @@ pub(crate) async fn check_components<R: Runtime>(
     let _action = manager.updates.action.lock().await;
     manager.check().await;
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn import_local_bamboo_update<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<bool, String> {
+    authorize(&window, false)?;
+    let manager = running_manager(&app)?;
+    let locale = i18n::active(&app);
+    let (chosen, selection) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_parent(&window)
+        .set_title(locale.text("updates.importLocalBamboo"))
+        .add_filter(locale.text("kernel.receiptFilter"), &["json"])
+        .pick_file(move |path| {
+            let _ = chosen.send(path);
+        });
+    let Some(path) = selection.await.map_err(|error| error.to_string())? else {
+        return Ok(false);
+    };
+    manager
+        .import_local_bamboo(path.into_path().map_err(|error| error.to_string())?, locale)
+        .await?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1533,6 +1718,164 @@ mod tests {
             .history
             .iter()
             .any(|event| event.error.as_deref() == Some("replacement failed")));
+    }
+
+    #[tokio::test]
+    async fn local_bamboo_selection_avoids_a_legacy_lotus_sequence_collision() {
+        use crate::component_channel::tests::{
+            fixture_channel_with_independent_updates, initial_combination,
+        };
+
+        let scratch = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(scratch.path()).unwrap();
+        let manager = Manager::new(profile).unwrap();
+        let current = initial_combination().await;
+        let channel = fixture_channel_with_independent_updates();
+        let mut lotus = channel
+            .select_updates(&current, None)
+            .unwrap()
+            .into_iter()
+            .find(|offer| offer.update_kind(&current) == Some(UpdateKind::Lotus))
+            .unwrap()
+            .clone();
+        lotus.sequence = current.sequence + 1;
+        manager.updates.display.lock().unwrap().selections = vec![Arc::new(SelectedUpdate {
+            current_sequence: current.sequence,
+            current: current.identity(),
+            candidate: lotus.clone(),
+        })];
+        let mut release = current.bamboo.clone();
+        release.version = "2026.11.99".into();
+        release.manifest.sha256 = "f".repeat(64);
+        let bamboo = producer::bamboo_offer(&current, release, Vec::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(bamboo.sequence, lotus.sequence);
+        let selected = manager.select_local_bamboo_offer(&current, bamboo).unwrap();
+        assert_eq!(selected.candidate.sequence, lotus.sequence + 2);
+        manager
+            .updates
+            .display
+            .lock()
+            .unwrap()
+            .selections
+            .push(selected.clone());
+        let identity = artifact_identity(&selected.candidate).unwrap();
+        assert!(manager
+            .updates
+            .selected(selected.candidate.sequence, &identity, Locale::English)
+            .is_ok());
+        let lotus_identity = artifact_identity(&lotus).unwrap();
+        assert!(manager
+            .updates
+            .selected(lotus.sequence, &lotus_identity, Locale::English)
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn local_import_receipt_authorizes_only_the_exact_staged_bamboo() {
+        use crate::component_channel::tests::initial_combination;
+
+        let scratch = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(scratch.path()).unwrap();
+        let current = initial_combination().await;
+        let mut latest = current.bamboo.clone();
+        latest.version = "2026.11.99".into();
+        latest.manifest.sha256 = "f".repeat(64);
+        let candidate = producer::bamboo_offer(&current, latest, Vec::new())
+            .unwrap()
+            .unwrap();
+        let identity = artifact_identity(&candidate).unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let update = SelectedUpdate {
+            current_sequence: current.sequence,
+            current: current.identity(),
+            candidate: candidate.clone(),
+        };
+        journal::save_local_bamboo_download(&profile, &candidate, &identity).unwrap();
+        assert!(manager
+            .reconfirm_selected(&current, &update, Locale::English)
+            .await
+            .is_ok());
+        assert!(!journal::matches_local_bamboo_download(&profile, &candidate, "wrong").unwrap());
+
+        Journal {
+            active: Some(current.clone()),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        manager
+            .detect_updates(async |_, _, _| {
+                Ok(Discovery {
+                    offers: Vec::new(),
+                    failures: vec!["Bamboo changed the identity of a downloaded release".into()],
+                    bamboo_download_changed: true,
+                })
+            })
+            .await
+            .unwrap();
+        assert!(journal::read_downloaded(&profile).unwrap().is_none());
+        assert!(!journal::matches_local_bamboo_download(&profile, &candidate, &identity).unwrap());
+
+        let mut replacement = candidate.clone();
+        replacement.bamboo.manifest.sha256 = "e".repeat(64);
+        journal::save_downloaded(&profile, &replacement).unwrap();
+        assert!(!journal::matches_local_bamboo_download(&profile, &candidate, &identity).unwrap());
+        assert!(!journal::matches_local_bamboo_download(
+            &profile,
+            &replacement,
+            &artifact_identity(&replacement).unwrap(),
+        )
+        .unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires original public Bamboo files and a REST-blocking forward proxy"]
+    async fn stages_published_local_bamboo_without_the_github_rest_api() {
+        let scratch = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(scratch.path()).unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let current = manager.choose().await.unwrap();
+        manager.prepare_lotus(&current).await.unwrap();
+        Journal {
+            active: Some(current.clone()),
+            ..Journal::default()
+        }
+        .save(&profile)
+        .unwrap();
+        let manifest = PathBuf::from(std::env::var_os("BODHI_LOCAL_IMPORT_DIR").unwrap())
+            .join("bamboo-sidecars-v3.json");
+        let proxy_url = std::env::var("BODHI_LOCAL_IMPORT_PROXY").unwrap();
+        manager.settings.send_replace(DownloadSettings {
+            proxy_url: Some(proxy_url),
+            ..DownloadSettings::default()
+        });
+
+        manager
+            .import_local_bamboo(manifest, Locale::English)
+            .await
+            .unwrap();
+        let staged = journal::read_downloaded(&profile).unwrap().unwrap();
+        assert_eq!(staged.lotus, current.lotus);
+        assert_eq!(staged.update_kind(&current), Some(UpdateKind::Bamboo));
+        assert_eq!(manager.choose().await.unwrap(), current);
+        assert!(Journal::read(&profile).unwrap().queued.is_none());
+        let reopened = Manager::new(profile).unwrap();
+        reopened.settings.send_replace(DownloadSettings {
+            proxy_url: Some("http://127.0.0.1:9".into()),
+            ..DownloadSettings::default()
+        });
+        let update = SelectedUpdate {
+            current_sequence: current.sequence,
+            current: current.identity(),
+            candidate: staged.clone(),
+        };
+        reopened
+            .reconfirm_selected(&current, &update, Locale::English)
+            .await
+            .unwrap();
+        reopened.reopen_downloaded_update(&staged).await.unwrap();
     }
 
     #[tokio::test]

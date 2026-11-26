@@ -4,17 +4,17 @@ mod settings;
 
 pub(crate) use settings::{DownloadSettings, DownloadSource};
 
-use crate::bamboo_profile::{create_directory, open_state_file, Profile};
+use crate::bamboo_profile::{create_directory, is_link, open_state_file, Profile};
 use crate::component_channel::Asset;
 use crate::frontend::valid_sha256;
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_ENCODING, CONTENT_RANGE, RANGE};
 use reqwest::{Client, StatusCode, Url};
 use sha2::{Digest, Sha256};
-use std::fs::File;
-use std::io::{self, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tempfile::{NamedTempFile, TempPath};
+use tempfile::{Builder, NamedTempFile, TempPath};
 use tokio::sync::watch;
 
 const MAX_ATTEMPTS: u64 = 3;
@@ -113,6 +113,85 @@ pub(crate) async fn acquire_asset(
         }
         tried_clean = true;
     }
+}
+
+/// Open an imported file without following links or reading special files.
+pub(crate) fn open_local_file(path: &Path) -> io::Result<File> {
+    fn require_regular(metadata: fs::Metadata) -> io::Result<()> {
+        if metadata.is_file() && !is_link(&metadata) {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected a regular local file",
+        ))
+    }
+
+    require_regular(fs::symlink_metadata(path)?)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A replacement FIFO must also fail without blocking in open().
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path)?;
+    require_regular(file.metadata()?)?;
+    Ok(file)
+}
+
+/// Import only the bytes authenticated by the expected release identity.
+pub(crate) fn copy_local_asset(
+    profile: &Profile,
+    path: &Path,
+    expected: &Asset,
+) -> Result<NamedTempFile, String> {
+    let invalid_size = || io::Error::new(io::ErrorKind::InvalidData, "unexpected file size");
+    let copy = || -> io::Result<NamedTempFile> {
+        let limit = expected
+            .size_bytes
+            .checked_add(1)
+            .ok_or_else(invalid_size)?;
+        let input = open_local_file(path)?;
+        if input.metadata()?.len() != expected.size_bytes {
+            return Err(invalid_size());
+        }
+        let mut builder = Builder::new();
+        if path.extension().is_some_and(|extension| extension == "exe") {
+            builder.suffix(".exe");
+        }
+        let mut staged = builder.tempfile_in(&profile.state_dir)?;
+        let size = io::copy(&mut input.take(limit), &mut staged)?;
+        if size != expected.size_bytes {
+            return Err(invalid_size());
+        }
+        staged.as_file_mut().rewind()?;
+        let mut digest = Sha256::new();
+        io::copy(staged.as_file_mut(), &mut digest)?;
+        if format!("{:x}", digest.finalize()) != expected.sha256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file SHA-256 differs from the expected release digest",
+            ));
+        }
+        staged.as_file().sync_all()?;
+        staged.as_file_mut().rewind()?;
+        Ok(staged)
+    };
+    copy().map_err(|error| {
+        let name = path.file_name().unwrap_or(path.as_os_str());
+        format!(
+            "Cannot import local Bamboo asset {}: {error}",
+            name.to_string_lossy()
+        )
+    })
 }
 
 pub(crate) async fn while_selected<T>(
