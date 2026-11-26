@@ -29,8 +29,17 @@ with the catalog's explicit recommendation. A newer release produces a
 candidate with the exact baseline catalog revision, SHA-256, branch commit, and
 prior version. An unchanged recommendation produces a summary. The peer job
 continues after a producer or catalog failure. Use `catalog` mode and enter one
-exact version to verify a specific release against that same baseline. This
-workflow has read permissions and uploads candidate evidence.
+exact version to verify a specific release against that same baseline.
+
+Before uploading a candidate from either mode, the workflow starts the
+published Linux x64 Bamboo executable with the exact published Lotus Next
+assets in a temporary profile. The pair uses the candidate and the peer
+recommendation from the same catalog snapshot. The probe verifies the owned
+listener's version, the Lotus entry, Bootstrap API, realtime and authentication
+requirements, and normal shutdown. It uploads `component-compatibility.json`
+with the candidate SHA-256, tested artifact identities, catalog digests, and
+workflow run and attempt. The workflow uses read permissions and consumes
+published artifacts directly.
 
 ## Maintaining the installed-client stable catalogs
 
@@ -52,9 +61,12 @@ when it is listed and still applicable to the active pair.
 For an artifact-wide withdrawal, review the paired `channel-v1.json` bootstrap
 entries in the same PR so fresh and older installations use safe artifacts too.
 
-Before recommending a candidate, verify its original release evidence and test
-the exact changed component alongside the currently recommended peer. Include
-the candidate's run and compatibility results in a PR to `components-stable`.
+Before recommending a candidate, verify its original release evidence. The
+`components-stable` PR must link the successful trusted workflow run and its
+uploaded compatibility receipt. Verify the receipt's candidate SHA-256 matches
+the reviewed candidate JSON and the peer catalog SHA-256 and recommended
+artifact identity still match the current peer. If the peer changed, rerun the
+probe against the new pair before merging.
 Prepare and check the replacement file from the Bodhi source checkout.
 
 ```sh

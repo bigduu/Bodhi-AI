@@ -202,6 +202,58 @@ async fn stable_check_offers_each_component_to_a_directly_updated_profile() {
 }
 
 #[tokio::test]
+async fn first_catalog_cannot_pin_a_changed_active_release() {
+    let (_directory, profile, active) = direct_profile().await;
+    let manager = Manager::new(profile.clone()).unwrap();
+    let rewritten = bamboo_release(&active.bamboo, &active.bamboo.version, "d");
+    let newer = bamboo_release(&active.bamboo, "2026.11.49", "e");
+    let lotus = document(
+        1,
+        Some(&active.lotus.version),
+        std::slice::from_ref(&active.lotus),
+    );
+    let conflicting = document(9, Some(&newer.version), &[rewritten, newer.clone()]);
+    assert!(
+        !manager
+            .check_with_catalogs(|_| async {
+                (
+                    stable::parse_bamboo(&conflicting),
+                    stable::parse_lotus(&lotus),
+                )
+            })
+            .await
+    );
+    let rejected = manager.snapshot("0.0.0".into(), Locale::English).unwrap();
+    assert!(rejected
+        .display
+        .error
+        .unwrap()
+        .contains("changed the identity of an admitted version"));
+    assert_eq!(manager.choose().await.unwrap(), active);
+
+    let corrected = document(
+        9,
+        Some(&newer.version),
+        &[active.bamboo.clone(), newer.clone()],
+    );
+    let reopened = Manager::new(profile).unwrap();
+    assert!(
+        reopened
+            .check_with_catalogs(|_| async {
+                (
+                    stable::parse_bamboo(&corrected),
+                    stable::parse_lotus(&lotus),
+                )
+            })
+            .await
+    );
+    let accepted = reopened.snapshot("0.0.0".into(), Locale::English).unwrap();
+    assert_eq!(accepted.offers.len(), 1);
+    assert_eq!(accepted.offers[0].versions.bamboo, newer.version);
+    assert!(accepted.display.error.is_none());
+}
+
+#[tokio::test]
 async fn stable_check_withdraws_changed_or_removed_downloads_and_keeps_the_other_offer() {
     let (_directory, profile, active) = direct_profile().await;
     let manager = Manager::new(profile.clone()).unwrap();
@@ -214,8 +266,12 @@ async fn stable_check_withdraws_changed_or_removed_downloads_and_keeps_the_other
     let lotus = lotus_release(&active.lotus, "2026.11.35", "e");
     let lotus_json = document(1, Some(&lotus.version), std::slice::from_ref(&lotus));
 
-    let original =
-        stable::parse_bamboo(&document(1, Some(&bamboo.version), &[bamboo.clone()])).unwrap();
+    let original = stable::parse_bamboo(&document(
+        1,
+        Some(&bamboo.version),
+        std::slice::from_ref(&bamboo),
+    ))
+    .unwrap();
     producer::reconfirm(&original, &bamboo.version, &bamboo).unwrap();
 
     for (revision, recommendation, releases) in [

@@ -42,7 +42,7 @@ jobs:
     name: Verify original component identities
     if: github.event_name == 'workflow_dispatch' && inputs.component != 'discover'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Require the trusted repository entrypoint
         run: test "$GITHUB_REPOSITORY" = bigduu/Bodhi-AI && test "$GITHUB_REF" = refs/heads/main
@@ -128,11 +128,24 @@ jobs:
           else
             echo "The verified version is already recommended." >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Prove the exact published pair on the native host
+        id: compatibility
+        if: inputs.component == 'catalog' && steps.candidate.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          compatibility="$RUNNER_TEMP/component-compatibility.json"
+          node scripts/verify-component-compatibility.cjs "$RUNNER_TEMP/component-candidate.json" > "$compatibility"
+          test -s "$compatibility"
+          echo "path=$compatibility" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         if: steps.candidate.outputs.available == 'true'
         with:
           name: component-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/component-candidate.json
+          path: |
+            ${{ runner.temp }}/component-candidate.json
+            ${{ steps.compatibility.outputs.path }}
           if-no-files-found: error
           retention-days: 30
 
@@ -144,7 +157,7 @@ jobs:
       matrix:
         component: [bamboo, lotus]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Require the trusted repository entrypoint
         run: test "$GITHUB_REPOSITORY" = bigduu/Bodhi-AI && test "$GITHUB_REF" = refs/heads/main
@@ -169,14 +182,25 @@ jobs:
           node scripts/prepare-component-candidate.cjs --since-catalog "$COMPONENT" > "$candidate"
           if [[ -s "$candidate" ]]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
-            jq -r '"\(.component) \(.release.version) verified for compatibility review (stable recommendation \(.catalog.version // "none"), revision \(.catalog.revision))."' "$candidate" >> "$GITHUB_STEP_SUMMARY"
+            jq -r '"\(.component) \(.release.version) found (stable recommendation \(.catalog.version // "none"), revision \(.catalog.revision))."' "$candidate" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "$COMPONENT is current in the stable catalog." >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Prove the exact published pair on the native host
+        if: steps.check.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          compatibility="$RUNNER_TEMP/component-compatibility.json"
+          node scripts/verify-component-compatibility.cjs "$RUNNER_TEMP/component-candidate.json" > "$compatibility"
+          test -s "$compatibility"
       - uses: actions/upload-artifact@v7
         if: steps.check.outputs.available == 'true'
         with:
           name: component-candidate-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/component-candidate.json
+          path: |
+            ${{ runner.temp }}/component-candidate.json
+            ${{ runner.temp }}/component-compatibility.json
           if-no-files-found: error
           retention-days: 30
