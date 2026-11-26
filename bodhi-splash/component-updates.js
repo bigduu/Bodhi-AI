@@ -19,6 +19,9 @@ const componentViews = [...document.querySelectorAll("[data-update-kind]")].map(
   return { panel, kind, part };
 });
 let currentSnapshot = null;
+let renderedHistory = null;
+let refreshTimer;
+let refreshing = false;
 let actionPending = false;
 let actionError = null;
 let rollbackAttempt = null;
@@ -118,7 +121,7 @@ function updateShutdownStarted(snapshot) {
 
 function renderPanelActions(view, offer, snapshot, phase, busy) {
   const canSkip = snapshot.running && snapshot.queued == null
-    && !updateShutdownStarted(snapshot) && !!offer;
+    && !snapshot.bambooRecoveryPending && !updateShutdownStarted(snapshot) && !!offer;
   const canDownload = canSkip && !offer.skipped && !offer.downloaded;
   const canApply = canSkip && !offer.skipped && offer.downloaded;
   const canForce = canForceUpdate(snapshot, offer);
@@ -233,9 +236,11 @@ function renderUpdates(snapshot) {
     renderPanel(view, snapshot, busy) ? view.kind : null);
   renderLotusRollbackActions(snapshot, busy);
   const bambooPending = snapshot.bambooRestartPending === true;
+  const recoveryPending = snapshot.bambooRecoveryPending === true;
   const pendingRestart = queued != null && (running || bambooPending);
   get("bamboo-import").hidden = !running;
-  get("import-local-bamboo").disabled = busy || !running || pendingRestart || updateShutdownStarted(snapshot);
+  get("import-local-bamboo").disabled = busy || !running || pendingRestart
+    || recoveryPending || updateShutdownStarted(snapshot);
   const retry = get("retry-restart");
   retry.hidden = !pendingRestart;
   retry.disabled = busy;
@@ -247,7 +252,7 @@ function renderUpdates(snapshot) {
   const check = get("check");
   setText(check, i18n.text(running ? "updates.check" : "updates.retry"));
   check.disabled = busy || (running
-    ? pendingRestart || updateShutdownStarted(snapshot)
+    ? pendingRestart || recoveryPending || updateShutdownStarted(snapshot)
     : pendingRestart || display.phase !== "startupFailed");
 
   const scopedDownload = downloadPhases.includes(display.phase)
@@ -291,6 +296,8 @@ function render(snapshot) {
     get("download-detail").textContent = i18n.transferText(transfer);
   }
 
+  const historyKey = JSON.stringify([snapshot.locale, history]);
+  if (renderedHistory === historyKey) return;
   const historyList = get("history");
   historyList.replaceChildren();
   get("history-empty").hidden = history.length > 0;
@@ -303,9 +310,12 @@ function render(snapshot) {
       : i18n.text("updates.applied");
     append(historyList, `${i18n.date(item.at)} · ${from}${to} · ${outcome}`);
   }
+  renderedHistory = historyKey;
 }
 
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   try {
     const snapshot = await invoke("component_snapshot");
     await i18n.sync(snapshot.locale);
@@ -314,9 +324,17 @@ async function refresh() {
     get("error").hidden = false;
     get("error").textContent = String(error);
   } finally {
-    setTimeout(refresh, 650);
+    refreshing = false;
+    refreshTimer = setTimeout(refresh, document.hidden ? 2_500 : 650);
   }
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    clearTimeout(refreshTimer);
+    void refresh();
+  }
+});
 
 async function runAction(command, args) {
   if (actionPending || !currentSnapshot) return;

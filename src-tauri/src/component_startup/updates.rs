@@ -163,6 +163,7 @@ pub(crate) struct Snapshot {
     running: bool,
     queued: Option<u64>,
     bamboo_restart_pending: bool,
+    bamboo_recovery_pending: bool,
     settings: DownloadSettings,
     auto_check_hours: u16,
     last_check: Option<String>,
@@ -355,6 +356,7 @@ impl Manager {
                     })
                     .map(|plan| plan.candidate.sequence)),
             bamboo_restart_pending: kernel_switch.is_some(),
+            bamboo_recovery_pending: unconfirmed,
             settings: self.settings.borrow().clone(),
             auto_check_hours: *self.auto_check_hours.borrow(),
             last_check: journal.last_check,

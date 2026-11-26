@@ -140,7 +140,7 @@ fn request_legacy_shutdown(child: &SharedChild) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn request_legacy_shutdown(_: &SharedChild) -> Result<(), String> {
-    Err("This Bamboo version needs a manual restart. Finish your work, then close and reopen Bodhi to apply the downloaded update.".into())
+    Err("This Bamboo version does not support graceful managed shutdown on Windows. Finish your work before using the forced update action.".into())
 }
 
 impl SidecarState {
