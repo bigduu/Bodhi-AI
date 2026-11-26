@@ -1,8 +1,9 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const {
-  browserArtifacts, changeNotes, parseSingleComponentArgs, prepareSinceCatalog, releaseChanges, resolveLatestVersion,
+  browserArtifacts, changeNotes, parseSingleComponentArgs, prepareSinceCatalog, readCatalog, releaseChanges, resolveLatestVersion,
 } = require("./prepare-component-candidate.cjs");
+const { recommendCandidate, seedCatalog, validateCatalog, withdrawRelease } = require("./component-catalog.cjs");
 
 function fixture() {
   const version = "2026.11.39", sourceRevision = "a".repeat(40), manifestSha256 = "b".repeat(64);
@@ -94,17 +95,16 @@ test("Lotus latest reads only the official package dist-tag", async () => {
   }
 });
 
-test("catalog discovery uses the highest version of the selected producer and records the exact baseline", async () => {
-  const revision = "a".repeat(40);
+test("catalog discovery uses the explicit recommendation, even when a newer release is retained", async () => {
   const lotus = { version: "2026.11.9", sourceRevision: "b".repeat(40) };
   const published = { version: "2026.11.10", sourceRevision: "c".repeat(40) };
-  const catalog = async () => ({ revision, combinations: [
-    { sequence: 4, lotus },
-    { sequence: 5, lotus: { ...lotus } },
-    { sequence: 6, lotus: { ...lotus, version: "2026.11.8" } },
-  ] });
+  const baseline = { branchRevision: "a".repeat(40), revision: 3, version: lotus.version, sha256: "f".repeat(64) };
+  const catalog = { recommendedVersion: lotus.version, releases: [{ release: lotus }, { release: published }] };
   const candidate = await prepareSinceCatalog("lotus", {
-    catalog,
+    read: async (component) => {
+      assert.equal(component, "lotus");
+      return { catalog, baseline };
+    },
     latest: async (component) => {
       assert.equal(component, "lotus");
       return published.version;
@@ -119,15 +119,16 @@ test("catalog discovery uses the highest version of the selected producer and re
         commits: [{ sha: published.sourceRevision, commit: { message: "Fix message selection" } }] };
     },
   });
-  assert.deepEqual(candidate.catalog, { revision, sequence: 5, version: lotus.version });
+  assert.deepEqual(candidate.catalog, baseline);
   assert.deepEqual(candidate.release, published);
   assert.deepEqual(candidate.changes, ["Fix message selection"]);
 });
 
 test("catalog discovery suppresses only an unchanged release and rejects a rewritten or older official version", async () => {
   const bamboo = { version: "2026.11.9", manifest: { sha256: "a".repeat(64) }, artifacts: [] };
+  const retained = { ...bamboo, version: "2026.11.10" };
   const deps = {
-    catalog: async () => ({ revision: "b".repeat(40), combinations: [{ sequence: 1, bamboo }] }),
+    read: async () => ({ catalog: { recommendedVersion: bamboo.version, releases: [{ release: bamboo }, { release: retained }] } }),
     latest: async () => bamboo.version,
     verify: async () => structuredClone(bamboo),
   };
@@ -137,24 +138,110 @@ test("catalog discovery suppresses only an unchanged release and rejects a rewri
   }), /differs from the accepted catalog identity/);
   await assert.rejects(prepareSinceCatalog("bamboo", {
     ...deps, latest: async () => "2026.11.8", verify: () => assert.fail("Older release must be rejected"),
-  }), /older than the catalog version/);
+  }), /older than the recommended catalog version/);
   await assert.rejects(prepareSinceCatalog("bamboo", {
     ...deps,
-    catalog: async () => ({ revision: "b".repeat(40), combinations: [
-      { sequence: 1, bamboo },
-      { sequence: 2, bamboo: { ...bamboo, manifest: { sha256: "c".repeat(64) } } },
-    ] }),
-  }), /Matching catalog versions must have the same release identity/);
+    exactVersion: retained.version,
+    latest: () => assert.fail("Explicit version must not read upstream latest"),
+    verify: async () => ({ ...retained, manifest: { sha256: "c".repeat(64) } }),
+  }), /differs from the accepted catalog identity/);
 });
 
 test("catalog discovery rejects a newer Bamboo missing a desktop browser runtime", async () => {
   const bamboo = { version: "2026.11.9", sourceRevision: "a".repeat(40) };
   const published = { ...bamboo, version: "2026.11.10", artifacts: [{ target: "aarch64-apple-darwin" }] };
   await assert.rejects(prepareSinceCatalog("bamboo", {
-    catalog: async () => ({ revision: "b".repeat(40), combinations: [{ sequence: 1, bamboo }] }),
+    read: async () => ({ catalog: { recommendedVersion: bamboo.version, releases: [{ release: bamboo }] } }),
     latest: async () => published.version,
     verify: async () => published,
   }), /missing a desktop browser runtime/);
+});
+
+function lotusEntry(version) {
+  return { release: {
+    version, sourceRevision: "a".repeat(40), manifestSha256: "b".repeat(64),
+    resourcesSha256: "c".repeat(64), tarball: { sha256: "d".repeat(64), sizeBytes: 354 },
+  }, changes: ["Repair startup"] };
+}
+
+test("catalog schema admits exact numeric versions, a held recommendation and an empty recommendation", () => {
+  const older = lotusEntry("2026.11.9");
+  const newer = lotusEntry("2026.11.10");
+  const catalog = { schemaVersion: 1, revision: 1, recommendedVersion: older.release.version, releases: [older, newer] };
+  assert.deepEqual(validateCatalog("lotus", catalog), catalog);
+  validateCatalog("lotus", { ...catalog, recommendedVersion: null, releases: [] });
+  for (const invalid of [
+    { recommendedVersion: "2026.11.11" }, { releases: [newer, older] }, { releases: [older, older] }, { revision: 0 },
+    { releases: [{ ...older, changes: [" "] }] }, { releases: [{ ...older, release: { ...older.release, sourceRevision: "wrong" } }] },
+  ]) {
+    assert.throws(() => validateCatalog("lotus", { ...catalog, ...invalid }));
+  }
+});
+
+test("seeding selects only the specified reviewed bootstrap release", () => {
+  const reviewed = lotusEntry("2026.11.35");
+  const legacy = { schemaVersion: 1, shellProtocol: 1, combinations: [
+    { sequence: 9, bootstrap: true, lotus: reviewed.release, changes: { lotus: reviewed.changes } },
+    { sequence: 10, bootstrap: false, lotus: lotusEntry("2026.11.36").release, changes: { lotus: [] } },
+  ] };
+  assert.deepEqual(seedCatalog("lotus", legacy, 9), {
+    schemaVersion: 1, revision: 1, recommendedVersion: "2026.11.35", releases: [reviewed],
+  });
+  assert.throws(() => seedCatalog("lotus", legacy, 10), /reviewed bootstrap sequence/);
+});
+
+test("a recommendation retains prior exact identities and rejects a stale per-component baseline", () => {
+  const entry = lotusEntry("2026.11.35");
+  const next = lotusEntry("2026.11.36");
+  const catalog = { schemaVersion: 1, revision: 1, recommendedVersion: entry.release.version, releases: [entry] };
+  const baseline = { branchRevision: "a".repeat(40), revision: 1, version: entry.release.version, sha256: "c".repeat(64) };
+  const candidate = { kind: "bodhi-single-component-candidate/v1", component: "lotus", catalog: baseline, ...next };
+  assert.deepEqual(recommendCandidate("lotus", catalog, { ...baseline, branchRevision: "b".repeat(40) }, candidate), {
+    schemaVersion: 1, revision: 2, recommendedVersion: next.release.version, releases: [entry, next],
+  });
+  assert.throws(() => recommendCandidate("lotus", catalog, { ...baseline, sha256: "d".repeat(64) }, candidate),
+    /catalog changed after candidate preflight/);
+  assert.throws(() => recommendCandidate("lotus", catalog, baseline, {
+    ...candidate, release: { ...entry.release, sourceRevision: "e".repeat(40) },
+  }), /replace an admitted release identity/);
+});
+
+test("a withdrawal preserves other releases and requires an explicit decision for the recommendation", () => {
+  const prior = lotusEntry("2026.11.35");
+  const current = lotusEntry("2026.11.36");
+  const catalog = { schemaVersion: 1, revision: 2, recommendedVersion: current.release.version, releases: [prior, current] };
+  assert.throws(() => withdrawRelease("lotus", catalog, current.release.version), /requires a replacement version or none/);
+  assert.deepEqual(withdrawRelease("lotus", catalog, current.release.version, prior.release.version), {
+    schemaVersion: 1, revision: 3, recommendedVersion: prior.release.version, releases: [prior],
+  });
+  assert.equal(withdrawRelease("lotus", catalog, current.release.version, "none").recommendedVersion, null);
+  assert.deepEqual(withdrawRelease("lotus", catalog, prior.release.version).releases, [current]);
+});
+
+test("catalog baseline requires identical pinned and fixed consumer URL bytes", async () => {
+  const entry = lotusEntry("2026.11.35");
+  const catalog = { schemaVersion: 1, revision: 1, recommendedVersion: entry.release.version, releases: [entry] };
+  const branchRevision = "a".repeat(40);
+  const request = (url) => {
+    assert.equal(url, "repos/bigduu/Bodhi-AI/branches/components-stable");
+    return { name: "components-stable", protected: true, commit: { sha: branchRevision } };
+  };
+  const expected = Buffer.from(JSON.stringify(catalog));
+  const requested = [];
+  const read = async (url) => {
+    requested.push(url);
+    return expected;
+  };
+  const seen = await readCatalog("lotus", request, read);
+  assert.deepEqual(requested, [
+    `https://raw.githubusercontent.com/bigduu/Bodhi-AI/${branchRevision}/lotus-v1.json`,
+    "https://raw.githubusercontent.com/bigduu/Bodhi-AI/components-stable/lotus-v1.json",
+  ]);
+  assert.deepEqual(seen.catalog, catalog);
+  assert.equal(seen.baseline.branchRevision, branchRevision);
+  assert.match(seen.baseline.sha256, /^[0-9a-f]{64}$/);
+  await assert.rejects(readCatalog("lotus", request, async (url) =>
+    url.includes("/components-stable/") ? Buffer.concat([expected, Buffer.from("\n")]) : expected), /CDN propagation/);
 });
 
 test("change history reads all comparison pages and gives bounded notes a full-history link", () => {

@@ -1,6 +1,6 @@
-//! The dedicated GitHub REST transport for Bamboo release metadata.
+//! The dedicated transport for the explicit GitHub connection test.
 use super::github_token::GitHubUpdateCredentials;
-use super::{bamboo_version, producer_client, read_bounded_body, read_error, ReleaseCheckError};
+use super::{producer_client, read_bounded_body, read_error, ReleaseCheckError};
 use crate::component_download::DownloadSettings;
 use chrono::{DateTime, TimeDelta, Utc};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -9,32 +9,12 @@ use serde::Deserialize;
 use std::time::Duration;
 
 const ORIGIN: &str = "https://api.github.com";
-const REPOSITORY: &str = "/repos/bigduu/Bamboo-agent";
+const RELEASE_PATH: &str = "/repos/bigduu/Bamboo-agent/releases/latest";
 const ERROR_BODY_LIMIT: usize = 4 * 1024;
 
-pub(super) enum GitHubEndpoint<'a> {
-    Latest,
-    ReleaseTag(&'a str),
-    CommitTag(&'a str),
-}
-
-impl GitHubEndpoint<'_> {
-    fn url(&self) -> Result<Url, GitHubApiFailure> {
-        let suffix = match self {
-            Self::Latest => "/releases/latest".to_owned(),
-            Self::ReleaseTag(version) if bamboo_version(version).is_some() => {
-                format!("/releases/tags/v{version}")
-            }
-            Self::CommitTag(version) if bamboo_version(version).is_some() => {
-                format!("/commits/v{version}")
-            }
-            _ => {
-                return Err(ReleaseCheckError::from("Invalid Bamboo stable release version").into())
-            }
-        };
-        Url::parse(&format!("{ORIGIN}{REPOSITORY}{suffix}"))
-            .map_err(|_| ReleaseCheckError::from("Invalid official Bamboo REST endpoint").into())
-    }
+fn latest_url() -> Result<Url, GitHubApiFailure> {
+    Url::parse(&format!("{ORIGIN}{RELEASE_PATH}"))
+        .map_err(|_| ReleaseCheckError::from("Invalid official Bamboo REST endpoint").into())
 }
 
 #[derive(Debug)]
@@ -105,7 +85,6 @@ impl<'a> GitHubApi<'a> {
 
     pub(super) async fn read(
         &self,
-        endpoint: GitHubEndpoint<'_>,
         limit: usize,
         label: &str,
     ) -> Result<Vec<u8>, GitHubApiFailure> {
@@ -118,7 +97,7 @@ impl<'a> GitHubApi<'a> {
                 until,
             });
         }
-        let response = request(&self.client, endpoint.url()?, authorization)?
+        let response = request(&self.client, latest_url()?, authorization)?
             .send()
             .await
             .map_err(|error| read_error(error, label))?;
@@ -152,10 +131,7 @@ fn request(
     // The only callers use fixed, typed API paths. Guard the origin again at the
     // header boundary so a future endpoint cannot transmit a token elsewhere.
     if url.origin().ascii_serialization() != ORIGIN
-        || !url
-            .path()
-            .strip_prefix(REPOSITORY)
-            .is_some_and(metadata_path)
+        || url.path() != RELEASE_PATH
         || !url.username().is_empty()
         || url.password().is_some()
         || url.query().is_some()
@@ -168,14 +144,6 @@ fn request(
         request = request.header(AUTHORIZATION, value);
     }
     Ok(request)
-}
-
-fn metadata_path(path: &str) -> bool {
-    path == "/releases/latest"
-        || path
-            .strip_prefix("/releases/tags/v")
-            .or_else(|| path.strip_prefix("/commits/v"))
-            .is_some_and(|version| bamboo_version(version).is_some())
 }
 
 async fn quota_deadline(response: Response, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
@@ -247,21 +215,14 @@ mod tests {
         let client = Client::new();
         let mut auth = HeaderValue::from_static("Bearer github_pat_fixture_123");
         auth.set_sensitive(true);
-        for endpoint in [
-            GitHubEndpoint::Latest,
-            GitHubEndpoint::ReleaseTag("2026.11.48"),
-            GitHubEndpoint::CommitTag("2026.11.48"),
-        ] {
-            let url = endpoint.url().unwrap();
-            let request = request(&client, url, Some(auth.clone()))
-                .unwrap()
-                .build()
-                .unwrap();
-            assert_eq!(request.url().host_str(), Some("api.github.com"));
-            assert!(request.headers()[AUTHORIZATION].is_sensitive());
-            assert!(!format!("{request:?}").contains("github_pat_fixture_123"));
-        }
-        let anonymous = request(&client, GitHubEndpoint::Latest.url().unwrap(), None)
+        let authenticated = request(&client, latest_url().unwrap(), Some(auth.clone()))
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(authenticated.url().host_str(), Some("api.github.com"));
+        assert!(authenticated.headers()[AUTHORIZATION].is_sensitive());
+        assert!(!format!("{authenticated:?}").contains("github_pat_fixture_123"));
+        let anonymous = request(&client, latest_url().unwrap(), None)
             .unwrap()
             .build()
             .unwrap();
@@ -275,13 +236,11 @@ mod tests {
             "https://gh-proxy.com/",
             "https://api.github.com/user",
             "https://api.github.com/repos/bigduu/Bamboo-agent/contents",
+            "https://api.github.com/repos/bigduu/Bamboo-agent/releases/tags/v2026.11.48",
             "https://api.github.com/repos/bigduu/Bamboo-agent/releases/latest?mirror=true",
         ] {
             assert!(request(&client, Url::parse(address).unwrap(), Some(auth.clone())).is_err());
         }
-        assert!(GitHubEndpoint::ReleaseTag("2026.11.48/../../secret")
-            .url()
-            .is_err());
     }
 
     #[test]
@@ -312,14 +271,10 @@ mod tests {
         auth.set_sensitive(true);
         // Building an authenticated API request must not add default headers to
         // the underlying client, even if it is used for an unrelated request.
-        let _ = request(
-            &client,
-            GitHubEndpoint::Latest.url().unwrap(),
-            Some(auth.clone()),
-        )
-        .unwrap()
-        .build()
-        .unwrap();
+        let _ = request(&client, latest_url().unwrap(), Some(auth.clone()))
+            .unwrap()
+            .build()
+            .unwrap();
         let now = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
         for (body, deadline) in [
             (

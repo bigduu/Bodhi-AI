@@ -1,57 +1,94 @@
-use super::github_token::GitHubUpdateCredentials;
-use super::{
-    bamboo_release, lotus_release, BambooRelease, Combination, LotusRelease, ReleaseCheckError,
-    UpdateKind,
-};
-use crate::component_download::DownloadSettings;
+use super::stable::StableCatalog;
+use super::{BambooRelease, Combination, LotusRelease, ReleaseCheckError, UpdateKind};
 use semver::Version;
 use std::cmp::Ordering;
 
 pub(crate) struct Discovery {
     pub offers: Vec<Combination>,
     pub failures: Vec<String>,
-    pub bamboo_download_changed: bool,
+    pub download_changed: bool,
 }
 
-pub(crate) async fn discover(
-    credentials: &GitHubUpdateCredentials,
-    settings: &DownloadSettings,
+pub(crate) fn discover(
+    bamboo: Result<StableCatalog<BambooRelease>, ReleaseCheckError>,
+    lotus: Result<StableCatalog<LotusRelease>, ReleaseCheckError>,
     current: &Combination,
     downloaded: Option<&Combination>,
+    downloaded_local: bool,
     suppressed_lotus: Option<&str>,
     rolled_back_lotus: Option<&LotusRelease>,
-    legacy_lotus: impl FnOnce(&LotusRelease) -> bool,
 ) -> Discovery {
-    let (bamboo, lotus) = tokio::join!(
-        bamboo_release::load_latest(credentials, settings),
-        lotus_release::discover_lotus(settings, None),
-    );
-    let bamboo = bamboo.and_then(|(release, changes)| bamboo_offer(current, release, changes));
-    let lotus = lotus.map_err(String::from).and_then(|found| {
-        if rolled_back_lotus.is_some_and(|recorded| {
-            recorded.version == found.release.version && recorded != &found.release
+    let invalid_download = downloaded.filter(|pair| {
+        !downloaded_local
+            && pair.producer_release
+            && match pair.update_kind(current) {
+                Some(UpdateKind::Bamboo) => bamboo.as_ref().is_ok_and(|catalog| {
+                    reconfirm(catalog, &pair.bamboo.version, &pair.bamboo).is_err()
+                }),
+                Some(UpdateKind::Lotus) => lotus.as_ref().is_ok_and(|catalog| {
+                    reconfirm(catalog, &pair.lotus.version, &pair.lotus).is_err()
+                }),
+                _ => false,
+            }
+    });
+    let bamboo = bamboo.map_err(String::from).and_then(|catalog| {
+        let Some(entry) = catalog.recommended() else {
+            return Ok(None);
+        };
+        if invalid_download.is_some_and(|pair| {
+            pair.update_kind(current) == Some(UpdateKind::Bamboo)
+                && pair.bamboo.version == entry.release.version
         }) {
-            return Err(
-                "The official release identity differs from the rolled-back version".into(),
-            );
+            return Ok(None);
+        }
+        bamboo_offer(current, entry.release.clone(), entry.changes.clone())
+    });
+    let lotus = lotus.map_err(String::from).and_then(|catalog| {
+        let Some(entry) = catalog.recommended() else {
+            return Ok(None);
+        };
+        if invalid_download.is_some_and(|pair| {
+            pair.update_kind(current) == Some(UpdateKind::Lotus)
+                && pair.lotus.version == entry.release.version
+        }) {
+            return Ok(None);
+        }
+        if rolled_back_lotus.is_some_and(|recorded| {
+            recorded.version == entry.release.version && recorded != &entry.release
+        }) {
+            return Err("The stable release identity differs from the rolled-back version".into());
         }
         if !is_newer(
             &current.lotus,
             &current.lotus.version,
-            &found.release,
-            &found.release.version,
+            &entry.release,
+            &entry.release.version,
         )? {
             return Ok(None);
         }
-        if found.requirements.is_none() && !legacy_lotus(&found.release) {
-            return Err("This Lotus Next release has no verified Bootstrap requirements".into());
-        }
         let mut pair = next_pair(current, 2)?;
-        pair.lotus = found.release;
-        pair.changes.lotus = found.changes;
+        pair.lotus = entry.release.clone();
+        pair.changes.lotus = entry.changes.clone();
         Ok(Some(pair))
     });
-    collect(current, downloaded, suppressed_lotus, bamboo, lotus)
+    let mut discovery = collect(
+        current,
+        downloaded.filter(|pair| Some(*pair) != invalid_download),
+        suppressed_lotus,
+        bamboo,
+        lotus,
+    );
+    if let Some(pair) = invalid_download {
+        discovery.download_changed = true;
+        let component = match pair.update_kind(current) {
+            Some(UpdateKind::Bamboo) => "Bamboo",
+            _ => "Lotus Next",
+        };
+        discovery.failures.push(format!(
+            "{component}: The downloaded release was withdrawn from the stable catalog or its identity changed"
+        ));
+    }
+    discovery
 }
 
 pub(crate) fn bamboo_offer(
@@ -83,7 +120,7 @@ fn collect(
     let mut discovery = Discovery {
         offers: Vec::new(),
         failures: Vec::new(),
-        bamboo_download_changed: false,
+        download_changed: false,
     };
     let mut retained = downloaded.filter(|pair| retain_download(current, pair, suppressed_lotus));
     for (name, result) in [("Bamboo", bamboo), ("Lotus Next", lotus)] {
@@ -105,8 +142,7 @@ fn collect(
                             discovery.failures.push(format!(
                                 "{name} changed the identity of a downloaded release"
                             ));
-                            discovery.bamboo_download_changed =
-                                pair.update_kind(current) == Some(UpdateKind::Bamboo);
+                            discovery.download_changed = true;
                             retained = None;
                         }
                         continue;
@@ -193,37 +229,16 @@ fn next_pair(current: &Combination, offset: u64) -> Result<Combination, String> 
     Ok(pair)
 }
 
-pub(crate) async fn reconfirm(
-    credentials: &GitHubUpdateCredentials,
-    settings: &DownloadSettings,
-    current: &Combination,
-    selected: &Combination,
+pub(crate) fn reconfirm<T: PartialEq>(
+    catalog: &StableCatalog<T>,
+    version: &str,
+    selected: &T,
 ) -> Result<(), ReleaseCheckError> {
-    if !selected.producer_release
-        || !selected.accepts_update_from(current.sequence, &current.identity())
-        || !eligible(current, selected, None)
-    {
-        return Err("This producer release is no longer applicable".into());
+    match catalog.find(version) {
+        Some(entry) if &entry.release == selected => Ok(()),
+        Some(_) => Err("The stable release identity changed after discovery".into()),
+        None => Err("This release is no longer listed in the Bodhi stable catalog".into()),
     }
-    let matches = match selected.update_kind(current) {
-        Some(UpdateKind::Bamboo) => {
-            bamboo_release::load_version(credentials, settings, &selected.bamboo)
-                .await?
-                .0
-                == selected.bamboo
-        }
-        Some(UpdateKind::Lotus) => {
-            lotus_release::discover_lotus(settings, Some(&selected.lotus.version))
-                .await?
-                .release
-                == selected.lotus
-        }
-        _ => false,
-    };
-    if !matches {
-        return Err("The official release identity changed after discovery".into());
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -268,7 +283,7 @@ mod tests {
         rewritten.bamboo.manifest.sha256 = "f".repeat(64);
         let result = collect(&active, Some(&staged), None, Ok(Some(rewritten)), Ok(None));
         assert!(result.offers.is_empty());
-        assert!(result.bamboo_download_changed);
+        assert!(result.download_changed);
         assert_eq!(result.failures.len(), 1);
     }
 

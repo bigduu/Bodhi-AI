@@ -6,9 +6,10 @@ use super::{
 };
 use crate::component_channel::github_token::{GitHubUpdateCredentials, GitHubUpdateTokenState};
 use crate::component_channel::producer::{self, Discovery};
+use crate::component_channel::stable::{self, StableCatalog};
 use crate::component_channel::{
-    load_manual_bamboo_release, read_local_bamboo_manifest, Changes, Combination, PairIdentity,
-    ReleaseCheckError, UpdateKind, VerifiedChannel,
+    load_manual_bamboo_release, read_local_bamboo_manifest, BambooRelease, Changes, Combination,
+    LotusRelease, PairIdentity, ReleaseCheckError, UpdateKind, VerifiedChannel,
 };
 use crate::component_download::{while_selected, DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
@@ -29,6 +30,14 @@ pub(crate) const MENU_ID: &str = "component-updates";
 const PAGE: &str = "component-updates.html";
 const REMINDER_DELAY: Duration = Duration::from_secs(30 * 60);
 const IMMEDIATE_RELEASE_CHECK: Duration = Duration::from_secs(3);
+
+#[cfg(test)]
+mod stable_tests;
+
+type StableCatalogs = (
+    Result<StableCatalog<BambooRelease>, ReleaseCheckError>,
+    Result<StableCatalog<LotusRelease>, ReleaseCheckError>,
+);
 
 #[derive(Default)]
 pub(super) struct Updates {
@@ -490,25 +499,70 @@ impl Manager {
     }
 
     async fn check(&self) -> bool {
-        self.updates.github_credentials.initialize().await;
+        self.check_with_catalogs(|settings| async move {
+            tokio::join!(
+                stable::load_bamboo(&settings),
+                stable::load_lotus(&settings)
+            )
+        })
+        .await
+    }
+
+    async fn check_with_catalogs<F: Future<Output = StableCatalogs> + Send>(
+        &self,
+        load: impl Fn(DownloadSettings) -> F + Sync,
+    ) -> bool {
         let detected = self
             .detect_updates(async |current, journal, downloaded| {
-                let mut settings = self.settings.subscribe();
-                loop {
-                    let selected = settings.borrow_and_update().clone();
-                    let work = producer::discover(
-                        &self.updates.github_credentials,
-                        &selected,
-                        current,
-                        downloaded,
-                        journal.suppressed_lotus.as_deref(),
-                        journal.rolled_back_lotus.as_ref(),
-                        super::producer_compatibility::is_legacy_lotus,
-                    );
-                    if let Some(result) = while_selected(&mut settings, &selected, work).await {
-                        return Ok(result);
+                let downloaded_local = match downloaded {
+                    Some(pair) if pair.update_kind(current) == Some(UpdateKind::Bamboo) => {
+                        journal::matches_local_bamboo_download(
+                            &self.profile,
+                            pair,
+                            &artifact_identity(pair)?,
+                        )?
                     }
-                }
+                    _ => false,
+                };
+                let mut settings = self.settings.subscribe();
+                let (bamboo, lotus) = loop {
+                    let selected = settings.borrow_and_update().clone();
+                    if let Some(result) =
+                        while_selected(&mut settings, &selected, load(selected.clone())).await
+                    {
+                        break result;
+                    }
+                };
+                let catalog_download =
+                    downloaded.filter(|pair| pair.producer_release && !downloaded_local);
+                let bamboo_download = catalog_download
+                    .filter(|pair| pair.update_kind(current) == Some(UpdateKind::Bamboo));
+                let lotus_download = catalog_download
+                    .filter(|pair| pair.update_kind(current) == Some(UpdateKind::Lotus));
+                let bamboo = bamboo.and_then(|catalog| {
+                    self.record_catalog(UpdateKind::Bamboo, catalog, current, bamboo_download)
+                });
+                let lotus = lotus.and_then(|catalog| {
+                    self.record_catalog(UpdateKind::Lotus, catalog, current, lotus_download)
+                });
+                let saved = journal::read_downloaded(&self.profile)?;
+                let downloaded = downloaded.filter(|pair| {
+                    Some(*pair) == saved.as_ref()
+                        || match pair.update_kind(current) {
+                            Some(UpdateKind::Bamboo) => bamboo.is_ok(),
+                            Some(UpdateKind::Lotus) => lotus.is_ok(),
+                            _ => false,
+                        }
+                });
+                Ok(producer::discover(
+                    bamboo,
+                    lotus,
+                    current,
+                    downloaded,
+                    downloaded_local,
+                    journal.suppressed_lotus.as_deref(),
+                    journal.rolled_back_lotus.as_ref(),
+                ))
             })
             .await;
         match detected {
@@ -518,6 +572,51 @@ impl Manager {
                 false
             }
         }
+    }
+
+    fn record_catalog<T>(
+        &self,
+        kind: UpdateKind,
+        catalog: StableCatalog<T>,
+        active: &Combination,
+        downloaded: Option<&Combination>,
+    ) -> Result<StableCatalog<T>, ReleaseCheckError> {
+        let active = match kind {
+            UpdateKind::Bamboo
+                if active
+                    .bamboo
+                    .artifacts
+                    .iter()
+                    .all(|asset| asset.browser_runtime.is_some()) =>
+            {
+                Some((
+                    active.bamboo.version.as_str(),
+                    stable::release_digest(&active.bamboo)?,
+                ))
+            }
+            UpdateKind::Lotus => Some((
+                active.lotus.version.as_str(),
+                stable::release_digest(&active.lotus)?,
+            )),
+            _ => None,
+        };
+        let staged = match (kind, downloaded) {
+            (UpdateKind::Bamboo, Some(pair)) => Some(journal::CatalogDownload {
+                pair,
+                version: &pair.bamboo.version,
+                digest: stable::release_digest(&pair.bamboo)?,
+                local_identity: Some(artifact_identity(pair)?),
+            }),
+            (UpdateKind::Lotus, Some(pair)) => Some(journal::CatalogDownload {
+                pair,
+                version: &pair.lotus.version,
+                digest: stable::release_digest(&pair.lotus)?,
+                local_identity: None,
+            }),
+            _ => None,
+        };
+        journal::record_catalog(&self.profile, kind, &catalog, staged, active)?;
+        Ok(catalog)
     }
 
     #[cfg(test)]
@@ -534,7 +633,7 @@ impl Manager {
                     .cloned()
                     .collect(),
                 failures: Vec::new(),
-                bamboo_download_changed: false,
+                download_changed: false,
             })
         })
         .await
@@ -567,9 +666,9 @@ impl Manager {
         let Discovery {
             offers,
             failures,
-            bamboo_download_changed,
+            download_changed,
         } = discovery(current, &journal, downloaded.as_ref()).await?;
-        let downloaded = if bamboo_download_changed {
+        let downloaded = if download_changed {
             if let Some(candidate) = &downloaded {
                 let _lock = self.profile.update_lock()?;
                 journal::clear_downloaded(&self.profile, candidate)?;
@@ -578,7 +677,7 @@ impl Manager {
         } else {
             downloaded
         };
-        if failures.len() == 2 && offers.is_empty() {
+        if failures.len() >= 2 && offers.is_empty() {
             return Err(failures.join("\n"));
         }
         let identity = current.identity();
@@ -1234,16 +1333,59 @@ impl Manager {
                 .reconfirm(active, update, locale, self.load_catalog())
                 .await;
         }
-        self.updates.github_credentials.initialize().await;
+        self.reconfirm_stable(
+            update,
+            active,
+            locale,
+            |settings| async move { stable::load_bamboo(&settings).await },
+            |settings| async move { stable::load_lotus(&settings).await },
+        )
+        .await
+    }
+
+    async fn reconfirm_stable<B, L>(
+        &self,
+        update: &SelectedUpdate,
+        active: &Combination,
+        locale: Locale,
+        load_bamboo: impl Fn(DownloadSettings) -> B + Sync,
+        load_lotus: impl Fn(DownloadSettings) -> L + Sync,
+    ) -> Result<(), ReleaseCheckError>
+    where
+        B: Future<Output = Result<StableCatalog<BambooRelease>, ReleaseCheckError>> + Send,
+        L: Future<Output = Result<StableCatalog<LotusRelease>, ReleaseCheckError>> + Send,
+    {
         let mut settings = self.settings.subscribe();
         loop {
             let selected = settings.borrow_and_update().clone();
-            let work = producer::reconfirm(
-                &self.updates.github_credentials,
-                &selected,
-                active,
-                &update.candidate,
-            );
+            let candidate = &update.candidate;
+            let kind = candidate
+                .update_kind(active)
+                .ok_or_else(|| locale.text("updates.catalogChanged").to_string())?;
+            let work = async {
+                let confirm = match kind {
+                    UpdateKind::Bamboo => {
+                        let catalog = self.record_catalog(
+                            kind,
+                            load_bamboo(selected.clone()).await?,
+                            active,
+                            Some(candidate),
+                        )?;
+                        producer::reconfirm(&catalog, &candidate.bamboo.version, &candidate.bamboo)
+                    }
+                    UpdateKind::Lotus => {
+                        let catalog = self.record_catalog(
+                            kind,
+                            load_lotus(selected.clone()).await?,
+                            active,
+                            Some(candidate),
+                        )?;
+                        producer::reconfirm(&catalog, &candidate.lotus.version, &candidate.lotus)
+                    }
+                    UpdateKind::Pair => return Err(locale.text("updates.catalogChanged").into()),
+                };
+                confirm
+            };
             if let Some(result) = while_selected(&mut settings, &selected, work).await {
                 return result;
             }
@@ -1940,7 +2082,7 @@ mod tests {
                 Ok(Discovery {
                     offers: Vec::new(),
                     failures: vec!["Bamboo changed the identity of a downloaded release".into()],
-                    bamboo_download_changed: true,
+                    download_changed: true,
                 })
             })
             .await

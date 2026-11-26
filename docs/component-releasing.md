@@ -17,14 +17,77 @@ The JSON has kind `bodhi-single-component-candidate/v1` and contains `component`
 
 Bamboo verification checks the executable manifest, five platform digests, and Browser Host archive identity. When present, it also matches the browser companion manifest to the exact executable manifest and runtime archive digests at the same tag. The Bamboo result includes `missingBrowserRuntime`, which lists platforms without the companion runtime. Lotus Next verification checks the official npm tarball and its static manifest.
 
-The **Prepare published components** workflow runs this preflight from Main after its source is promoted. Choose `bamboo` or `lotus`, optionally enter that component's exact version and previous version, and leave the other component's fields blank. The workflow uploads `component-candidate.json` for review. This operation reads releases and produces verification evidence. Publishing and applying an update are separate operations.
+The **Prepare published components** workflow runs this preflight from Main.
+Choose `bamboo` or `lotus`, optionally enter that component's exact version and
+previous version, and leave the peer fields blank. The workflow uploads
+`component-candidate.json` for review.
 
-Use `discover` to check both producers on demand. Each job compares one upstream stable version with the
-highest version of that component in the protected catalog and verifies its
-published identity. A newer release produces a candidate with the exact catalog
-revision, sequence and prior version for compatibility review. An unchanged
-release produces a summary only. A producer failure leaves the peer job running.
-This workflow also serves as a diagnostic for releases discovered by the shell.
+The workflow checks both producers hourly and on demand in `discover` mode.
+Each job reads its component's fixed client catalog and verifies that the bytes
+match the protected branch revision. It compares the upstream stable release
+with the catalog's explicit recommendation. A newer release produces a
+candidate with the exact baseline catalog revision, SHA-256, branch commit, and
+prior version. An unchanged recommendation produces a summary. The peer job
+continues after a producer or catalog failure. Use `catalog` mode and enter one
+exact version to verify a specific release against that same baseline. This
+workflow has read permissions and uploads candidate evidence.
+
+## Maintaining the installed-client stable catalogs
+
+The protected `components-stable` branch serves one static file per component.
+These are the URLs checked by installed Bodhi clients.
+
+- [bamboo-v1.json](https://raw.githubusercontent.com/bigduu/Bodhi-AI/components-stable/bamboo-v1.json)
+- [lotus-v1.json](https://raw.githubusercontent.com/bigduu/Bodhi-AI/components-stable/lotus-v1.json)
+
+Each file contains `schemaVersion: 1`, a positive `revision`, a
+`recommendedVersion`, and `releases`. Each entry has the preflight's exact
+`release` identity and `changes`. Keep each file within 1 MiB with at most
+64 entries in ascending numeric version order. Increment its revision for every change.
+`recommendedVersion` selects one listed version, or `null` to pause new offers.
+Keep superseded releases listed while their downloaded updates should remain
+eligible. Remove an entry to withdraw that version, updating the recommendation
+in the same change if needed. A verified downloaded version remains eligible
+when it is listed and still applicable to the active pair.
+For an artifact-wide withdrawal, review the paired `channel-v1.json` bootstrap
+entries in the same PR so fresh and older installations use safe artifacts too.
+
+Before recommending a candidate, verify its original release evidence and test
+the exact changed component alongside the currently recommended peer. Include
+the candidate's run and compatibility results in a PR to `components-stable`.
+Prepare and check the replacement file from the Bodhi source checkout.
+
+```sh
+node scripts/prepare-component-candidate.cjs --recommend-catalog bamboo component-candidate.json > bamboo-v1.json
+node scripts/prepare-component-candidate.cjs --validate-catalog bamboo bamboo-v1.json
+```
+
+The preparation command rejects a stale component baseline and changes to a
+retained release identity. It accepts an intervening peer catalog update when
+the component's baseline bytes still match. Recheck compatibility if the
+recommended peer changed. To prepare a withdrawal, run
+`--withdraw-catalog bamboo VERSION [RECOMMENDATION|none]` in place of
+`--recommend-catalog bamboo component-candidate.json`. Provide a replacement
+recommendation or `none` when withdrawing the currently recommended version.
+After merging, check the exact client URL against both the protected branch
+and the reviewed file. Retry the read after CDN propagation if those bytes differ.
+
+```sh
+node scripts/prepare-component-candidate.cjs --verify-catalog bamboo bamboo-v1.json
+```
+
+Run the equivalent commands with `lotus` and `lotus-v1.json` for Lotus Next.
+Publish the first two files before shipping a shell or activating the scheduled
+workflow that reads them. Seed revision 1 from the reviewed bootstrap pair in
+[catalog PR #396](https://github.com/bigduu/Bodhi-AI/pull/396).
+
+```sh
+seed_dir=$(mktemp -d)
+curl -fsSL https://raw.githubusercontent.com/bigduu/Bodhi-AI/de5fe271a39fd30adeef6dce37d9cdbf82e50c10/channel-v1.json -o "$seed_dir/channel-v1.json"
+echo "3015fd6c2549ee5b44cc6f85987752b28a00efbf2af703f1cc27443b334c6e60  $seed_dir/channel-v1.json" | shasum -a 256 -c -
+node scripts/prepare-component-candidate.cjs --seed-catalog bamboo "$seed_dir/channel-v1.json" 9 > "$seed_dir/bamboo-v1.json"
+node scripts/prepare-component-candidate.cjs --seed-catalog lotus "$seed_dir/channel-v1.json" 9 > "$seed_dir/lotus-v1.json"
+```
 
 ## Catalog publication for older shells and initial bootstrap
 
@@ -38,16 +101,14 @@ Use `--from <previous-bamboo> <previous-lotus>` to collect the producers' commit
 
 The catalog lives at `channel-v1.json` on the protected `components-stable` branch. Its fields are `schemaVersion: 1`, `shellProtocol: 1` and `combinations`. Copy the verified candidate's `combination` and add the next `sequence`, a `bootstrap` flag for fresh installations and the compatible predecessors in `accepts`. Each predecessor is a pair of `bambooManifestSha256` and `lotusManifestSha256` values. The first pair uses sequence 1, `bootstrap: true` and an empty `accepts`.
 
-Keep the existing catalog available to older shells and as the initial pair for
-a fresh installation. Component releases discovered directly by the shell need
-no catalog entry.
+Maintain the legacy catalog for older shells and the initial pair for a fresh
+installation. Verify each new bootstrap pair before marking it eligible.
 
 ## Applying an update in Bodhi
 
-Automatic and manual checks read Bamboo's official stable GitHub Release and
-Lotus Next's official npm stable dist-tag. Each offer retains the current build
-of the other component. An unavailable or invalid producer release leaves the
-other producer's offers usable.
+Automatic and manual checks read the two Bodhi stable catalogs. Each offer
+retains the current build of the other component. An unavailable or invalid
+catalog leaves the peer component's offers usable.
 
 Bodhi checks for component updates automatically every three hours by default.
 In **Versions and Updates**, set the automatic interval in hours. Set it to
@@ -55,8 +116,9 @@ zero to check only when you choose **Check for updates**. Bodhi keeps the last
 attempt time across restarts and retains verified downloads in either mode.
 
 In **Versions and Updates**, each component panel shows its running version, the
-eligible published version, release notes, and update controls. A previously
-verified download remains available if its producer publishes a newer version.
+eligible published version, release notes, and update controls. A verified
+download is still available after Bodhi recommends a newer release while the
+downloaded version remains listed and compatible with the running pair.
 The profile minimum Bamboo version applies at startup and during updates.
 
 Choose **Download update** for the selected target. Bodhi downloads its changed
@@ -66,8 +128,8 @@ Sources that cannot serve ranges use a single stream. Bodhi checks the final
 size and SHA-256 before staging. It starts the exact pair in an isolated
 profile and checks Bamboo's live Bootstrap capabilities against the Lotus
 frontend requirements. One verified selection can be staged for restart at a
-time. The shell rechecks the official release identity before shutdown and the
-replacement's Bootstrap before recording activation. The active verified
+time. The shell rechecks the listed stable release identity before shutdown and
+the replacement's Bootstrap before recording activation. The active verified
 components can start offline. Choose **Update Bamboo** for Bamboo-only updates
 or **Restart and update** for other component updates after long-running work
 finishes. Bodhi requests Bamboo's normal shutdown, waits for the owned process
@@ -87,9 +149,9 @@ terminates the managed process and running tasks need to be started again. Both
 paths confirm that the old process released the profile writer lease and port
 before switching to the exact selected versions.
 
-If the remote release check is unreachable or times out, Bodhi rechecks the
-exact cached bytes of the previously verified selection. A returned release
-identity change blocks the update.
+If the catalog check is unreachable or times out, Bodhi can recheck the exact
+cached bytes of a previously verified selection. A returned withdrawal or
+release identity change blocks the update.
 
 If an approved update is queued and shutdown takes longer than the wait, use
 **Retry restart** after shutdown finishes, or reopen Bodhi to apply the queued
@@ -118,15 +180,14 @@ its minimum-version guard. Session recovery requires a valid checkpoint.
 Lotus reloads its document when the workspace returns. Recovery for an unsent
 composer draft is developed in [Lotus Next #737](https://github.com/bigduu/lotus-next/issues/737).
 
-## GitHub credentials for Bamboo update checks
+## GitHub credentials for the Bamboo endpoint test
 
-In **Versions and Updates**, optionally save a personal GitHub token for the
-Bamboo release check. A fine-grained token with public repository read access
-is sufficient. Use **Test token** to check it through the current proxy route.
-Bodhi sends it only to the official GitHub REST endpoint for Bamboo release
-and tag metadata. The official downloads and configured mirrors use separate
-requests. A GitHub rate-limit response gives a retry time. Changing or removing
-the token clears that cooldown.
+In **Versions and Updates**, use **Test token** to check optional GitHub
+credentials through the current proxy route. A fine-grained token with public
+repository read access is sufficient. Bodhi sends it only to the official
+Bamboo GitHub REST API during that test. Stable catalog reads and the configured
+download sources use their own requests. A GitHub rate-limit response gives a
+retry time. Changing or removing the token clears that cooldown.
 
 Bodhi shows whether the token is stored in macOS Keychain or Windows Credential
 Manager, or held only for the current session. Linux uses session storage in
