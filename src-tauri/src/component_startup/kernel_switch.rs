@@ -376,6 +376,7 @@ impl Manager {
                 return Err("The previous Bamboo shutdown is in progress".into());
             }
         }
+        let owner = app.state::<SidecarState>().owned_startup_status()?;
         let page = app.state::<UpdatePage>();
         if page.needs_restore() {
             let window = app
@@ -383,7 +384,6 @@ impl Manager {
                 .ok_or("Bodhi's main window is unavailable")?;
             let port = crate::web_service_port();
             let original = self.reopen_prepared(active).await?;
-            let owner = app.state::<SidecarState>().owned_startup_status()?;
             verify_owned_component(port, &owner, active, &original, 3).await?;
             page.resume_verified(&window, &workspace_url(port, &original)?)
                 .await?;
