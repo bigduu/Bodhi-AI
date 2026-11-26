@@ -1,8 +1,19 @@
 const get = (id) => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
 const i18n = window.bodhiI18n;
+const importBambooCommand = "import_local_bamboo_update";
+const githubTokenErrors = {
+  "invalid-token": "githubToken.invalid",
+  "token-missing": "githubToken.missing",
+  "token-rejected": "githubToken.rejected",
+  "token-rate-limited": "githubToken.rateLimited",
+  "github-api-refused": "githubToken.refused",
+  "github-api-unavailable": "githubToken.unavailable",
+  "credential-store-unavailable": "githubToken.storeUnavailable",
+};
 const componentNames = { bamboo: "Bamboo", lotus: "Lotus Next" };
-const busyPhases = ["checking", "preparing", "downloading", "starting", "saving", "shuttingDown", "restarting"];
+const switchPhases = ["shuttingDown", "starting", "reconnecting", "restoringSessions"];
+const busyPhases = ["checking", "preparing", "downloading", "saving", "restarting", ...switchPhases];
 const offerPhases = ["current", "available", "skipped", "verified"];
 const downloadPhases = ["downloading", "downloadFailed", "saveFailed"];
 const componentViews = [...document.querySelectorAll("[data-update-kind]")].map((panel) => {
@@ -11,10 +22,15 @@ const componentViews = [...document.querySelectorAll("[data-update-kind]")].map(
   const part = (name) => panel.querySelector(`[data-part=${name}]`);
   const warning = part("force-warning");
   warning.id = `force-warning-${kind}`;
-  part("force").setAttribute("aria-describedby", warning.id);
+  const help = kind === "bamboo" ? "bamboo-restart-hint" : "restart-hint";
+  part("apply").setAttribute("aria-describedby", help);
+  part("force").setAttribute("aria-describedby", `${warning.id} ${help}`);
   return { panel, kind, part };
 });
 let currentSnapshot = null;
+let renderedHistory = null;
+let refreshTimer;
+let refreshing = false;
 let actionPending = false;
 let actionError = null;
 let rollbackAttempt = null;
@@ -25,6 +41,9 @@ let settingsMessage = "";
 let settingsError = "";
 let checkIntervalDirty = false;
 let checkIntervalSaving = false;
+let githubTokenPending = false;
+let githubTokenFeedback = null;
+
 
 function showCheckIntervalState() {
   get("check-interval-fields").disabled = checkIntervalSaving;
@@ -59,6 +78,26 @@ function renderSettings(settings) {
     get("proxy-url").value = settings.proxyUrl || "";
   }
   showSettingsState();
+}
+
+function renderGithubToken() {
+  const state = currentSnapshot?.githubUpdateTokenState;
+  const configured = state === "stored" || state === "session";
+  const unavailable = state === "unavailable";
+  const knownState = configured || unavailable || state === "none";
+  const disabled = !currentSnapshot?.running || !knownState || githubTokenPending;
+  const input = get("github-token");
+  get("github-token-fields").disabled = disabled;
+  get("save-github-token").disabled = disabled || !input.value.trim();
+  get("test-github-token").disabled = disabled || !configured;
+  get("remove-github-token").disabled = disabled || !(configured || unavailable);
+  const stateKey = unavailable ? "githubToken.storeUnreadable" : `githubToken.${state}`;
+  setText(get("github-token-state"), knownState ? i18n.text(stateKey) : "");
+  const status = get("github-token-status");
+  const statusKey = githubTokenPending ? "githubToken.pending" : githubTokenFeedback?.key;
+  status.hidden = !statusKey;
+  status.classList.toggle("error", !!githubTokenFeedback?.error);
+  setText(status, statusKey ? i18n.text(statusKey) : "");
 }
 
 function append(list, value) {
@@ -114,10 +153,11 @@ function updateShutdownStarted(snapshot) {
 
 function renderPanelActions(view, offer, snapshot, phase, busy) {
   const canSkip = snapshot.running && snapshot.queued == null
-    && !updateShutdownStarted(snapshot) && !!offer;
+    && !snapshot.bambooRecoveryPending && !updateShutdownStarted(snapshot) && !!offer;
   const canDownload = canSkip && !offer.skipped && !offer.downloaded;
   const canApply = canSkip && !offer.skipped && offer.downloaded;
   const canForce = canForceUpdate(snapshot, offer);
+  const isBamboo = view.kind === "bamboo";
   const download = view.part("download");
   const apply = view.part("apply");
   const force = view.part("force");
@@ -130,21 +170,25 @@ function renderPanelActions(view, offer, snapshot, phase, busy) {
   ));
   apply.hidden = !canApply;
   apply.disabled = busy;
-  setText(apply, i18n.text("updates.confirmApply"));
+  setText(apply, i18n.text(isBamboo ? "updates.confirmBamboo" : "updates.confirmApply"));
   force.hidden = !canForce;
   force.disabled = busy;
   if (canForce) {
     const checkpointed = snapshot.forceUpdate.checkpointed;
-    setText(force, i18n.text(checkpointed ? "updates.forceUpdate" : "updates.legacyForceUpdate"));
+    const label = isBamboo
+      ? (checkpointed ? "updates.forceBamboo" : "updates.legacyForceBamboo")
+      : (checkpointed ? "updates.forceUpdate" : "updates.legacyForceUpdate");
+    setText(force, i18n.text(label));
+    const checkpointWarning = isBamboo ? "updates.bambooCheckpointWarning" : "updates.checkpointWarning";
     setText(view.part("force-warning"), i18n.text(
-      checkpointed ? "updates.checkpointWarning" : "updates.forceWarning",
+      checkpointed ? checkpointWarning : "updates.forceWarning",
     ));
   }
   view.part("force-warning").hidden = !canForce;
   skip.hidden = !canSkip;
   skip.disabled = busy;
   setText(skip, i18n.text(offer?.skipped ? "updates.undoSkip" : "updates.skipVersion"));
-  return canApply;
+  return canApply || canForce;
 }
 
 function renderNotes(view, offer, active) {
@@ -184,7 +228,9 @@ function renderPanel(view, snapshot, busy) {
     : running && queued == null && offerPhases.includes(display.phase)
       ? i18n.text("updates.noCompatibleUpdate") : "";
   setText(view.part("phase"), status);
-  const error = (offer && actionError?.identity === offer.identity && actionError.message)
+  const localImportError = view.kind === "bamboo" && actionError?.command === importBambooCommand;
+  const error = (localImportError && actionError.message)
+    || (offer && actionError?.identity === offer.identity && actionError.message)
     || (downloadIsHere && display.error) || "";
   view.part("error").hidden = !error;
   setText(view.part("error"), error);
@@ -218,25 +264,38 @@ function renderLotusRollbackActions(snapshot, busy) {
 function renderUpdates(snapshot) {
   const { display, queued, running, offers } = snapshot;
   const busy = actionPending || busyPhases.includes(display.phase);
-  const canApply = componentViews.map((view) => renderPanel(view, snapshot, busy)).some(Boolean);
+  const applicable = componentViews.map((view) =>
+    renderPanel(view, snapshot, busy) ? view.kind : null);
   renderLotusRollbackActions(snapshot, busy);
-  const pendingRestart = running && queued != null;
-  get("retry-restart").hidden = !pendingRestart;
-  get("retry-restart").disabled = busy;
-  get("restart-hint").hidden = !(canApply || pendingRestart);
+  const bambooPending = snapshot.bambooRestartPending === true;
+  const recoveryPending = snapshot.bambooRecoveryPending === true;
+  const pendingRestart = queued != null && (running || bambooPending);
+  get("bamboo-import").hidden = !running;
+  get("import-local-bamboo").disabled = busy || !running || pendingRestart
+    || recoveryPending || updateShutdownStarted(snapshot);
+  const retry = get("retry-restart");
+  retry.hidden = !pendingRestart;
+  retry.disabled = busy;
+  retry.setAttribute("aria-describedby", bambooPending ? "bamboo-restart-hint" : "restart-hint");
+  setText(retry, i18n.text(bambooPending ? "updates.retryBamboo" : "updates.retryRestart"));
+  get("restart-hint").hidden = !(applicable.some((kind) => kind && kind !== "bamboo") || (pendingRestart && !bambooPending));
+  get("bamboo-restart-hint").hidden = !(applicable.includes("bamboo") || (pendingRestart && bambooPending));
 
   const check = get("check");
   setText(check, i18n.text(running ? "updates.check" : "updates.retry"));
   check.disabled = busy || (running
-    ? pendingRestart || updateShutdownStarted(snapshot)
-    : display.phase !== "startupFailed");
+    ? pendingRestart || recoveryPending || updateShutdownStarted(snapshot)
+    : pendingRestart || display.phase !== "startupFailed");
 
   const scopedDownload = downloadPhases.includes(display.phase)
     && offers.some((offer) => offer.sequence === display.downloadSequence);
-  const scopedAction = actionError && offers.some((offer) => offer.identity === actionError.identity);
+  const scopedAction = actionError && (actionError.command === importBambooCommand
+    || offers.some((offer) => offer.identity === actionError.identity));
   const globalPhase = !scopedDownload && !offerPhases.includes(display.phase)
     && (display.phase !== "ready" || !running);
-  setText(get("phase"), globalPhase ? i18n.text(`phase.${display.phase}`) : "");
+  const status = get("phase");
+  status.toggleAttribute("data-switching", globalPhase && switchPhases.includes(display.phase));
+  setText(status, globalPhase ? i18n.text(`phase.${display.phase}`) : "");
   const error = (!scopedAction && actionError?.message) || (!scopedDownload && display.error) || "";
   get("error").hidden = !error;
   setText(get("error"), error);
@@ -250,6 +309,7 @@ function render(snapshot) {
   get("lotus").textContent = active?.lotus || "—";
   renderCheckInterval(snapshot.autoCheckHours);
   renderSettings(snapshot.settings);
+  renderGithubToken();
   renderUpdates(snapshot);
   get("last-check").textContent = snapshot.lastCheck
     ? i18n.text("updates.lastCheck", { date: i18n.date(snapshot.lastCheck) })
@@ -269,6 +329,8 @@ function render(snapshot) {
     get("download-detail").textContent = i18n.transferText(transfer);
   }
 
+  const historyKey = JSON.stringify([snapshot.locale, history]);
+  if (renderedHistory === historyKey) return;
   const historyList = get("history");
   historyList.replaceChildren();
   get("history-empty").hidden = history.length > 0;
@@ -281,9 +343,12 @@ function render(snapshot) {
       : i18n.text("updates.applied");
     append(historyList, `${i18n.date(item.at)} · ${from}${to} · ${outcome}`);
   }
+  renderedHistory = historyKey;
 }
 
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
   try {
     const snapshot = await invoke("component_snapshot");
     await i18n.sync(snapshot.locale);
@@ -292,9 +357,17 @@ async function refresh() {
     get("error").hidden = false;
     get("error").textContent = String(error);
   } finally {
-    setTimeout(refresh, 650);
+    refreshing = false;
+    refreshTimer = setTimeout(refresh, document.hidden ? 2_500 : 650);
   }
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    clearTimeout(refreshTimer);
+    void refresh();
+  }
+});
 
 async function runAction(command, args) {
   if (actionPending || !currentSnapshot) return;
@@ -305,7 +378,7 @@ async function runAction(command, args) {
   try {
     await invoke(command, args);
   } catch (error) {
-    actionError = { identity: args?.identity, message: String(error) };
+    actionError = { command, identity: args?.identity, message: String(error) };
   } finally {
     actionPending = false;
   }
@@ -316,9 +389,16 @@ get("check").addEventListener("click", () => {
   void runAction(currentSnapshot?.running ? "check_components" : "retry_component_startup");
 });
 
+get("import-local-bamboo").addEventListener("click", () => {
+  if (get("import-local-bamboo").disabled) return;
+  void runAction(importBambooCommand);
+});
+
 get("retry-restart").addEventListener("click", () => {
   const queued = currentSnapshot?.queued;
-  if (queued != null) void runAction("apply_component_update", { sequence: queued });
+  if (queued != null && !get("retry-restart").disabled) {
+    void runAction("apply_component_update", { sequence: queued, identity: null });
+  }
 });
 
 get("rollback-lotus").addEventListener("click", () => {
@@ -418,6 +498,48 @@ get("check-interval-settings").addEventListener("submit", async (event) => {
     checkIntervalSaving = false;
     showCheckIntervalState();
   }
+});
+
+async function runGithubTokenAction(command, successKey, args) {
+  githubTokenPending = true;
+  githubTokenFeedback = null;
+  renderGithubToken();
+  try {
+    await invoke(command, args);
+    githubTokenFeedback = { key: successKey };
+  } catch (error) {
+    const key = typeof error === "string" && Object.hasOwn(githubTokenErrors, error)
+      ? githubTokenErrors[error] : "githubToken.operationFailed";
+    githubTokenFeedback = { key, error: true };
+  } finally {
+    githubTokenPending = false;
+    renderGithubToken();
+  }
+}
+
+const githubTokenInput = get("github-token");
+githubTokenInput.addEventListener("input", () => {
+  githubTokenFeedback = null;
+  renderGithubToken();
+});
+
+get("github-token-settings").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (get("save-github-token").disabled) return;
+  const token = githubTokenInput.value.trim();
+  githubTokenInput.value = "";
+  void runGithubTokenAction("save_github_update_token", "githubToken.saved", { token });
+});
+
+get("test-github-token").addEventListener("click", () => {
+  if (get("test-github-token").disabled) return;
+  void runGithubTokenAction("test_github_update_token", "githubToken.tested");
+});
+
+get("remove-github-token").addEventListener("click", () => {
+  if (get("remove-github-token").disabled) return;
+  githubTokenInput.value = "";
+  void runGithubTokenAction("remove_github_update_token", "githubToken.removed");
 });
 
 void i18n.sync().then(refresh);

@@ -68,10 +68,10 @@ profile and checks Bamboo's live Bootstrap capabilities against the Lotus
 frontend requirements. One verified selection can be staged for restart at a
 time. The shell rechecks the official release identity before shutdown and the
 replacement's Bootstrap before recording activation. The active verified
-components can start offline. Choose **Restart and update**
-after long-running work finishes. Bodhi requests Bamboo's normal shutdown, waits
-for the owned process to release its profile lease and port, then reopens and
-checks the effective Bamboo and Lotus versions.
+components can start offline. Choose **Update Bamboo** for Bamboo-only updates
+or **Restart and update** for other component updates after long-running work
+finishes. Bodhi requests Bamboo's normal shutdown, waits for the owned process
+to release the profile lease and port, then verifies the effective versions.
 
 For a one-click switch, choose **Update and restart now** for any downloaded,
 verified target that is still eligible. A Bamboo process with immediate
@@ -96,6 +96,53 @@ If an approved update is queued and shutdown takes longer than the wait, use
 update. Unix kernels without the managed shutdown channel use Bamboo's SIGTERM
 shutdown. Automatic restart on Windows requires a kernel that supports the
 managed shutdown channel.
+
+## Updating Bamboo in the same Bodhi window
+
+A Bamboo-only update keeps the Bodhi process and its windows. Bodhi prepares
+the files and checks the replacement before opening its built-in transition
+page. It hands off sessions through the managed local control channel when
+available, waits for the old process to release the writer and port, and
+starts the exact verified Bamboo at the same loopback origin. During the
+switch it uses the local component cache.
+
+After verifying the new process and Lotus resources, Bodhi reconnects the
+main window to its previous workspace route and resumes eligible saved sessions.
+The update window distinguishes shutdown, startup, reconnecting and session
+recovery. If a handoff fails after shutdown has begun, open **Versions and
+Updates** and use **Retry Bamboo update**. If the old process exits without
+confirming the handoff, Bodhi can restore the verified original release before
+a replacement trial begins. A profile already opened by a newer Bamboo keeps
+its minimum-version guard. Session recovery requires a valid checkpoint.
+
+Lotus reloads its document when the workspace returns. Recovery for an unsent
+composer draft is developed in [Lotus Next #737](https://github.com/bigduu/lotus-next/issues/737).
+
+## GitHub credentials for Bamboo update checks
+
+In **Versions and Updates**, optionally save a personal GitHub token for the
+Bamboo release check. A fine-grained token with public repository read access
+is sufficient. Use **Test token** to check it through the current proxy route.
+Bodhi sends it only to the official GitHub REST endpoint for Bamboo release
+and tag metadata. The official downloads and configured mirrors use separate
+requests. A GitHub rate-limit response gives a retry time. Changing or removing
+the token clears that cooldown.
+
+Bodhi shows whether the token is stored in macOS Keychain or Windows Credential
+Manager, or held only for the current session. Linux uses session storage in
+the running Bodhi process. Use **Remove token** to return to anonymous checks.
+
+## Importing a Bamboo update from local files
+
+If the GitHub Release API is unavailable, download three files from the same [official Bamboo release](https://github.com/bigduu/Bamboo-agent/releases) into one folder:
+
+- `bamboo-sidecars-v3.json`
+- `bamboo-<target>` (add `.exe` on Windows)
+- `bamboo-browser-runtime-v1-<target>.tar.gz`
+
+On Apple Silicon, the target is `aarch64-apple-darwin`. In **Versions and Updates**, choose **Import local update…** in the Bamboo panel and select `bamboo-sidecars-v3.json`.
+
+Bodhi reads the two small official release manifests over HTTPS, using the configured **Proxy URL** if present. This skips the GitHub REST API and reads the executable and browser runtime from the selected local folder. **Download source** controls automatic artifact downloads. It is independent of **Proxy URL** and does not route release metadata. Import verifies each local file against the official release and checks compatibility with the running Lotus Next. After verification, choose **Restart and update** when ready. A verified import can be applied without internet access.
 
 ## Rolling back Lotus Next
 

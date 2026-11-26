@@ -140,7 +140,7 @@ fn request_legacy_shutdown(child: &SharedChild) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn request_legacy_shutdown(_: &SharedChild) -> Result<(), String> {
-    Err("This Bamboo version needs a manual restart. Finish your work, then close and reopen Bodhi to apply the downloaded update.".into())
+    Err("This Bamboo version does not support graceful managed shutdown on Windows. Finish your work before using the forced update action.".into())
 }
 
 impl SidecarState {
@@ -203,6 +203,28 @@ impl SidecarState {
             .map_err(|error| error.to_string())?
             .clone()
             .ok_or("Bodhi does not own a Bamboo process.".into())
+    }
+
+    pub(crate) fn owned_startup_status(&self) -> Result<StartupStatus, String> {
+        let child = self.owned_child()?;
+        if child
+            .process
+            .try_wait()
+            .map_err(|error| error.to_string())?
+            .is_some()
+            || !child.startup.is_ready()
+        {
+            return Err("The owned Bamboo process is not ready".into());
+        }
+        Ok(child.startup.clone())
+    }
+
+    pub(crate) fn owned_has_exited(&self) -> Result<bool, String> {
+        self.owned_child()?
+            .process
+            .try_wait()
+            .map(|exit| exit.is_some())
+            .map_err(|error| error.to_string())
     }
 
     /// Stop this exact child through the server's normal cleanup path.

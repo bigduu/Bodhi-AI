@@ -32,9 +32,18 @@
     .component-controls select { min-width: 0; max-width: 100%; }
     .component-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .component-actions[hidden], #phase:empty, .component-phase:empty, #last-check:empty { display: none; }
+    #phase[data-switching] { display: flex; align-items: center; gap: 8px; min-height: 1.5em; }
+    #phase[data-switching]::before {
+      content: ""; flex: 0 0 auto; width: .8em; height: .8em; border: 2px solid #454c57;
+      border-top-color: #c2dcff; border-radius: 50%; animation: switch-spin .9s linear infinite;
+    }
+    @keyframes switch-spin { to { transform: rotate(1turn); } }
+    @media (prefers-reduced-motion: reduce) {
+      #phase[data-switching]::before { animation: none; }
+    }
     .force-warning { color: #f3cd92; }
-    .component-rollback { border-top: 1px solid #353a44; margin-top: 12px; padding-top: 12px; }
-    #rollback-lotus-hint { display: block; margin-top: 8px; }
+    .component-import, .component-rollback { border-top: 1px solid #353a44; margin-top: 12px; padding-top: 12px; }
+    #bamboo-import-hint, #rollback-lotus-hint { display: block; margin-top: 8px; }
     details { margin-top: 12px; }
     summary { cursor: pointer; color: #c2dcff; }
     #retry-restart { margin-bottom: 16px; }
@@ -62,7 +71,7 @@
     <p class="shell-version">Bodhi <span id="bodhi">—</span></p>
     <small id="last-check"></small>
   </div>
-  <p id="phase" role="status"></p>
+  <p id="phase" role="status" aria-atomic="true"></p>
   <p id="error" class="error" role="alert" hidden></p>
   <div id="download" hidden>
     <progress id="progress" aria-label="Download progress" data-i18n-label="progress.label"></progress>
@@ -75,6 +84,11 @@
         <dt data-i18n="updates.installedVersion">Installed version</dt><dd id="bamboo">—</dd>
       </dl>
       <div class="component-controls" data-part="controls"></div>
+      <div id="bamboo-import" class="component-import" hidden>
+        <button id="import-local-bamboo" class="secondary" type="button" data-i18n="updates.importLocalBamboo"
+          aria-describedby="bamboo-import-hint" disabled>Import local update…</button>
+        <small id="bamboo-import-hint" data-i18n="updates.importLocalBambooHint">From the same official Bamboo release, put bamboo-sidecars-v3.json, the executable and the browser runtime archive for this platform in one folder. Then select the manifest.</small>
+      </div>
     </section>
     <section data-update-kind="lotus" aria-labelledby="lotus-title">
       <h2 id="lotus-title">Lotus Next</h2>
@@ -94,6 +108,7 @@
     <div class="component-controls" data-part="controls"></div>
   </section>
   <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
+  <p id="bamboo-restart-hint" data-i18n="updates.confirmBambooBody" hidden></p>
   <button id="retry-restart" type="button" data-i18n="updates.retryRestart" aria-describedby="restart-hint" hidden>Retry restart</button>
   <section aria-labelledby="check-interval-title">
     <h2 id="check-interval-title" data-i18n="updates.autoCheckSettings">Automatic checks</h2>
@@ -111,6 +126,26 @@
           <button id="save-check-interval" type="submit" data-i18n="updates.saveCheckInterval" disabled>Save interval</button>
           <small id="check-interval-status" role="status"></small>
         </div>
+      </fieldset>
+    </form>
+  </section>
+  <section aria-labelledby="github-token-title">
+    <h2 id="github-token-title" data-i18n="githubToken.title">Bamboo update authentication</h2>
+    <form id="github-token-settings" autocomplete="off">
+      <fieldset id="github-token-fields" disabled>
+        <div class="setting">
+          <label for="github-token" data-i18n="githubToken.label">GitHub token (optional)</label>
+          <input type="password" id="github-token" autocomplete="off" maxlength="512"
+            aria-describedby="github-token-hint github-token-state" spellcheck="false" autocapitalize="none">
+          <small id="github-token-hint" data-i18n="githubToken.hint">Use a fine-grained token with read-only access to public repositories. Bodhi uses it to check Bamboo releases on api.github.com.</small>
+          <small id="github-token-state"></small>
+        </div>
+        <div class="settings-footer">
+          <button id="save-github-token" type="submit" data-i18n="githubToken.save" disabled>Save token</button>
+          <button id="test-github-token" class="secondary" type="button" data-i18n="githubToken.test" disabled>Test connection</button>
+          <button id="remove-github-token" class="secondary" type="button" data-i18n="githubToken.remove" disabled>Remove token</button>
+        </div>
+        <small id="github-token-status" role="status" aria-atomic="true" hidden></small>
       </fieldset>
     </form>
   </section>

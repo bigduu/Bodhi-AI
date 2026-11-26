@@ -1,5 +1,7 @@
+use super::github_token::GitHubUpdateCredentials;
 use super::{
-    bamboo_release, lotus_release, Combination, LotusRelease, ReleaseCheckError, UpdateKind,
+    bamboo_release, lotus_release, BambooRelease, Combination, LotusRelease, ReleaseCheckError,
+    UpdateKind,
 };
 use crate::component_download::DownloadSettings;
 use semver::Version;
@@ -8,9 +10,11 @@ use std::cmp::Ordering;
 pub(crate) struct Discovery {
     pub offers: Vec<Combination>,
     pub failures: Vec<String>,
+    pub bamboo_download_changed: bool,
 }
 
 pub(crate) async fn discover(
+    credentials: &GitHubUpdateCredentials,
     settings: &DownloadSettings,
     current: &Combination,
     downloaded: Option<&Combination>,
@@ -19,23 +23,10 @@ pub(crate) async fn discover(
     legacy_lotus: impl FnOnce(&LotusRelease) -> bool,
 ) -> Discovery {
     let (bamboo, lotus) = tokio::join!(
-        bamboo_release::load_latest(settings),
+        bamboo_release::load_latest(credentials, settings),
         lotus_release::discover_lotus(settings, None),
     );
-    let bamboo = bamboo.and_then(|(release, changes)| {
-        if !is_newer(
-            &current.bamboo,
-            &current.bamboo.version,
-            &release,
-            &release.version,
-        )? {
-            return Ok(None);
-        }
-        let mut pair = next_pair(current, 1)?;
-        pair.bamboo = release;
-        pair.changes.bamboo = changes;
-        Ok(Some(pair))
-    });
+    let bamboo = bamboo.and_then(|(release, changes)| bamboo_offer(current, release, changes));
     let lotus = lotus.map_err(String::from).and_then(|found| {
         if rolled_back_lotus.is_some_and(|recorded| {
             recorded.version == found.release.version && recorded != &found.release
@@ -63,6 +54,25 @@ pub(crate) async fn discover(
     collect(current, downloaded, suppressed_lotus, bamboo, lotus)
 }
 
+pub(crate) fn bamboo_offer(
+    current: &Combination,
+    release: BambooRelease,
+    changes: Vec<String>,
+) -> Result<Option<Combination>, String> {
+    if !is_newer(
+        &current.bamboo,
+        &current.bamboo.version,
+        &release,
+        &release.version,
+    )? {
+        return Ok(None);
+    }
+    let mut pair = next_pair(current, 1)?;
+    pair.bamboo = release;
+    pair.changes.bamboo = changes;
+    Ok(Some(pair))
+}
+
 fn collect(
     current: &Combination,
     downloaded: Option<&Combination>,
@@ -73,6 +83,7 @@ fn collect(
     let mut discovery = Discovery {
         offers: Vec::new(),
         failures: Vec::new(),
+        bamboo_download_changed: false,
     };
     let mut retained = downloaded.filter(|pair| retain_download(current, pair, suppressed_lotus));
     for (name, result) in [("Bamboo", bamboo), ("Lotus Next", lotus)] {
@@ -94,6 +105,8 @@ fn collect(
                             discovery.failures.push(format!(
                                 "{name} changed the identity of a downloaded release"
                             ));
+                            discovery.bamboo_download_changed =
+                                pair.update_kind(current) == Some(UpdateKind::Bamboo);
                             retained = None;
                         }
                         continue;
@@ -181,6 +194,7 @@ fn next_pair(current: &Combination, offset: u64) -> Result<Combination, String> 
 }
 
 pub(crate) async fn reconfirm(
+    credentials: &GitHubUpdateCredentials,
     settings: &DownloadSettings,
     current: &Combination,
     selected: &Combination,
@@ -193,7 +207,7 @@ pub(crate) async fn reconfirm(
     }
     let matches = match selected.update_kind(current) {
         Some(UpdateKind::Bamboo) => {
-            bamboo_release::load_version(settings, &selected.bamboo)
+            bamboo_release::load_version(credentials, settings, &selected.bamboo)
                 .await?
                 .0
                 == selected.bamboo
@@ -254,6 +268,7 @@ mod tests {
         rewritten.bamboo.manifest.sha256 = "f".repeat(64);
         let result = collect(&active, Some(&staged), None, Ok(Some(rewritten)), Ok(None));
         assert!(result.offers.is_empty());
+        assert!(result.bamboo_download_changed);
         assert_eq!(result.failures.len(), 1);
     }
 

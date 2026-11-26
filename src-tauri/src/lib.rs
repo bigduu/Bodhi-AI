@@ -554,8 +554,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .enable_macos_default_menu(false)
-        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |context, _| {
-            bamboo_update_page::response(i18n::active(context.app_handle()))
+        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |context, request| {
+            bamboo_update_page::respond(
+                context.app_handle(),
+                context.webview_label(),
+                request.uri(),
+            )
         })
         .append_invoke_initialization_script(
             if component_startup::enabled() || frontend::uses_managed_frontend() {
@@ -647,6 +651,7 @@ pub fn run() {
             component_startup::updates::component_snapshot,
             component_startup::updates::check_components,
             component_startup::updates::download_component_update,
+            component_startup::updates::import_local_bamboo_update,
             component_startup::updates::set_component_version_skipped,
             component_startup::updates::apply_component_update,
             component_startup::updates::force_component_update,
@@ -656,6 +661,9 @@ pub fn run() {
             component_startup::updates::open_component_updates,
             component_startup::updates::set_component_download_settings,
             component_startup::updates::set_component_check_interval,
+            component_startup::updates::save_github_update_token,
+            component_startup::updates::test_github_update_token,
+            component_startup::updates::remove_github_update_token,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

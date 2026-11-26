@@ -1,5 +1,6 @@
 //! Plan and record startup of an authenticated component combination.
 mod journal;
+mod kernel_switch;
 mod planned_restart;
 mod producer_compatibility;
 pub(crate) mod updates;
@@ -11,11 +12,13 @@ use crate::component_download::{while_selected, DownloadSettings};
 use crate::component_kernel::{self, VerifiedKernel};
 use crate::frontend::VerifiedFrontend;
 use journal::Journal;
+use kernel_switch::KernelSwitch;
 use planned_restart::PlannedRestart;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{AppHandle, Manager as _, Runtime};
+use tauri::{AppHandle, Manager as _, Runtime, WebviewWindow};
 use tokio::sync::watch;
 
 pub(crate) fn enabled() -> bool {
@@ -27,6 +30,7 @@ pub(crate) struct Manager {
     settings: watch::Sender<DownloadSettings>,
     auto_check_hours: watch::Sender<u16>,
     updates: updates::Updates,
+    kernel_switch: Mutex<Option<Arc<KernelSwitch>>>,
 }
 
 struct Prepared {
@@ -44,6 +48,7 @@ impl Manager {
             settings,
             auto_check_hours,
             updates: updates::Updates::default(),
+            kernel_switch: Mutex::new(None),
         })
     }
 
@@ -136,6 +141,10 @@ impl Manager {
         if pair.lotus != active.lotus {
             self.prepare_lotus(pair).await?;
         }
+        self.prove_prepared_update(pair).await
+    }
+
+    async fn prove_prepared_update(&self, pair: &Combination) -> Result<(), String> {
         let prepared = self.reopen_prepared(pair).await?;
         if pair.producer_release {
             producer_compatibility::prove_pair(&prepared.kernel, &prepared.frontend, &pair.lotus)
@@ -280,6 +289,9 @@ impl Manager {
             self.launch_component(app, port, &active, false).await?;
             rollback_error = Some(error);
         }
+        self.updates
+            .unconfirmed_handoff
+            .store(unconfirmed, Ordering::Release);
         if unconfirmed {
             self.updates.status(updates::Phase::RestartFailed, Some(
                 "The prior Bamboo did not confirm a safe shutdown. Your current version is running, and the saved sessions are still pending recovery.".into(),
@@ -288,27 +300,43 @@ impl Manager {
             self.updates.status(updates::Phase::Ready, rollback_error);
         }
         if let Some(handoff) = handoff {
-            self.updates.restoring.store(true, Ordering::Release);
-            let handle = app.clone();
-            tauri::async_runtime::spawn(async move {
-                let manager = handle.state::<Self>();
-                let runtime = handle.state::<crate::sidecar::SidecarState>();
-                loop {
-                    match manager.resume_planned_restart(&runtime, &handoff).await {
-                        Ok(()) => {
-                            manager.updates.restoring.store(false, Ordering::Release);
-                            manager.updates.status(updates::Phase::Ready, None);
-                            break;
-                        }
-                        Err(error) => {
-                            manager.updates.status(updates::Phase::Ready, Some(error));
-                            tokio::time::sleep(Duration::from_secs(10)).await;
-                        }
-                    }
-                }
-            });
+            self.restore_sessions(app, handoff, updates::Phase::Ready, None);
         }
         Ok(())
+    }
+
+    fn restore_sessions<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        handoff: PlannedRestart,
+        phase: updates::Phase,
+        warning: Option<String>,
+    ) {
+        self.updates.restoring.store(true, Ordering::Release);
+        self.updates.status(phase, warning.clone());
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let started = std::time::Instant::now();
+            let manager = handle.state::<Self>();
+            let runtime = handle.state::<crate::sidecar::SidecarState>();
+            loop {
+                match manager.resume_planned_restart(&runtime, &handoff).await {
+                    Ok(()) => {
+                        log::info!(
+                            "Bamboo session recovery completed after {:?}",
+                            started.elapsed()
+                        );
+                        manager.updates.restoring.store(false, Ordering::Release);
+                        manager.updates.status(updates::Phase::Ready, warning);
+                        break;
+                    }
+                    Err(error) => {
+                        manager.updates.status(phase, Some(error));
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                    }
+                }
+            }
+        });
     }
 
     async fn launch_component<R: Runtime>(
@@ -323,6 +351,22 @@ impl Manager {
         } else {
             self.prepare(pair).await?
         };
+        let window = app
+            .get_webview_window("main")
+            .ok_or("Bodhi's main window is unavailable")?;
+        self.launch_prepared(app, port, pair, &prepared, rollback, Some(&window))
+            .await
+    }
+
+    async fn launch_prepared<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        port: u16,
+        pair: &Combination,
+        prepared: &Prepared,
+        rollback: bool,
+        workspace: Option<&WebviewWindow<R>>,
+    ) -> Result<(), String> {
         self.updates.status(updates::Phase::Starting, None);
         let writer = self.profile.writer()?;
         let command = crate::sidecar::command(
@@ -331,45 +375,18 @@ impl Manager {
             &self.profile.data,
             prepared.frontend.static_dir.as_deref(),
             Some(&prepared.kernel.executable),
-            prepared.browser,
+            prepared.browser.clone(),
         )?;
         let runtime = app.state::<crate::sidecar::SidecarState>();
-        let window = app
-            .get_webview_window("main")
-            .ok_or("Bodhi's main window is unavailable")?;
         self.begin(pair)?;
         let outcome = async {
             let status = runtime.start(command, writer, port, Some(&self.profile.state_dir))?;
-            crate::sidecar::wait_for_health(
-                port,
-                60,
-                Some(&status),
-                prepared.frontend.index_hash.as_deref(),
-            )
-            .await?;
-            let actual = crate::sidecar::owned_version(port, &status).await?;
-            if actual != prepared.kernel.version {
-                return Err(
-                    "The running Bamboo differs from the approved component release".into(),
-                );
+            verify_owned_component(port, &status, pair, prepared, 60).await?;
+            if let Some(window) = workspace {
+                let url = workspace_url(port, prepared)?;
+                window.navigate(url).map_err(|error| error.to_string())?;
             }
-            if pair.producer_release {
-                producer_compatibility::prove_live_pair(
-                    port,
-                    &status,
-                    &prepared.kernel.version,
-                    &prepared.frontend,
-                    &pair.lotus,
-                )
-                .await?;
-            }
-            let url = crate::ready_frontend_url(
-                true,
-                port,
-                None,
-                prepared.frontend.index_hash.as_deref(),
-            )?;
-            window.navigate(url).map_err(|error| error.to_string())
+            Ok(())
         }
         .await;
         let result = if rollback && outcome.is_err() {
@@ -415,6 +432,40 @@ impl Manager {
         journal.queued = Some(update.candidate.clone());
         journal.save(&self.profile)
     }
+}
+
+fn workspace_url(port: u16, prepared: &Prepared) -> Result<tauri::Url, String> {
+    crate::ready_frontend_url(true, port, None, prepared.frontend.index_hash.as_deref())
+}
+
+async fn verify_owned_component(
+    port: u16,
+    owner: &crate::sidecar::StartupStatus,
+    pair: &Combination,
+    prepared: &Prepared,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    crate::sidecar::wait_for_health(
+        port,
+        timeout_secs,
+        Some(owner),
+        prepared.frontend.index_hash.as_deref(),
+    )
+    .await?;
+    if crate::sidecar::owned_version(port, owner).await? != prepared.kernel.version {
+        return Err("The running Bamboo differs from the approved component release".into());
+    }
+    if pair.producer_release {
+        producer_compatibility::prove_live_pair(
+            port,
+            owner,
+            &prepared.kernel.version,
+            &prepared.frontend,
+            &pair.lotus,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 #[derive(PartialEq, Eq)]
