@@ -10,6 +10,7 @@ const JOURNAL: &str = "components-v1.json";
 const DOWNLOAD_SETTINGS: &str = "component-download-settings-v1.json";
 const CHECK_INTERVAL: &str = "component-check-interval-v1.json";
 const VERIFIED_DOWNLOAD: &str = "component-verified-download-v1.json";
+const LOCAL_BAMBOO_DOWNLOAD: &str = "component-local-bamboo-download-v1.json";
 const SKIPPED_VERSIONS: &str = "component-skipped-versions-v1.json";
 const MAX_STATE: u64 = 2 * 1024 * 1024;
 const HISTORY_LIMIT: usize = 40;
@@ -159,7 +160,43 @@ pub(super) fn read_downloaded(profile: &Profile) -> Result<Option<Combination>, 
 }
 
 pub(super) fn save_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
+    save_json(profile, VERIFIED_DOWNLOAD, pair)?;
+    clear_local_bamboo_receipt(profile);
+    Ok(())
+}
+
+pub(super) fn save_local_bamboo_download(
+    profile: &Profile,
+    pair: &Combination,
+    identity: &str,
+) -> Result<(), String> {
+    save_json(profile, LOCAL_BAMBOO_DOWNLOAD, &identity)?;
     save_json(profile, VERIFIED_DOWNLOAD, pair)
+}
+
+pub(super) fn matches_local_bamboo_download(
+    profile: &Profile,
+    pair: &Combination,
+    identity: &str,
+) -> Result<bool, String> {
+    if read_downloaded(profile)?.as_ref() != Some(pair) {
+        return Ok(false);
+    }
+    match read_json::<String>(profile, LOCAL_BAMBOO_DOWNLOAD) {
+        Ok(receipt) => Ok(receipt.as_deref() == Some(identity)),
+        Err(_) => {
+            log::warn!("Unreadable local Bamboo import receipt. Checking the official producer.");
+            Ok(false)
+        }
+    }
+}
+
+fn clear_local_bamboo_receipt(profile: &Profile) {
+    if let Err(error) = fs::remove_file(profile.state_dir.join(LOCAL_BAMBOO_DOWNLOAD)) {
+        if error.kind() != io::ErrorKind::NotFound {
+            log::warn!("Cannot remove the local Bamboo import receipt: {error}");
+        }
+    }
 }
 
 pub(super) fn read_skipped(profile: &Profile) -> Result<Vec<PairIdentity>, String> {
@@ -173,6 +210,7 @@ pub(super) fn save_skipped(profile: &Profile, pairs: &[PairIdentity]) -> Result<
 pub(super) fn clear_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
     if read_downloaded(profile)?.as_ref() == Some(pair) {
         fs::remove_file(profile.state_dir.join(VERIFIED_DOWNLOAD)).map_err(|e| e.to_string())?;
+        clear_local_bamboo_receipt(profile);
     }
     Ok(())
 }

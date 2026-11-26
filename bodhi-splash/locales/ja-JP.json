@@ -125,6 +125,8 @@
   "updates.autoCheckHint": "0 にすると、手動でのみ確認します。",
   "updates.saveCheckInterval": "間隔を保存",
   "updates.checkIntervalSaved": "確認間隔を保存しました。",
+  "updates.importLocalBamboo": "ローカルの更新を読み込む…",
+  "updates.importLocalBambooHint": "同じ Bamboo 公式リリースの bamboo-sidecars-v3.json、実行ファイル、このプラットフォーム向けのブラウザーランタイムのアーカイブを同じフォルダーに入れてから、マニフェストを選択してください。",
   "updates.installedVersion": "インストール済みバージョン",
   "updates.noCompatibleUpdate": "個別のアップデートはありません",
   "updates.targetVersion": "更新先バージョン",

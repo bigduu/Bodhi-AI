@@ -7,6 +7,8 @@ use reqwest::{Client, Url};
 use serde::{de::DeserializeOwned, Deserialize};
 use sha2::{Digest, Sha256};
 use std::future::Future;
+use std::io::Read;
+use std::path::Path;
 use std::time::Duration;
 
 const API: &str = "https://api.github.com/repos/bigduu/Bamboo-agent";
@@ -200,14 +202,33 @@ async fn get_json<T: DeserializeOwned>(
 }
 
 fn verify_manifest_bytes(bytes: &[u8], identity: &Asset, name: &str) -> Result<(), String> {
-    if bytes.len() as u64 != identity.size_bytes
-        || format!("{:x}", Sha256::digest(bytes)) != identity.sha256
-    {
+    if &manifest_identity(bytes) != identity {
         return Err(format!(
             "Bamboo {name} bytes differ from the published identity"
         ));
     }
     Ok(())
+}
+
+fn manifest_identity(bytes: &[u8]) -> Asset {
+    Asset {
+        sha256: format!("{:x}", Sha256::digest(bytes)),
+        size_bytes: bytes.len() as u64,
+    }
+}
+
+async fn download_manifest_bytes(
+    client: &Client,
+    address: Url,
+    limit: u64,
+    name: &str,
+) -> Result<Vec<u8>, ReleaseCheckError> {
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        read_limited(client, address, limit as usize, name),
+    )
+    .await
+    .map_err(|_| ReleaseCheckError::Unavailable(format!("Timed out reading Bamboo {name}")))?
 }
 
 async fn download_manifest<T: DeserializeOwned>(
@@ -217,12 +238,7 @@ async fn download_manifest<T: DeserializeOwned>(
 ) -> Result<(Asset, T), ReleaseCheckError> {
     let identity = release.asset(name, 1, MANIFEST_LIMIT)?;
     let address = url(&release.asset_url(name))?;
-    let bytes = tokio::time::timeout(
-        Duration::from_secs(30),
-        read_limited(client, address, identity.size_bytes as usize, name),
-    )
-    .await
-    .map_err(|_| ReleaseCheckError::Unavailable(format!("Timed out reading Bamboo {name}")))??;
+    let bytes = download_manifest_bytes(client, address, identity.size_bytes, name).await?;
     verify_manifest_bytes(&bytes, &identity, name)?;
     Ok((identity, parse(&bytes, name)?))
 }
@@ -264,13 +280,15 @@ async fn tag_revision(
     Ok(sha)
 }
 
-fn browser_host(release: &GitHubRelease, host: BrowserHost) -> Result<Asset, String> {
+fn browser_host(host: BrowserHost) -> Result<Asset, String> {
     let mut paths = host.files.each_ref().map(|file| file.path.as_str());
     paths.sort_unstable();
-    let published = release.asset(BROWSER_HOST, 1, BROWSER_HOST_LIMIT)?;
+    let identity = Asset {
+        sha256: host.sha256,
+        size_bytes: host.size_bytes,
+    };
     if host.asset_name != BROWSER_HOST
-        || host.sha256 != published.sha256
-        || host.size_bytes != published.size_bytes
+        || !asset(&identity, 1, BROWSER_HOST_LIMIT)
         || paths != BROWSER_HOST_FILES
         || host.files.iter().any(|file| {
             !hex(&file.sha256, 64) || !(1..=BROWSER_HOST_LIMIT).contains(&file.size_bytes)
@@ -278,26 +296,27 @@ fn browser_host(release: &GitHubRelease, host: BrowserHost) -> Result<Asset, Str
     {
         return Err("Invalid Bamboo browser host inventory".into());
     }
-    Ok(published)
+    Ok(identity)
 }
 
 fn native_artifact(
-    release: &GitHubRelease,
     target: &str,
     sidecar: SidecarArtifact,
     runtime: BrowserRuntimeEntry,
 ) -> Result<NativeArtifact, String> {
     let asset_name = native_asset_name(target);
     let runtime_asset_name = format!("bamboo-browser-runtime-v1-{target}.tar.gz");
-    let executable = release.asset(&asset_name, 65_536, EXECUTABLE_LIMIT)?;
-    let archive = release.asset(&runtime_asset_name, 1, RUNTIME_LIMIT)?;
+    let executable = Asset {
+        sha256: sidecar.sha256,
+        size_bytes: sidecar.size_bytes,
+    };
+    let archive = runtime.archive;
     if sidecar.target != target
         || sidecar.asset_name != asset_name
         || sidecar.build_mode != "embedded"
         || !sidecar.embedded_frontend
         || sidecar.format != "raw"
-        || sidecar.sha256 != executable.sha256
-        || sidecar.size_bytes != executable.size_bytes
+        || !asset(&executable, 65_536, EXECUTABLE_LIMIT)
         || sidecar
             .binary_name
             .as_ref()
@@ -311,7 +330,7 @@ fn native_artifact(
             .is_some_and(|size| size != executable.size_bytes)
         || runtime.target != target
         || runtime.asset_name != runtime_asset_name
-        || runtime.archive != archive
+        || !asset(&archive, 1, RUNTIME_LIMIT)
         || !hex(&runtime.receipt_sha256, 64)
     {
         return Err(format!(
@@ -338,6 +357,18 @@ fn verified_release(
     sidecars: SidecarManifest,
     runtime: BrowserRuntimeManifest,
 ) -> Result<BambooRelease, String> {
+    let verified = verify_manifests(version, source_revision, manifest, sidecars, runtime)?;
+    verify_selected_assets(release, &verified)?;
+    Ok(verified)
+}
+
+fn verify_manifests(
+    version: &str,
+    source_revision: String,
+    manifest: Asset,
+    sidecars: SidecarManifest,
+    runtime: BrowserRuntimeManifest,
+) -> Result<BambooRelease, String> {
     if !hex(&source_revision, 40)
         || sidecars.schema_version != 3
         || sidecars.version != version
@@ -346,11 +377,11 @@ fn verified_release(
     {
         return Err("Bamboo manifests do not match the tagged release".into());
     }
-    let host = browser_host(release, sidecars.browser_host)?;
+    let host = browser_host(sidecars.browser_host)?;
     let artifacts = NATIVE_TARGETS
         .into_iter()
         .zip(sidecars.artifacts.into_iter().zip(runtime.artifacts))
-        .map(|(target, (sidecar, browser))| native_artifact(release, target, sidecar, browser))
+        .map(|(target, (sidecar, browser))| native_artifact(target, sidecar, browser))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(BambooRelease {
         version: version.to_owned(),
@@ -359,6 +390,63 @@ fn verified_release(
         browser_host: host,
         artifacts,
     })
+}
+
+fn verify_manual_manifests(
+    version: &str,
+    sidecar_bytes: &[u8],
+    runtime_bytes: &[u8],
+) -> Result<BambooRelease, String> {
+    let sidecars: SidecarManifest = parse(sidecar_bytes, SIDECARS)?;
+    verify_manifests(
+        version,
+        sidecars.source_revision.clone(),
+        manifest_identity(sidecar_bytes),
+        sidecars,
+        parse(runtime_bytes, BROWSER_RUNTIMES)?,
+    )
+}
+
+/// Read the publisher's manifests from the exact public release asset URLs.
+pub(crate) async fn load_manual_bamboo_release(
+    settings: &DownloadSettings,
+    version: &str,
+) -> Result<BambooRelease, ReleaseCheckError> {
+    if bamboo_version(version).is_none() {
+        return Err("Invalid Bamboo stable release version".into());
+    }
+    let origin = url(RELEASES)?;
+    let client = settings.artifact_client(&origin, &origin)?;
+    let sidecar_address = url(&format!("{RELEASES}/v{version}/{SIDECARS}"))?;
+    let runtime_address = url(&format!("{RELEASES}/v{version}/{BROWSER_RUNTIMES}"))?;
+    let (sidecars, runtime) = tokio::try_join!(
+        download_manifest_bytes(&client, sidecar_address, MANIFEST_LIMIT, SIDECARS),
+        download_manifest_bytes(&client, runtime_address, MANIFEST_LIMIT, BROWSER_RUNTIMES)
+    )?;
+    Ok(verify_manual_manifests(version, &sidecars, &runtime)?)
+}
+
+/// Read the local manifest's version hint and identity for a later exact match.
+pub(crate) fn read_local_bamboo_manifest(path: &Path) -> Result<(String, Asset), String> {
+    let read_error =
+        |error: std::io::Error| format!("Cannot read local Bamboo {SIDECARS}: {error}");
+    let file = crate::component_download::open_local_file(path).map_err(read_error)?;
+    let metadata = file.metadata().map_err(read_error)?;
+    if metadata.len() > MANIFEST_LIMIT {
+        return Err("The local Bamboo manifest exceeds its size limit".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MANIFEST_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(read_error)?;
+    if bytes.len() as u64 > MANIFEST_LIMIT {
+        return Err("The local Bamboo manifest exceeds its size limit".into());
+    }
+    let manifest: SidecarManifest = parse(&bytes, SIDECARS)?;
+    if manifest.schema_version != 3 || bamboo_version(&manifest.version).is_none() {
+        return Err("Invalid local Bamboo v3 manifest version".into());
+    }
+    Ok((manifest.version, manifest_identity(&bytes)))
 }
 
 async fn load(
@@ -548,6 +636,90 @@ mod tests {
             parse(&serde_json::to_vec(&sidecars).unwrap(), SIDECARS)?,
             parse(&serde_json::to_vec(&browsers).unwrap(), BROWSER_RUNTIMES)?,
         )
+    }
+
+    #[test]
+    fn manual_release_uses_the_exact_tagged_manifests_for_every_target() {
+        let (_, _, sidecars, mut browsers) = fixture();
+        let sidecars = serde_json::to_vec(&sidecars).unwrap();
+        let identity = manifest_identity(&sidecars);
+        browsers["bambooManifestSha256"] = json!(identity.sha256);
+        let browsers = serde_json::to_vec(&browsers).unwrap();
+        let verified = verify_manual_manifests(VERSION, &sidecars, &browsers).unwrap();
+        assert_eq!(verified.version, VERSION);
+        assert_eq!(verified.source_revision, SOURCE);
+        assert_eq!(verified.manifest, identity);
+        assert_eq!(verified.artifacts.len(), ARTIFACT_COUNT);
+        assert_eq!(verified.artifacts[0].executable.sha256, SHA);
+        assert_eq!(
+            verified.artifacts[0]
+                .browser_runtime
+                .as_ref()
+                .unwrap()
+                .receipt_sha256,
+            SHA
+        );
+    }
+
+    #[test]
+    fn manual_release_rejects_mismatched_tags_revisions_targets_and_digests() {
+        let (_, _, sidecars, mut browsers) = fixture();
+        let sidecar_bytes = serde_json::to_vec(&sidecars).unwrap();
+        assert!(verify_manual_manifests(
+            VERSION,
+            &sidecar_bytes,
+            &serde_json::to_vec(&browsers).unwrap()
+        )
+        .is_err());
+        browsers["bambooManifestSha256"] = json!(manifest_identity(&sidecar_bytes).sha256);
+        let browser_bytes = serde_json::to_vec(&browsers).unwrap();
+        assert!(verify_manual_manifests("2026.11.46", &sidecar_bytes, &browser_bytes).is_err());
+
+        for (pointer, invalid) in [
+            ("/sourceRevision", json!("1".repeat(40))),
+            ("/artifacts/0/target", json!("unknown-target")),
+            ("/artifacts/0/archive/sizeBytes", json!(RUNTIME_LIMIT + 1)),
+            ("/artifacts/0/archive/sha256", json!("unexpected-digest")),
+            ("/artifacts/0/receiptSha256", json!("unexpected-receipt")),
+        ] {
+            let mut invalid_browsers = browsers.clone();
+            *invalid_browsers.pointer_mut(pointer).unwrap() = invalid;
+            assert!(
+                verify_manual_manifests(
+                    VERSION,
+                    &sidecar_bytes,
+                    &serde_json::to_vec(&invalid_browsers).unwrap()
+                )
+                .is_err(),
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_manifest_supplies_a_bounded_version_hint_and_exact_file_identity() {
+        let (_, _, mut sidecars, _) = fixture();
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = directory.path().join(SIDECARS);
+        let bytes = serde_json::to_vec(&sidecars).unwrap();
+        std::fs::write(&manifest, &bytes).unwrap();
+        assert_eq!(
+            read_local_bamboo_manifest(&manifest).unwrap(),
+            (VERSION.to_owned(), manifest_identity(&bytes))
+        );
+        assert!(read_local_bamboo_manifest(directory.path()).is_err());
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("linked.json");
+            std::os::unix::fs::symlink(&manifest, &link).unwrap();
+            assert!(read_local_bamboo_manifest(&link).is_err());
+        }
+        sidecars["version"] = json!("2026.11.47-rc.1");
+        std::fs::write(&manifest, serde_json::to_vec(&sidecars).unwrap()).unwrap();
+        assert!(read_local_bamboo_manifest(&manifest).is_err());
+        let file = std::fs::File::create(&manifest).unwrap();
+        file.set_len(MANIFEST_LIMIT + 1).unwrap();
+        assert!(read_local_bamboo_manifest(&manifest).is_err());
     }
 
     #[tokio::test(start_paused = true)]

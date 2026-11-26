@@ -136,6 +136,10 @@ impl Manager {
         if pair.lotus != active.lotus {
             self.prepare_lotus(pair).await?;
         }
+        self.prove_prepared_update(pair).await
+    }
+
+    async fn prove_prepared_update(&self, pair: &Combination) -> Result<(), String> {
         let prepared = self.reopen_prepared(pair).await?;
         if pair.producer_release {
             producer_compatibility::prove_pair(&prepared.kernel, &prepared.frontend, &pair.lotus)

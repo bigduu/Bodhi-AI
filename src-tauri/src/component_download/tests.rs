@@ -13,6 +13,56 @@ fn identity() -> Asset {
     }
 }
 
+#[test]
+fn imports_only_the_exact_local_payload_into_a_private_copy() {
+    let profile_dir = tempfile::tempdir().unwrap();
+    let source_dir = tempfile::tempdir().unwrap();
+    let profile = Profile::open(profile_dir.path()).unwrap();
+    let path = source_dir.path().join("bamboo-test-target.exe");
+    let expected = identity();
+    fs::write(&path, BODY).unwrap();
+
+    let mut staged = copy_local_asset(&profile, &path, &expected).unwrap();
+    assert!(staged.path().starts_with(&profile.state_dir));
+    assert_eq!(staged.path().extension().unwrap(), "exe");
+    fs::write(&path, b"abcdefghik").unwrap();
+    let mut bytes = Vec::new();
+    staged.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, BODY);
+    let error = copy_local_asset(&profile, &path, &expected).unwrap_err();
+    assert!(error.contains("SHA-256"), "{error}");
+
+    fs::write(&path, b"short").unwrap();
+    let error = copy_local_asset(&profile, &path, &expected).unwrap_err();
+    assert!(error.contains("unexpected file size"), "{error}");
+    fs::write(&path, b"abcdefghijk").unwrap();
+    let error = copy_local_asset(&profile, &path, &expected).unwrap_err();
+    assert!(error.contains("unexpected file size"), "{error}");
+}
+
+#[test]
+fn local_asset_open_rejects_a_directory() {
+    let directory = tempfile::tempdir().unwrap();
+    assert_eq!(
+        open_local_file(directory.path()).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn local_asset_open_rejects_a_symlink_to_an_otherwise_valid_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    let link = directory.path().join("link");
+    fs::write(&source, BODY).unwrap();
+    std::os::unix::fs::symlink(source, &link).unwrap();
+    assert_eq!(
+        open_local_file(&link).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+}
+
 async fn serve(responses: &[&'static str]) -> (Url, JoinHandle<Vec<String>>) {
     let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = Url::parse(&format!("http://{}/asset", server.local_addr().unwrap())).unwrap();

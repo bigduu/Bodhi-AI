@@ -97,6 +97,18 @@ update. Unix kernels without the managed shutdown channel use Bamboo's SIGTERM
 shutdown. Automatic restart on Windows requires a kernel that supports the
 managed shutdown channel.
 
+## Importing a Bamboo update from local files
+
+If the GitHub Release API is unavailable, download three files from the same [official Bamboo release](https://github.com/bigduu/Bamboo-agent/releases) into one folder:
+
+- `bamboo-sidecars-v3.json`
+- `bamboo-<target>` (add `.exe` on Windows)
+- `bamboo-browser-runtime-v1-<target>.tar.gz`
+
+On Apple Silicon, the target is `aarch64-apple-darwin`. In **Versions and Updates**, choose **Import local update…** in the Bamboo panel and select `bamboo-sidecars-v3.json`.
+
+Bodhi reads the two small official release manifests over HTTPS, using the configured **Proxy URL** if present. This skips the GitHub REST API and reads the executable and browser runtime from the selected local folder. **Download source** controls automatic artifact downloads. It is independent of **Proxy URL** and does not route release metadata. Import verifies each local file against the official release and checks compatibility with the running Lotus Next. After verification, choose **Restart and update** when ready. A verified import can be applied without internet access.
+
 ## Rolling back Lotus Next
 
 After a Lotus-only update becomes ready, Bodhi records the exact previous
