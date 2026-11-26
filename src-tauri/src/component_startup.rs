@@ -25,6 +25,7 @@ pub(crate) fn enabled() -> bool {
 pub(crate) struct Manager {
     profile: Profile,
     settings: watch::Sender<DownloadSettings>,
+    auto_check_hours: watch::Sender<u16>,
     updates: updates::Updates,
 }
 
@@ -37,14 +38,16 @@ struct Prepared {
 impl Manager {
     pub(crate) fn new(profile: Profile) -> Result<Self, String> {
         let (settings, _) = watch::channel(journal::read_settings(&profile)?);
+        let (auto_check_hours, _) = watch::channel(journal::read_check_hours(&profile)?);
         Ok(Self {
             profile,
             settings,
+            auto_check_hours,
             updates: updates::Updates::default(),
         })
     }
 
-    async fn load_catalog(&self) -> Result<VerifiedChannel, String> {
+    async fn load_catalog(&self) -> Result<VerifiedChannel, component_channel::ReleaseCheckError> {
         let mut settings = self.settings.subscribe();
         loop {
             let selected = settings.borrow_and_update().clone();

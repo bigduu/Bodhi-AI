@@ -1,13 +1,16 @@
 use super::{
     journal::{self, History, Journal, Versions},
+    planned_restart::RestartMode,
     Manager, SelectedUpdate,
 };
 use crate::component_channel::producer::{self, Discovery};
-use crate::component_channel::{Changes, Combination, PairIdentity, UpdateKind, VerifiedChannel};
+use crate::component_channel::{
+    Changes, Combination, PairIdentity, ReleaseCheckError, UpdateKind, VerifiedChannel,
+};
 use crate::component_download::{while_selected, DownloadSettings, DownloadSource};
 use crate::i18n::{self, Locale};
 use crate::sidecar::UpdateShutdownError;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -20,7 +23,8 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 pub(crate) const MENU_ID: &str = "component-updates";
 const PAGE: &str = "component-updates.html";
-const INTERVAL: Duration = Duration::from_secs(30 * 60);
+const REMINDER_DELAY: Duration = Duration::from_secs(30 * 60);
+const IMMEDIATE_RELEASE_CHECK: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub(super) struct Updates {
@@ -128,6 +132,7 @@ struct ForceOffer {
     sequence: u64,
     identity: String,
     shutdown_started: bool,
+    checkpointed: bool,
 }
 
 #[derive(Serialize)]
@@ -152,6 +157,7 @@ pub(crate) struct Snapshot {
     running: bool,
     queued: Option<u64>,
     settings: DownloadSettings,
+    auto_check_hours: u16,
     last_check: Option<String>,
     display: Display,
     offers: Vec<Offer>,
@@ -296,6 +302,7 @@ impl Manager {
                     force_update = Some(ForceOffer {
                         sequence: update.candidate.sequence,
                         identity: identity.clone(),
+                        checkpointed: false,
                         shutdown_started: self
                             .updates
                             .force_shutdown_started
@@ -329,6 +336,7 @@ impl Manager {
                     })
                     .map(|plan| plan.candidate.sequence)),
             settings: self.settings.borrow().clone(),
+            auto_check_hours: *self.auto_check_hours.borrow(),
             last_check: journal.last_check,
             display,
             offers,
@@ -349,31 +357,107 @@ impl Manager {
         Ok(())
     }
 
-    fn record_check(&self) -> Result<(), String> {
+    fn remember_check_hours(&self, hours: u16) -> Result<(), String> {
         let _lock = self.profile.update_lock()?;
-        let mut journal = Journal::read(&self.profile)?;
-        journal.last_check = Some(Utc::now().to_rfc3339());
-        journal.save(&self.profile)
+        journal::save_check_hours(&self.profile, hours)?;
+        self.auto_check_hours.send_if_modified(|current| {
+            if *current == hours {
+                return false;
+            }
+            *current = hours;
+            true
+        });
+        Ok(())
     }
 
     fn snooze(&self) -> Result<(), String> {
         let _lock = self.profile.update_lock()?;
         let mut journal = Journal::read(&self.profile)?;
-        journal.remind_after = Some(Utc::now().timestamp() + INTERVAL.as_secs() as i64);
+        journal.remind_after = Some(Utc::now().timestamp() + REMINDER_DELAY.as_secs() as i64);
         journal.save(&self.profile)
     }
 
     pub(crate) async fn poll<R: Runtime>(&self, app: &AppHandle<R>) {
-        let mut interval = check_interval();
+        let mut schedule = self.auto_check_hours.subscribe();
         loop {
-            interval.tick().await;
-            let Ok(_action) = self.updates.action.try_lock() else {
-                continue;
+            let delay = {
+                let _action = self.updates.action.lock().await;
+                let hours = *schedule.borrow_and_update();
+                let interval = check_interval(hours);
+                match self.prepare_automatic_check(interval, Utc::now()) {
+                    Ok(Some(remaining)) if remaining.is_zero() => {
+                        if self.check().await {
+                            self.remind(app);
+                        }
+                        interval
+                    }
+                    Ok(remaining) => remaining,
+                    Err(error) => {
+                        self.updates.status(Phase::CheckFailed, Some(error));
+                        interval
+                    }
+                }
             };
-            if self.check().await {
-                self.remind(app);
+            tokio::select! {
+                _ = wait_for_check(delay) => {}
+                result = schedule.changed() => {
+                    if result.is_err() {
+                        break;
+                    }
+                }
             }
         }
+    }
+
+    fn prepare_automatic_check(
+        &self,
+        interval: Option<Duration>,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Duration>, String> {
+        let journal = Journal::read(&self.profile)?;
+        let remaining = interval
+            .map(|interval| remaining_check_delay(interval, journal.last_check.as_deref(), now));
+        if remaining != Some(Duration::ZERO) && self.check_allowed(&journal)? {
+            self.restore_downloaded_offer(&journal)?;
+        }
+        Ok(remaining)
+    }
+
+    fn restore_downloaded_offer(&self, journal: &Journal) -> Result<(), String> {
+        let Some(current) = &journal.active else {
+            return Ok(());
+        };
+        let mut display = self
+            .updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot read the update status")?;
+        if !display.selections.is_empty() || !matches!(display.phase, Phase::Ready) {
+            return Ok(());
+        }
+        let downloaded = journal::read_downloaded(&self.profile)?;
+        if let Some(pair) = downloaded.filter(|pair| {
+            producer::retain_download(current, pair, journal.suppressed_lotus.as_deref())
+        }) {
+            let skipped = journal::read_skipped(&self.profile)?;
+            display.selections.push(Arc::new(SelectedUpdate {
+                current_sequence: current.sequence,
+                current: current.identity(),
+                candidate: pair.clone(),
+            }));
+            let warning = display.error.take();
+            display.refresh_offers(Some(&pair), &skipped);
+            display.error = warning;
+        }
+        Ok(())
+    }
+
+    fn check_allowed(&self, journal: &Journal) -> Result<bool, String> {
+        Ok(journal.active.is_some()
+            && journal.trial.is_none()
+            && journal.queued.is_none()
+            && !self.local_shutdown_started()
+            && super::PlannedRestart::read(&self.profile)?.is_none())
     }
 
     async fn check(&self) -> bool {
@@ -432,25 +516,27 @@ impl Manager {
             Option<&Combination>,
         ) -> Result<Discovery, String>,
     ) -> Result<bool, String> {
-        let journal = Journal::read(&self.profile)?;
-        let Some(current) = &journal.active else {
-            return Ok(false);
+        let (journal, downloaded) = {
+            let _lock = self.profile.update_lock()?;
+            let mut journal = Journal::read(&self.profile)?;
+            if !self.check_allowed(&journal)? {
+                return Ok(false);
+            }
+            let downloaded = journal::read_downloaded(&self.profile)?;
+            journal.last_check = Some(Utc::now().to_rfc3339());
+            journal.save(&self.profile)?;
+            (journal, downloaded)
         };
-        if journal.trial.is_some()
-            || journal.queued.is_some()
-            || self.local_shutdown_started()
-            || super::PlannedRestart::read(&self.profile)?.is_some()
-        {
-            return Ok(false);
-        }
+        let current = journal
+            .active
+            .as_ref()
+            .expect("check requires active components");
         self.updates.status(Phase::Checking, None);
-        let downloaded = journal::read_downloaded(&self.profile)?;
         let Discovery { offers, failures } =
             discovery(current, &journal, downloaded.as_ref()).await?;
         if failures.len() == 2 && offers.is_empty() {
             return Err(failures.join("\n"));
         }
-        self.record_check()?;
         let identity = current.identity();
         let selections = offers
             .into_iter()
@@ -654,11 +740,14 @@ impl Manager {
             }
             self.updates.status(Phase::Saving, None);
             if let Err(error) = self.reconfirm_selected(active, &update, locale).await {
-                self.updates.status(Phase::SaveFailed, Some(error));
+                self.updates.status(Phase::SaveFailed, Some(error.into()));
                 return Ok(());
             }
             match self.use_planned_restart(&runtime, active).await {
-                Ok(true) => match self.plan_restart(&runtime, &update).await {
+                Ok(true) => match self
+                    .plan_restart(&runtime, &update, RestartMode::Planned)
+                    .await
+                {
                     Ok(plan) => {
                         self.updates.status(Phase::ShuttingDown, None);
                         self.prepare_planned_restart(&runtime, port, plan).await
@@ -811,20 +900,37 @@ impl Manager {
         app: &AppHandle<R>,
         sequence: u64,
         identity: &str,
+        checkpointed: bool,
     ) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
         let locale = i18n::active(app);
         let (update, journal) = self.force_target(sequence, identity, locale)?;
         let active = update.validate_transition(&journal)?;
         self.updates.status(Phase::Saving, None);
+        if let Err(error) =
+            allow_cached_immediate_update(self.reconfirm_selected(active, &update, locale)).await
+        {
+            self.updates.status(Phase::SaveFailed, Some(error));
+            return Ok(());
+        }
         let runtime = app.state::<crate::sidecar::SidecarState>();
         let result = async {
-            self.reconfirm_selected(active, &update, locale).await?;
+            let port = crate::web_service_port();
+            if runtime.immediate_update_available()? != checkpointed {
+                return Err(locale.text("updates.catalogChanged").into());
+            }
+            if checkpointed {
+                let plan = self
+                    .plan_restart(&runtime, &update, RestartMode::Immediate)
+                    .await?;
+                self.updates.status(Phase::ShuttingDown, None);
+                return self.prepare_planned_restart(&runtime, port, plan).await;
+            }
             self.reopen_downloaded_update(&update.candidate).await?;
             self.queue_after_force_shutdown(
                 &update,
                 runtime.force_stop_for_update(Duration::from_secs(10)),
-                crate::web_service_port(),
+                port,
             )
             .await
         }
@@ -866,8 +972,8 @@ impl Manager {
         active: &Combination,
         update: &SelectedUpdate,
         locale: Locale,
-        load_catalog: impl Future<Output = Result<VerifiedChannel, String>>,
-    ) -> Result<(), String> {
+        load_catalog: impl Future<Output = Result<VerifiedChannel, ReleaseCheckError>>,
+    ) -> Result<(), ReleaseCheckError> {
         let channel = load_catalog.await?;
         let journal = Journal::read(&self.profile)?;
         if !channel
@@ -884,7 +990,7 @@ impl Manager {
         active: &Combination,
         update: &SelectedUpdate,
         locale: Locale,
-    ) -> Result<(), String> {
+    ) -> Result<(), ReleaseCheckError> {
         if !update.candidate.producer_release {
             return self
                 .reconfirm(active, update, locale, self.load_catalog())
@@ -897,6 +1003,25 @@ impl Manager {
             if let Some(result) = while_selected(&mut settings, &selected, work).await {
                 return result;
             }
+        }
+    }
+}
+
+async fn allow_cached_immediate_update(
+    reconfirm: impl Future<Output = Result<(), ReleaseCheckError>>,
+) -> Result<(), String> {
+    match tokio::time::timeout(IMMEDIATE_RELEASE_CHECK, reconfirm).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(ReleaseCheckError::Rejected(error))) => Err(error),
+        Ok(Err(ReleaseCheckError::Unavailable(error))) => {
+            log::info!("Applying the locally verified component update: {error}");
+            Ok(())
+        }
+        Err(_) => {
+            log::info!(
+                "Applying the locally verified component update after the release check timed out"
+            );
+            Ok(())
         }
     }
 }
@@ -916,10 +1041,32 @@ async fn wait_for_owned_exit(
     }
 }
 
-fn check_interval() -> tokio::time::Interval {
-    let mut interval = tokio::time::interval(INTERVAL);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval
+fn check_interval(hours: u16) -> Option<Duration> {
+    (hours != 0).then(|| Duration::from_secs(u64::from(hours) * 60 * 60))
+}
+
+async fn wait_for_check(delay: Option<Duration>) {
+    if let Some(delay) = delay {
+        tokio::time::sleep(delay).await;
+    } else {
+        std::future::pending().await
+    }
+}
+
+fn remaining_check_delay(
+    interval: Duration,
+    last_check: Option<&str>,
+    now: DateTime<Utc>,
+) -> Duration {
+    let Some(last_check) = last_check.and_then(|time| DateTime::parse_from_rfc3339(time).ok())
+    else {
+        return Duration::ZERO;
+    };
+    let elapsed = now
+        .signed_duration_since(last_check.with_timezone(&Utc))
+        .to_std()
+        .unwrap_or_default();
+    interval.saturating_sub(elapsed)
 }
 
 pub(crate) fn open<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
@@ -995,9 +1142,20 @@ pub(crate) fn component_snapshot<R: Runtime>(
     window: WebviewWindow<R>,
 ) -> Result<Snapshot, String> {
     authorize(&window, true)?;
-    app.try_state::<Manager>()
+    let mut snapshot = app
+        .try_state::<Manager>()
         .ok_or("The component updater is unavailable")?
-        .snapshot(app.package_info().version.to_string(), i18n::active(&app))
+        .snapshot(app.package_info().version.to_string(), i18n::active(&app))?;
+    if let Some(offer) = &mut snapshot.force_update {
+        offer.checkpointed =
+            app.try_state::<crate::sidecar::SidecarState>()
+                .is_some_and(|runtime| {
+                    runtime
+                        .immediate_update_available()
+                        .is_ok_and(|value| value)
+                });
+    }
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -1056,10 +1214,11 @@ pub(crate) async fn force_component_update<R: Runtime>(
     window: WebviewWindow<R>,
     sequence: u64,
     identity: String,
+    checkpointed: bool,
 ) -> Result<(), String> {
     authorize(&window, false)?;
     running_manager(&app)?
-        .force_apply(&app, sequence, &identity)
+        .force_apply(&app, sequence, &identity, checkpointed)
         .await
 }
 
@@ -1132,21 +1291,113 @@ pub(crate) fn set_component_download_settings<R: Runtime>(
         .remember_settings(settings)
 }
 
+#[tauri::command]
+pub(crate) fn set_component_check_interval<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    hours: u16,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    app.try_state::<Manager>()
+        .ok_or_else(|| "The component updater is unavailable".to_string())?
+        .remember_check_hours(hours)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test(start_paused = true)]
-    async fn checks_immediately_and_at_thirty_minutes() {
-        let start = tokio::time::Instant::now();
-        let mut interval = check_interval();
-        assert_eq!(interval.tick().await, start);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(1799), interval.tick())
-                .await
-                .is_err()
+    #[test]
+    fn automatic_check_becomes_due_at_the_configured_boundary() {
+        let start = Utc::now();
+        let saved = start.to_rfc3339();
+        let interval = check_interval(3).unwrap();
+        assert_eq!(remaining_check_delay(interval, None, start), Duration::ZERO);
+        assert_eq!(
+            remaining_check_delay(interval, Some(&saved), start + chrono::TimeDelta::hours(2)),
+            Duration::from_secs(3600)
         );
-        assert_eq!(interval.tick().await, start + Duration::from_secs(1800));
+        assert_eq!(
+            remaining_check_delay(interval, Some(&saved), start + chrono::TimeDelta::hours(3)),
+            Duration::ZERO
+        );
+        assert_eq!(check_interval(0), None);
+    }
+
+    #[tokio::test]
+    async fn reopened_manager_respects_failed_check_and_retains_verified_download() {
+        use crate::component_channel::tests::{fixture_channel, initial_combination};
+
+        let directory = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(directory.path()).unwrap();
+        let manager = Manager::new(profile.clone()).unwrap();
+        let original = initial_combination().await;
+        let channel = fixture_channel().await;
+        let target = channel
+            .select(Some((original.sequence, &original.identity())))
+            .unwrap()
+            .unwrap()
+            .combination
+            .clone();
+        manager.begin(&original).unwrap();
+        manager.finish(&original, Ok(())).unwrap();
+        journal::save_downloaded(&profile, &target).unwrap();
+        assert_eq!(
+            manager
+                .detect(async { Err("network unavailable".into()) })
+                .await,
+            Err("network unavailable".into())
+        );
+        let saved = Journal::read(&profile).unwrap().last_check.unwrap();
+        let last_check = DateTime::parse_from_rfc3339(&saved)
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let reopened = Manager::new(profile.clone()).unwrap();
+        reopened.updates.status(Phase::Ready, None);
+        let interval = check_interval(*reopened.auto_check_hours.borrow());
+        assert_eq!(interval, Some(Duration::from_secs(3 * 60 * 60)));
+        assert_eq!(
+            reopened
+                .prepare_automatic_check(interval, last_check)
+                .unwrap(),
+            interval
+        );
+        let snapshot = reopened.snapshot("0.0.0".into(), Locale::English).unwrap();
+        assert!(snapshot
+            .offers
+            .iter()
+            .any(|offer| offer.downloaded && offer.sequence == target.sequence));
+
+        let mut schedule = reopened.auto_check_hours.subscribe();
+        reopened.remember_check_hours(0).unwrap();
+        schedule.changed().await.unwrap();
+        let manual = Manager::new(profile.clone()).unwrap();
+        assert_eq!(*manual.auto_check_hours.borrow(), 0);
+        assert_eq!(
+            manual.prepare_automatic_check(None, last_check).unwrap(),
+            None
+        );
+        assert!(manual.detect(async { Ok(channel) }).await.is_ok());
+        assert!(Journal::read(&profile).unwrap().last_check.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn immediate_release_check_allows_transport_failure_and_bounds_unresponsive_sources() {
+        let unavailable = ReleaseCheckError::Unavailable("cannot reach producer".into());
+        allow_cached_immediate_update(async { Err(unavailable) })
+            .await
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        allow_cached_immediate_update(std::future::pending())
+            .await
+            .unwrap();
+        assert_eq!(start.elapsed(), IMMEDIATE_RELEASE_CHECK);
+        let rejected = ReleaseCheckError::Rejected("the selected release was withdrawn".into());
+        assert_eq!(
+            allow_cached_immediate_update(async { Err(rejected) }).await,
+            Err("the selected release was withdrawn".into())
+        );
     }
 
     #[tokio::test]
@@ -1463,12 +1714,32 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(manager
-            .reconfirm(&original, &selected, locale, async {
-                Ok(fixture_channel().await)
-            })
+        assert!(allow_cached_immediate_update(manager.reconfirm(
+            &original,
+            &selected,
+            locale,
+            async { Ok(fixture_channel().await) }
+        ))
+        .await
+        .is_err());
+
+        let proxy = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
-            .is_err());
+            .unwrap();
+        manager.settings.send_replace(DownloadSettings {
+            proxy_url: Some(format!("http://{}", proxy.local_addr().unwrap())),
+            ..DownloadSettings::default()
+        });
+        let disconnect = tokio::spawn(async move { drop(proxy.accept().await.unwrap()) });
+        let unavailable = async {
+            let result = manager
+                .reconfirm(&original, &selected, locale, manager.load_catalog())
+                .await;
+            assert!(matches!(&result, Err(ReleaseCheckError::Unavailable(_))));
+            result
+        };
+        allow_cached_immediate_update(unavailable).await.unwrap();
+        disconnect.await.unwrap();
 
         manager.queue(&selected).unwrap();
         let queued = Journal::read(&profile).unwrap().queued.unwrap();

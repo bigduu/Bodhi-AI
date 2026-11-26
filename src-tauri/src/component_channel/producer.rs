@@ -1,4 +1,6 @@
-use super::{bamboo_release, lotus_release, Combination, LotusRelease, UpdateKind};
+use super::{
+    bamboo_release, lotus_release, Combination, LotusRelease, ReleaseCheckError, UpdateKind,
+};
 use crate::component_download::DownloadSettings;
 use semver::Version;
 use std::cmp::Ordering;
@@ -34,7 +36,7 @@ pub(crate) async fn discover(
         pair.changes.bamboo = changes;
         Ok(Some(pair))
     });
-    let lotus = lotus.and_then(|found| {
+    let lotus = lotus.map_err(String::from).and_then(|found| {
         if rolled_back_lotus.is_some_and(|recorded| {
             recorded.version == found.release.version && recorded != &found.release
         }) {
@@ -72,13 +74,7 @@ fn collect(
         offers: Vec::new(),
         failures: Vec::new(),
     };
-    let mut retained = downloaded.filter(|pair| {
-        pair.accepts_update_from(current.sequence, &current.identity())
-            && (eligible(current, pair, suppressed_lotus)
-                || (!pair.producer_release
-                    && pair.update_kind(current) == Some(UpdateKind::Pair)
-                    && suppressed_lotus != Some(pair.lotus.manifest_sha256.as_str())))
-    });
+    let mut retained = downloaded.filter(|pair| retain_download(current, pair, suppressed_lotus));
     for (name, result) in [("Bamboo", bamboo), ("Lotus Next", lotus)] {
         match result {
             Ok(Some(mut pair)) if eligible(current, &pair, suppressed_lotus) => {
@@ -122,6 +118,18 @@ fn collect(
         discovery.offers.push(saved.clone());
     }
     discovery
+}
+
+pub(crate) fn retain_download(
+    current: &Combination,
+    pair: &Combination,
+    suppressed_lotus: Option<&str>,
+) -> bool {
+    pair.accepts_update_from(current.sequence, &current.identity())
+        && (eligible(current, pair, suppressed_lotus)
+            || (!pair.producer_release
+                && pair.update_kind(current) == Some(UpdateKind::Pair)
+                && suppressed_lotus != Some(pair.lotus.manifest_sha256.as_str())))
 }
 
 fn eligible(current: &Combination, pair: &Combination, suppressed_lotus: Option<&str>) -> bool {
@@ -176,7 +184,7 @@ pub(crate) async fn reconfirm(
     settings: &DownloadSettings,
     current: &Combination,
     selected: &Combination,
-) -> Result<(), String> {
+) -> Result<(), ReleaseCheckError> {
     if !selected.producer_release
         || !selected.accepts_update_from(current.sequence, &current.identity())
         || !eligible(current, selected, None)
@@ -185,7 +193,7 @@ pub(crate) async fn reconfirm(
     }
     let matches = match selected.update_kind(current) {
         Some(UpdateKind::Bamboo) => {
-            bamboo_release::load_version(settings, &selected.bamboo.version)
+            bamboo_release::load_version(settings, &selected.bamboo)
                 .await?
                 .0
                 == selected.bamboo

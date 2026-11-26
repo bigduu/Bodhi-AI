@@ -8,6 +8,7 @@ use std::io::{self, Read};
 
 const JOURNAL: &str = "components-v1.json";
 const DOWNLOAD_SETTINGS: &str = "component-download-settings-v1.json";
+const CHECK_INTERVAL: &str = "component-check-interval-v1.json";
 const VERIFIED_DOWNLOAD: &str = "component-verified-download-v1.json";
 const SKIPPED_VERSIONS: &str = "component-skipped-versions-v1.json";
 const MAX_STATE: u64 = 2 * 1024 * 1024;
@@ -143,6 +144,14 @@ pub(super) fn read_settings(profile: &Profile) -> Result<DownloadSettings, Strin
 
 pub(super) fn save_settings(profile: &Profile, settings: &DownloadSettings) -> Result<(), String> {
     save_json(profile, DOWNLOAD_SETTINGS, settings)
+}
+
+pub(super) fn read_check_hours(profile: &Profile) -> Result<u16, String> {
+    Ok(read_json(profile, CHECK_INTERVAL)?.unwrap_or(3))
+}
+
+pub(super) fn save_check_hours(profile: &Profile, hours: u16) -> Result<(), String> {
+    save_json(profile, CHECK_INTERVAL, &hours)
 }
 
 pub(super) fn read_downloaded(profile: &Profile) -> Result<Option<Combination>, String> {

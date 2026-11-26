@@ -49,6 +49,11 @@ Lotus Next's official npm stable dist-tag. Each offer retains the current build
 of the other component. An unavailable or invalid producer release leaves the
 other producer's offers usable.
 
+Bodhi checks for component updates automatically every three hours by default.
+In **Versions and Updates**, set the automatic interval in hours. Set it to
+zero to check only when you choose **Check for updates**. Bodhi keeps the last
+attempt time across restarts and retains verified downloads in either mode.
+
 In **Versions and Updates**, each component panel shows its running version, the
 eligible published version, release notes, and update controls. A previously
 verified download remains available if its producer publishes a newer version.
@@ -69,11 +74,22 @@ for the owned process to release its profile lease and port, then reopens and
 checks the effective Bamboo and Lotus versions.
 
 For a one-click switch, choose **Update and restart now** for any downloaded,
-verified target that is still eligible. Bodhi rechecks the target and
-terminates its current managed Bamboo process immediately. This interrupts
-running tasks, which need to be started again. Bodhi confirms the old process
-has ended and released the profile writer lease and port before switching to
-the exact selected versions.
+verified target that is still eligible. A Bamboo process with immediate
+checkpoint support can discard an in-progress model response and flush the
+session's completed history. Bodhi verifies the durable handoff before
+terminating that process. After restarting, Bamboo resumes eligible sessions
+under their original IDs. Bamboo may still wait for an active tool to reach a
+durable boundary. A failure to confirm the handoff keeps the current version
+selected.
+
+Older Bamboo versions offer **Force update and restart**. This action
+terminates the managed process and running tasks need to be started again. Both
+paths confirm that the old process released the profile writer lease and port
+before switching to the exact selected versions.
+
+If the remote release check is unreachable or times out, Bodhi rechecks the
+exact cached bytes of the previously verified selection. A returned release
+identity change blocks the update.
 
 If an approved update is queued and shutdown takes longer than the wait, use
 **Retry restart** after shutdown finishes, or reopen Bodhi to apply the queued
