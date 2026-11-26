@@ -7,6 +7,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { MANIFEST_V3, REPOSITORY: BAMBOO, validateManifest } = require("./bamboo-sidecar.cjs");
 const { LOTUS_NEXT_PACKAGE_NAME: PACKAGE, verifyLotusNextArtifact } = require("./lotus-next-artifact.cjs");
+const { catalogFilename, compareVersions, MAX_CATALOG_BYTES, recommendCandidate, seedCatalog, validateCatalog, withdrawRelease } =
+  require("./component-catalog.cjs");
 
 const LOTUS = "bigduu/lotus-next";
 const NPM = "https://registry.npmjs.org";
@@ -272,59 +274,50 @@ function singleCandidate(component, release, previous, request = api) {
   return candidate;
 }
 
-function compareVersions(left, right) {
-  assert.match(left, VERSION);
-  assert.match(right, VERSION);
-  const parts = right.split(".").map(BigInt);
-  for (const [index, value] of left.split(".").map(BigInt).entries()) {
-    if (value !== parts[index]) return value > parts[index] ? 1 : -1;
-  }
-  return 0;
-}
-
-async function readCatalog() {
-  const branch = api(`repos/${BODHI}/branches/${CATALOG_BRANCH}`);
+async function readCatalog(component, request = api, read = readBytes) {
+  const filename = catalogFilename(component);
+  const branch = request(`repos/${BODHI}/branches/${CATALOG_BRANCH}`);
   assert.equal(branch.name, CATALOG_BRANCH);
   assert.equal(branch.protected, true, "Require the protected Bodhi component catalog");
-  const revision = branch.commit.sha;
-  assert.match(revision, SHA);
-  const url = `https://raw.githubusercontent.com/${BODHI}/${revision}/channel-v1.json`;
-  const bytes = await readBytes(url, 1024 * 1024);
-  const catalog = JSON.parse(bytes);
-  assert.equal(catalog.schemaVersion, 1);
-  assert.equal(catalog.shellProtocol, 1);
-  assert.ok(Array.isArray(catalog.combinations) && catalog.combinations.length > 0, "Missing stable component combinations");
-  return { revision, combinations: catalog.combinations };
+  const branchRevision = branch.commit.sha;
+  assert.match(branchRevision, SHA);
+  const origin = `https://raw.githubusercontent.com/${BODHI}`;
+  const [expected, bytes] = await Promise.all([
+    read(`${origin}/${branchRevision}/${filename}`, MAX_CATALOG_BYTES),
+    read(`${origin}/${CATALOG_BRANCH}/${filename}`, MAX_CATALOG_BYTES),
+  ]);
+  assert.ok(bytes.equals(expected), `The client URL still serves different bytes for ${filename}; retry after CDN propagation`);
+  const catalog = validateCatalog(component, JSON.parse(bytes));
+  const baseline = { branchRevision, revision: catalog.revision, version: catalog.recommendedVersion, sha256: digest("sha256", bytes) };
+  return { catalog, baseline, bytes };
 }
 
 async function prepareSinceCatalog(component, {
-  catalog = readCatalog,
+  read = readCatalog,
   latest = resolveLatestVersion,
   verify = component === "bamboo" ? bambooRelease : lotusRelease,
   request = api,
+  exactVersion,
 } = {}) {
-  assert.ok(component === "bamboo" || component === "lotus", "Choose Bamboo or Lotus Next");
-  const [{ revision, combinations }, version] = await Promise.all([catalog(), latest(component)]);
-  const previous = combinations.reduce((newest, entry) => {
-    const order = compareVersions(entry[component].version, newest[component].version);
-    if (order === 0) {
-      assert.deepEqual(entry[component], newest[component], "Matching catalog versions must have the same release identity");
-    }
-    return order >= 0 ? entry : newest;
-  });
-  const recorded = previous[component];
-  const order = compareVersions(version, recorded.version);
-  assert.ok(order >= 0, `${component} latest ${version} is older than the catalog version ${recorded.version}`);
-  const release = await verify(version);
-  if (order === 0) {
-    assert.deepEqual(release, recorded, `${component} ${version} differs from the accepted catalog identity`);
-    return null;
+  catalogFilename(component);
+  if (exactVersion !== undefined) assert.match(exactVersion, VERSION);
+  const [{ catalog, baseline }, version] = await Promise.all([read(component), exactVersion ?? latest(component)]);
+  const recorded = catalog.releases.find(({ release }) => release.version === catalog.recommendedVersion)?.release;
+  if (recorded) {
+    assert.ok(compareVersions(version, recorded.version) >= 0,
+      `${component} release ${version} is older than the recommended catalog version ${recorded.version}`);
   }
+  const release = await verify(version);
+  const retained = catalog.releases.find((entry) => entry.release.version === version);
+  if (retained) {
+    assert.deepEqual(release, retained.release, `${component} ${version} differs from the accepted catalog identity`);
+  }
+  if (version === catalog.recommendedVersion) return null;
   const candidate = singleCandidate(component, release, recorded, request);
   if (component === "bamboo") {
     assert.deepEqual(candidate.missingBrowserRuntime, [], "New Bamboo candidate is missing a desktop browser runtime");
   }
-  return { ...candidate, catalog: { revision, sequence: previous.sequence, version: recorded.version } };
+  return { ...candidate, catalog: baseline };
 }
 
 if (require.main === module) {
@@ -332,8 +325,35 @@ if (require.main === module) {
   Promise.resolve().then(async () => {
     if (args[0] === "--component") return prepareSingle(parseSingleComponentArgs(args.slice(1)));
     if (args[0] === "--since-catalog") {
-      assert.equal(args.length, 2, "Expected --since-catalog bamboo|lotus");
-      return prepareSinceCatalog(args[1]);
+      assert.ok(args.length === 2 || args.length === 3, "Expected --since-catalog bamboo|lotus [VERSION]");
+      return prepareSinceCatalog(args[1], { exactVersion: args[2] });
+    }
+    if (args[0] === "--seed-catalog") {
+      assert.equal(args.length, 4, "Expected --seed-catalog bamboo|lotus CHANNEL_V1_JSON BOOTSTRAP_SEQUENCE");
+      return seedCatalog(args[1], JSON.parse(fs.readFileSync(args[2])), Number(args[3]));
+    }
+    if (args[0] === "--verify-catalog") {
+      assert.ok(args.length === 2 || args.length === 3, "Expected --verify-catalog bamboo|lotus [EXPECTED_JSON]");
+      const { baseline, bytes } = await readCatalog(args[1]);
+      if (args[2]) assert.ok(bytes.equals(fs.readFileSync(args[2])), "The client catalog differs from the expected file");
+      return baseline;
+    }
+    if (args[0] === "--recommend-catalog") {
+      assert.equal(args.length, 3, "Expected --recommend-catalog bamboo|lotus CANDIDATE_JSON");
+      const { catalog, baseline } = await readCatalog(args[1]);
+      return recommendCandidate(args[1], catalog, baseline, JSON.parse(fs.readFileSync(args[2])));
+    }
+    if (args[0] === "--withdraw-catalog") {
+      assert.ok(args.length === 3 || args.length === 4, "Expected --withdraw-catalog bamboo|lotus VERSION [RECOMMENDATION|none]");
+      const { catalog } = await readCatalog(args[1]);
+      return withdrawRelease(args[1], catalog, args[2], args[3]);
+    }
+    if (args[0] === "--validate-catalog") {
+      assert.equal(args.length, 3, "Expected --validate-catalog bamboo|lotus CATALOG_JSON");
+      const bytes = fs.readFileSync(args[2]);
+      assert.ok(bytes.length <= MAX_CATALOG_BYTES, "The catalog exceeds its size limit");
+      validateCatalog(args[1], JSON.parse(bytes));
+      return null;
     }
     const [bamboo, lotus, previous, oldBamboo, oldLotus] = args;
     if (previous === "--from") {
@@ -350,4 +370,4 @@ if (require.main === module) {
     .catch((error) => { console.error(error.message); process.exitCode = 1; });
 }
 
-module.exports = { browserArtifacts, changeNotes, parseSingleComponentArgs, prepare, prepareSinceCatalog, releaseChanges, resolveLatestVersion };
+module.exports = { browserArtifacts, changeNotes, parseSingleComponentArgs, prepare, prepareSinceCatalog, readCatalog, releaseChanges, resolveLatestVersion };

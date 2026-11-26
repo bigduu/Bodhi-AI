@@ -1,8 +1,10 @@
 use crate::bamboo_profile::{is_link, persist, Profile};
-use crate::component_channel::{Combination, LotusRelease, PairIdentity};
+use crate::component_channel::stable::StableCatalog;
+use crate::component_channel::{Combination, LotusRelease, PairIdentity, UpdateKind};
 use crate::component_download::{DownloadSettings, DownloadSource};
 use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 
@@ -11,6 +13,8 @@ const DOWNLOAD_SETTINGS: &str = "component-download-settings-v1.json";
 const CHECK_INTERVAL: &str = "component-check-interval-v1.json";
 const VERIFIED_DOWNLOAD: &str = "component-verified-download-v1.json";
 const LOCAL_BAMBOO_DOWNLOAD: &str = "component-local-bamboo-download-v1.json";
+const BAMBOO_CATALOG_CHECKPOINT: &str = "component-bamboo-catalog-checkpoint-v1.json";
+const LOTUS_CATALOG_CHECKPOINT: &str = "component-lotus-catalog-checkpoint-v1.json";
 const SKIPPED_VERSIONS: &str = "component-skipped-versions-v1.json";
 const MAX_STATE: u64 = 2 * 1024 * 1024;
 const HISTORY_LIMIT: usize = 40;
@@ -159,6 +163,107 @@ pub(super) fn read_downloaded(profile: &Profile) -> Result<Option<Combination>, 
     read_json(profile, VERIFIED_DOWNLOAD)
 }
 
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogCheckpoint {
+    revision: u64,
+    digest: String,
+    releases: BTreeMap<String, String>,
+}
+
+pub(super) struct CatalogDownload<'a> {
+    pub pair: &'a Combination,
+    pub version: &'a str,
+    pub digest: String,
+    pub local_identity: Option<String>,
+}
+
+pub(super) fn record_catalog<T>(
+    profile: &Profile,
+    kind: UpdateKind,
+    catalog: &StableCatalog<T>,
+    staged: Option<CatalogDownload<'_>>,
+    active: Option<(&str, String)>,
+) -> Result<(), String> {
+    let path = match kind {
+        UpdateKind::Bamboo => BAMBOO_CATALOG_CHECKPOINT,
+        UpdateKind::Lotus => LOTUS_CATALOG_CHECKPOINT,
+        UpdateKind::Pair => return Err("The stable catalog is for a single component".into()),
+    };
+    let _lock = profile.update_lock()?;
+    let mut previous = read_json::<CatalogCheckpoint>(profile, path)?.unwrap_or_default();
+    if catalog.revision < previous.revision {
+        return Err("The Bodhi stable catalog returned an older revision".into());
+    }
+    if catalog.revision == previous.revision && catalog.digest != previous.digest {
+        return Err("The Bodhi stable catalog changed an existing revision".into());
+    }
+    let releases = catalog.release_digests();
+    let staged = match staged {
+        Some(staged)
+            if !staged
+                .local_identity
+                .as_deref()
+                .map_or(Ok(false), |identity| {
+                    matches_local_bamboo_download(profile, staged.pair, identity)
+                })? =>
+        {
+            Some(staged)
+        }
+        _ => None,
+    };
+    if let Some(staged) = &staged {
+        // Retire the exact download before recording the withdrawal. A crash
+        // after the checkpoint must leave no receipt that could apply offline.
+        if releases.get(staged.version) != Some(&staged.digest) {
+            clear_downloaded(profile, staged.pair)?;
+        }
+    }
+    let known = previous.releases.len();
+    for (version, digest) in active.into_iter().chain(
+        staged
+            .iter()
+            .map(|staged| (staged.version, staged.digest.clone())),
+    ) {
+        previous
+            .releases
+            .entry(version.to_owned())
+            .or_insert(digest);
+    }
+    let changed: Vec<_> = releases
+        .iter()
+        .filter(|(version, digest)| {
+            previous
+                .releases
+                .get(*version)
+                .is_some_and(|old| old != *digest)
+        })
+        .map(|(version, _)| version.clone())
+        .collect();
+    if !changed.is_empty() {
+        if previous.releases.len() != known {
+            save_json(profile, path, &previous)?;
+        }
+        return Err(format!(
+            "The Bodhi stable catalog changed the identity of an admitted version ({})",
+            changed.join(", ")
+        ));
+    }
+    if catalog.revision == previous.revision && previous.releases.len() == known {
+        return Ok(());
+    }
+    previous.releases.extend(releases.clone());
+    save_json(
+        profile,
+        path,
+        &CatalogCheckpoint {
+            revision: catalog.revision,
+            digest: catalog.digest.clone(),
+            releases: previous.releases,
+        },
+    )
+}
+
 pub(super) fn save_downloaded(profile: &Profile, pair: &Combination) -> Result<(), String> {
     save_json(profile, VERIFIED_DOWNLOAD, pair)?;
     clear_local_bamboo_receipt(profile);
@@ -185,7 +290,7 @@ pub(super) fn matches_local_bamboo_download(
     match read_json::<String>(profile, LOCAL_BAMBOO_DOWNLOAD) {
         Ok(receipt) => Ok(receipt.as_deref() == Some(identity)),
         Err(_) => {
-            log::warn!("Unreadable local Bamboo import receipt. Checking the official producer.");
+            log::warn!("Unreadable local Bamboo import receipt. Checking the stable catalog.");
             Ok(false)
         }
     }
