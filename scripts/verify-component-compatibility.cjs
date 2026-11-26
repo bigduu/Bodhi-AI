@@ -146,7 +146,7 @@ async function runPair(scratch, bamboo, lotus) {
     "--workers", "1", "--data-dir", profile, "--static-dir", lotus.dist,
   ], { cwd: profile, stdio: ["ignore", "pipe", "pipe"], env: {
     BAMBOO_DATA_DIR: profile, BAMBOO_WORKSPACE_ROOT: path.join(profile, "workspace"),
-    BAMBOO_JIANDU_DATA_DIR: path.join(profile, "jiandu"), CFFIXED_USER_HOME: profile,
+    BAMBOO_JIANDU_DATA_DIR: path.join(profile, "jiandu"), HOME: profile, CFFIXED_USER_HOME: profile,
     RUST_LOG: "bamboo_server::server::entrypoints=info",
   } });
   let ready = false, spawnError, stopped;
