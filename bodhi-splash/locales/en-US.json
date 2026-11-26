@@ -60,6 +60,7 @@
   "githubToken.hint": "Use a fine-grained token with read-only access to public repositories. Bodhi uses it to check Bamboo releases on api.github.com.",
   "githubToken.none": "No token configured.",
   "githubToken.session": "Token configured for this Bodhi session only.",
+  "githubToken.unavailable": "The system credential store could not be read. You can remove a saved token or enter a new token.",
   "githubToken.stored": "Token saved in the system credential store.",
   "githubToken.save": "Save token",
   "githubToken.test": "Test connection",

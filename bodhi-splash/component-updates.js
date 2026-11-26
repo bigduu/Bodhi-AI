@@ -77,13 +77,14 @@ function renderSettings(settings) {
 function renderGithubToken() {
   const state = currentSnapshot?.githubUpdateTokenState;
   const configured = state === "stored" || state === "session";
-  const knownState = configured || state === "none";
+  const unavailable = state === "unavailable";
+  const knownState = configured || unavailable || state === "none";
   const disabled = !currentSnapshot?.running || !knownState || githubTokenPending;
   const input = get("github-token");
   get("github-token-fields").disabled = disabled;
   get("save-github-token").disabled = disabled || !input.value.trim();
   get("test-github-token").disabled = disabled || !configured;
-  get("remove-github-token").disabled = disabled || !configured;
+  get("remove-github-token").disabled = disabled || !(configured || unavailable);
   setText(get("github-token-state"), knownState ? i18n.text(`githubToken.${state}`) : "");
   const status = get("github-token-status");
   const statusKey = githubTokenPending ? "githubToken.pending" : githubTokenFeedback?.key;

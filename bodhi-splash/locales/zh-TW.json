@@ -60,6 +60,7 @@
   "githubToken.hint": "細微權限權杖只需要公用儲存庫的讀取權限。Bodhi 只會使用它透過 api.github.com 檢查 Bamboo 更新。",
   "githubToken.none": "尚未設定權杖。",
   "githubToken.session": "權杖僅在本次執行 Bodhi 期間有效。",
+  "githubToken.unavailable": "暫時無法讀取系統憑證庫。你可以移除已儲存的權杖，或輸入新的權杖。",
   "githubToken.stored": "權杖已儲存到系統認證存放區。",
   "githubToken.save": "儲存權杖",
   "githubToken.test": "測試連線",

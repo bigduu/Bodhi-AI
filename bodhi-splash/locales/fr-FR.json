@@ -60,6 +60,7 @@
   "githubToken.hint": "Utilisez un jeton à autorisations précises avec un accès en lecture seule aux dépôts publics. Bodhi l’utilise pour vérifier les versions de Bamboo sur api.github.com.",
   "githubToken.none": "Aucun jeton configuré.",
   "githubToken.session": "Jeton disponible pour cette session Bodhi uniquement.",
+  "githubToken.unavailable": "Le gestionnaire d’identifiants est illisible. Vous pouvez supprimer un jeton enregistré ou en saisir un nouveau.",
   "githubToken.stored": "Jeton enregistré dans le gestionnaire d’identifiants du système.",
   "githubToken.save": "Enregistrer le jeton",
   "githubToken.test": "Tester la connexion",

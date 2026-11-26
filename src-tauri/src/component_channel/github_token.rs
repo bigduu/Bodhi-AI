@@ -16,6 +16,7 @@ pub(crate) enum GitHubUpdateTokenState {
     None,
     Session,
     Stored,
+    Unavailable,
 }
 
 struct Token {
@@ -51,6 +52,7 @@ impl Token {
 #[derive(Default)]
 struct State {
     token: Option<Token>,
+    store_unavailable: bool,
     retry_at: BTreeMap<Option<String>, DateTime<Utc>>,
 }
 
@@ -64,16 +66,24 @@ impl GitHubUpdateCredentials {
     pub(crate) async fn initialize(&self) {
         self.loaded
             .get_or_init(|| async {
-                match tokio::task::spawn_blocking(store::load).await {
-                    Ok(Ok(Some(raw))) => {
-                        if let Ok(value) = std::str::from_utf8(&raw) {
-                            if let Ok(token) = Token::new(value, GitHubUpdateTokenState::Stored) {
-                                let _ = self.replace(Some(token));
-                            }
-                        }
+                let loaded = match tokio::task::spawn_blocking(store::load).await {
+                    Ok(Ok(Some(raw))) => std::str::from_utf8(&raw)
+                        .map_err(|_| STORE_UNAVAILABLE)
+                        .and_then(|value| Token::new(value, GitHubUpdateTokenState::Stored))
+                        .map(Some),
+                    Ok(Ok(None)) => Ok(None),
+                    _ => Err(STORE_UNAVAILABLE),
+                };
+                match loaded {
+                    Ok(token) => {
+                        let _ = self.replace(token);
                     }
-                    Ok(Ok(None)) => {}
-                    _ => log::info!("The Bamboo GitHub update keychain is unavailable"),
+                    Err(_) => {
+                        if let Ok(mut state) = self.state.lock() {
+                            state.store_unavailable = true;
+                        }
+                        log::info!("The Bamboo GitHub update credential store is unavailable");
+                    }
                 }
             })
             .await;
@@ -82,6 +92,7 @@ impl GitHubUpdateCredentials {
     fn replace(&self, token: Option<Token>) -> Result<(), &'static str> {
         let mut state = self.state.lock().map_err(|_| STORE_UNAVAILABLE)?;
         state.token = token;
+        state.store_unavailable = false;
         state.retry_at.clear();
         Ok(())
     }
@@ -90,7 +101,18 @@ impl GitHubUpdateCredentials {
         self.state
             .lock()
             .ok()
-            .and_then(|state| state.token.as_ref().map(|token| token.state))
+            .map(|state| {
+                state.token.as_ref().map_or_else(
+                    || {
+                        if state.store_unavailable {
+                            GitHubUpdateTokenState::Unavailable
+                        } else {
+                            GitHubUpdateTokenState::None
+                        }
+                    },
+                    |token| token.state,
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -335,6 +357,9 @@ mod tests {
         use std::sync::Arc;
 
         let credentials = GitHubUpdateCredentials::default();
+        credentials.state.lock().unwrap().store_unavailable = true;
+        assert!(credentials.status() == GitHubUpdateTokenState::Unavailable);
+
         let hidden_token = Arc::new(AtomicBool::new(true));
         let token = Token::new(
             "github_pat_session_fixture",
