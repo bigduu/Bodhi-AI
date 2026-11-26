@@ -651,11 +651,7 @@ impl Manager {
         };
         let pair = producer::bamboo_offer(active, release, Vec::new())?
             .ok_or("Choose a Bamboo release newer than the installed version")?;
-        let update = Arc::new(SelectedUpdate {
-            current_sequence: active.sequence,
-            current: active.identity(),
-            candidate: pair,
-        });
+        let update = self.select_local_bamboo_offer(active, pair)?;
         self.verify_local_bamboo_offer(&update)?;
         let pair = &update.candidate;
         if pair.bamboo.manifest != manifest_identity {
@@ -687,6 +683,33 @@ impl Manager {
         display.selections.push(update.clone());
         display.refresh_offers(Some(pair), &skipped);
         Ok(())
+    }
+
+    fn select_local_bamboo_offer(
+        &self,
+        active: &Combination,
+        mut candidate: Combination,
+    ) -> Result<Arc<SelectedUpdate>, String> {
+        let display = self
+            .updates
+            .display
+            .lock()
+            .map_err(|_| "Cannot read the update status")?;
+        // Older catalog offers may use the same sequence as a producer offer.
+        while display.selections.iter().any(|selection| {
+            selection.candidate.sequence == candidate.sequence
+                && selection.candidate.update_kind(active) == Some(UpdateKind::Lotus)
+        }) {
+            candidate.sequence = candidate
+                .sequence
+                .checked_add(2)
+                .ok_or("Bamboo update sequence overflow")?;
+        }
+        Ok(Arc::new(SelectedUpdate {
+            current_sequence: active.sequence,
+            current: active.identity(),
+            candidate,
+        }))
     }
 
     fn verify_local_bamboo_offer(&self, update: &SelectedUpdate) -> Result<(), String> {
@@ -1695,6 +1718,58 @@ mod tests {
             .history
             .iter()
             .any(|event| event.error.as_deref() == Some("replacement failed")));
+    }
+
+    #[tokio::test]
+    async fn local_bamboo_selection_avoids_a_legacy_lotus_sequence_collision() {
+        use crate::component_channel::tests::{
+            fixture_channel_with_independent_updates, initial_combination,
+        };
+
+        let scratch = tempfile::tempdir().unwrap();
+        let profile = crate::bamboo_profile::Profile::open(scratch.path()).unwrap();
+        let manager = Manager::new(profile).unwrap();
+        let current = initial_combination().await;
+        let channel = fixture_channel_with_independent_updates();
+        let mut lotus = channel
+            .select_updates(&current, None)
+            .unwrap()
+            .into_iter()
+            .find(|offer| offer.update_kind(&current) == Some(UpdateKind::Lotus))
+            .unwrap()
+            .clone();
+        lotus.sequence = current.sequence + 1;
+        manager.updates.display.lock().unwrap().selections = vec![Arc::new(SelectedUpdate {
+            current_sequence: current.sequence,
+            current: current.identity(),
+            candidate: lotus.clone(),
+        })];
+        let mut release = current.bamboo.clone();
+        release.version = "2026.11.99".into();
+        release.manifest.sha256 = "f".repeat(64);
+        let bamboo = producer::bamboo_offer(&current, release, Vec::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(bamboo.sequence, lotus.sequence);
+        let selected = manager.select_local_bamboo_offer(&current, bamboo).unwrap();
+        assert_eq!(selected.candidate.sequence, lotus.sequence + 2);
+        manager
+            .updates
+            .display
+            .lock()
+            .unwrap()
+            .selections
+            .push(selected.clone());
+        let identity = artifact_identity(&selected.candidate).unwrap();
+        assert!(manager
+            .updates
+            .selected(selected.candidate.sequence, &identity, Locale::English)
+            .is_ok());
+        let lotus_identity = artifact_identity(&lotus).unwrap();
+        assert!(manager
+            .updates
+            .selected(lotus.sequence, &lotus_identity, Locale::English)
+            .is_ok());
     }
 
     #[tokio::test]
