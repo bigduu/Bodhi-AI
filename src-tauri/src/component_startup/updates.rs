@@ -1,5 +1,6 @@
 use super::{
     journal::{self, History, Journal, Versions},
+    kernel_switch::KernelStop,
     planned_restart::RestartMode,
     Manager, SelectedUpdate,
 };
@@ -39,6 +40,7 @@ pub(super) struct Updates {
     pub(super) boot: tokio::sync::Mutex<()>,
     pub(super) ready: AtomicBool,
     pub(super) restoring: AtomicBool,
+    pub(super) unconfirmed_handoff: AtomicBool,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -104,6 +106,8 @@ pub(super) enum Phase {
     Saving,
     ShuttingDown,
     Restarting,
+    Reconnecting,
+    RestoringSessions,
     RestartFailed,
     SaveFailed,
 }
@@ -158,6 +162,7 @@ pub(crate) struct Snapshot {
     active: Option<Versions>,
     running: bool,
     queued: Option<u64>,
+    bamboo_restart_pending: bool,
     settings: DownloadSettings,
     auto_check_hours: u16,
     last_check: Option<String>,
@@ -170,6 +175,10 @@ pub(crate) struct Snapshot {
 }
 
 impl Updates {
+    pub(super) fn reset_kernel_shutdown(&self) {
+        self.force_shutdown_started.store(false, Ordering::Release);
+    }
+
     pub(super) fn progress(
         &self,
         file: &str,
@@ -252,10 +261,13 @@ impl Manager {
     fn snapshot(&self, bodhi: String, locale: Locale) -> Result<Snapshot, String> {
         let journal = Journal::read(&self.profile)?;
         let planned = super::PlannedRestart::read(&self.profile)?;
+        let kernel_switch = self.pending_kernel_switch()?;
+        let unconfirmed = self.updates.unconfirmed_handoff.load(Ordering::Acquire);
         let lotus_rollback = if planned.is_none()
             && journal.queued.is_none()
             && journal.trial.is_none()
             && !self.restart_in_progress()
+            && kernel_switch.is_none()
         {
             journal
                 .lotus_rollback_target()
@@ -294,7 +306,11 @@ impl Manager {
                 let identity = artifact_identity(&update.candidate)?;
                 let skipped_offer = skipped.contains(&update.candidate.identity());
                 let downloaded_offer = downloaded.as_ref() == Some(&update.candidate);
+                if unconfirmed && kind == UpdateKind::Bamboo {
+                    continue;
+                }
                 if planned.is_none()
+                    && kernel_switch.is_none()
                     && !self.updates.restoring.load(Ordering::Acquire)
                     && !self.updates.restart_requested.load(Ordering::Acquire)
                     && !self.updates.lotus_rollback_started.load(Ordering::Acquire)
@@ -327,16 +343,18 @@ impl Manager {
             bodhi,
             active: journal.active.as_ref().map(Versions::from),
             running: self.updates.ready.load(Ordering::Acquire),
-            queued: journal
-                .queued
+            queued: kernel_switch
                 .as_ref()
-                .map(|candidate| candidate.sequence)
+                .map(|pending| pending.update.candidate.sequence)
+                .or_else(|| journal.queued.as_ref().map(|candidate| candidate.sequence))
                 .or(planned
                     .filter(|plan| {
-                        journal.active.as_ref() != Some(&plan.candidate)
+                        !unconfirmed
+                            && journal.active.as_ref() != Some(&plan.candidate)
                             && !self.updates.restoring.load(Ordering::Acquire)
                     })
                     .map(|plan| plan.candidate.sequence)),
+            bamboo_restart_pending: kernel_switch.is_some(),
             settings: self.settings.borrow().clone(),
             auto_check_hours: *self.auto_check_hours.borrow(),
             last_check: journal.last_check,
@@ -456,6 +474,8 @@ impl Manager {
 
     fn check_allowed(&self, journal: &Journal) -> Result<bool, String> {
         Ok(journal.active.is_some()
+            && self.pending_kernel_switch()?.is_none()
+            && !self.updates.restoring.load(Ordering::Acquire)
             && journal.trial.is_none()
             && journal.queued.is_none()
             && !self.local_shutdown_started()
@@ -741,7 +761,10 @@ impl Manager {
 
     async fn download(&self, sequence: u64, identity: &str, locale: Locale) -> Result<(), String> {
         let _action = self.updates.action.lock().await;
-        if self.local_shutdown_started() || super::PlannedRestart::read(&self.profile)?.is_some() {
+        if self.local_shutdown_started()
+            || self.pending_kernel_switch()?.is_some()
+            || super::PlannedRestart::read(&self.profile)?.is_some()
+        {
             return Err(locale.text("updates.restartPending").into());
         }
         let update = self.updates.selected(sequence, identity, locale)?;
@@ -782,6 +805,7 @@ impl Manager {
         if self.updates.restart_requested.load(Ordering::Acquire)
             || self.updates.restoring.load(Ordering::Acquire)
             || self.local_shutdown_started()
+            || self.pending_kernel_switch()?.is_some()
             || journal.trial.is_some()
             || journal.queued.is_some()
             || super::PlannedRestart::read(&self.profile)?.is_some()
@@ -849,6 +873,18 @@ impl Manager {
             return Err("Wait for Bamboo to restore the previous sessions".into());
         }
         let locale = i18n::active(app);
+        if let Some(pending) = self.pending_kernel_switch()? {
+            if pending.update.candidate.sequence != sequence
+                || match identity.as_deref() {
+                    Some(expected) => artifact_identity(&pending.update.candidate)? != expected,
+                    None => false,
+                }
+            {
+                return Err(locale.text("updates.catalogChanged").into());
+            }
+            self.continue_kernel_switch(app, pending, None).await;
+            return Ok(());
+        }
         if self.local_shutdown_started() {
             return Err(locale.text("updates.restartPending").into());
         }
@@ -887,11 +923,31 @@ impl Manager {
                 return Err(locale.text("updates.downloadRequired").into());
             }
             self.updates.status(Phase::Saving, None);
-            if let Err(error) = self.reconfirm_selected(active, &update, locale).await {
-                self.updates.status(Phase::SaveFailed, Some(error.into()));
+            let bamboo_only = update.candidate.update_kind(active) == Some(UpdateKind::Bamboo);
+            let check = self.reconfirm_selected(active, &update, locale);
+            let confirmed = if bamboo_only {
+                allow_cached_immediate_update(check).await
+            } else {
+                check.await.map_err(String::from)
+            };
+            if let Err(error) = confirmed {
+                self.updates.status(Phase::SaveFailed, Some(error));
                 return Ok(());
             }
-            match self.use_planned_restart(&runtime, active).await {
+            let planned = self.use_planned_restart(&runtime, active).await;
+            if bamboo_only {
+                let stop = match planned {
+                    Ok(true) => KernelStop::Checkpoint(RestartMode::Planned),
+                    Ok(false) => KernelStop::Graceful,
+                    Err(error) => {
+                        self.updates.status(Phase::RestartFailed, Some(error));
+                        return Ok(());
+                    }
+                };
+                self.begin_kernel_switch(app, update, stop).await;
+                return Ok(());
+            }
+            match planned {
                 Ok(true) => match self
                     .plan_restart(&runtime, &update, RestartMode::Planned)
                     .await
@@ -927,13 +983,14 @@ impl Manager {
             || self.updates.force_shutdown_started.load(Ordering::Acquire)
     }
 
-    fn local_shutdown_started(&self) -> bool {
+    pub(super) fn local_shutdown_started(&self) -> bool {
         self.updates.force_shutdown_started.load(Ordering::Acquire)
             || self.updates.lotus_rollback_started.load(Ordering::Acquire)
     }
 
     fn require_idle_journal(&self, journal: &Journal, locale: Locale) -> Result<(), String> {
         if self.restart_in_progress()
+            || self.pending_kernel_switch()?.is_some()
             || journal.queued.is_some()
             || journal.trial.is_some()
             || super::PlannedRestart::read(&self.profile)?.is_some()
@@ -1029,6 +1086,7 @@ impl Manager {
         if self.updates.restoring.load(Ordering::Acquire)
             || self.updates.restart_requested.load(Ordering::Acquire)
             || self.updates.lotus_rollback_started.load(Ordering::Acquire)
+            || self.pending_kernel_switch()?.is_some()
             || super::PlannedRestart::read(&self.profile)?.is_some()
         {
             return Err(locale.text("updates.restartPending").into());
@@ -1062,6 +1120,18 @@ impl Manager {
             return Ok(());
         }
         let runtime = app.state::<crate::sidecar::SidecarState>();
+        if update.candidate.update_kind(active) == Some(UpdateKind::Bamboo) {
+            if runtime.immediate_update_available()? != checkpointed {
+                return Err(locale.text("updates.catalogChanged").into());
+            }
+            let stop = if checkpointed {
+                KernelStop::Checkpoint(RestartMode::Immediate)
+            } else {
+                KernelStop::Force
+            };
+            self.begin_kernel_switch(app, update, stop).await;
+            return Ok(());
+        }
         let result = async {
             let port = crate::web_service_port();
             if runtime.immediate_update_available()? != checkpointed {

@@ -554,8 +554,12 @@ pub fn run() {
 
     tauri::Builder::default()
         .enable_macos_default_menu(false)
-        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |context, _| {
-            bamboo_update_page::response(i18n::active(context.app_handle()))
+        .register_uri_scheme_protocol(bamboo_update_page::SCHEME, |context, request| {
+            bamboo_update_page::respond(
+                context.app_handle(),
+                context.webview_label(),
+                request.uri(),
+            )
         })
         .append_invoke_initialization_script(
             if component_startup::enabled() || frontend::uses_managed_frontend() {

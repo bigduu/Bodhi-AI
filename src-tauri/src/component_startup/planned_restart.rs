@@ -20,7 +20,7 @@ const TIMEOUT: Duration = Duration::from_secs(90);
 const RESPONSE: Duration = Duration::from_secs(5);
 const MAX_INTENT: u64 = 4 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum RestartMode {
     #[default]
@@ -50,9 +50,9 @@ pub(super) struct PlannedRestart {
     current: PairIdentity,
     owner: String,
     #[serde(default, skip_serializing_if = "RestartMode::is_planned")]
-    mode: RestartMode,
-    commit_requested: bool,
-    exit_confirmed: bool,
+    pub(super) mode: RestartMode,
+    pub(super) commit_requested: bool,
+    pub(super) exit_confirmed: bool,
 }
 
 impl PlannedRestart {
@@ -289,47 +289,58 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BODHI_PLANNED_UPDATE_BAMBOO set to an independently built native Bamboo"]
     async fn native_bodhi_control_replaces_two_owned_bamboo_processes() {
-        native_bodhi_restart(RestartMode::Planned).await;
+        native_bodhi_restart(RestartMode::Planned, None).await;
     }
 
     #[tokio::test]
     #[ignore = "requires BODHI_PLANNED_UPDATE_BAMBOO with immediate-update-v1 support"]
     async fn native_bodhi_control_applies_an_immediate_checkpointed_update() {
-        native_bodhi_restart(RestartMode::Immediate).await;
+        native_bodhi_restart(RestartMode::Immediate, None).await;
     }
 
-    async fn native_bodhi_restart(mode: RestartMode) {
+    #[tokio::test]
+    #[ignore = "requires two official native Bamboo executables via BODHI_PLANNED_UPDATE_BAMBOO and BODHI_NEXT_UPDATE_BAMBOO"]
+    async fn native_owned_bamboo_switch_reuses_the_host_and_profile() {
+        let replacement = PathBuf::from(std::env::var_os("BODHI_NEXT_UPDATE_BAMBOO").unwrap());
+        native_bodhi_restart(RestartMode::Planned, Some(&replacement)).await;
+    }
+
+    fn stage_native_binary(
+        profile: &Profile,
+        binary: &std::path::Path,
+    ) -> (String, Asset, PathBuf) {
+        let output = std::process::Command::new(binary)
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let version = std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .trim()
+            .strip_prefix("bamboo ")
+            .unwrap()
+            .to_owned();
+        let mut digest = Sha256::new();
+        let size_bytes = io::copy(&mut fs::File::open(binary).unwrap(), &mut digest).unwrap();
+        let asset = Asset {
+            sha256: format!("{:x}", digest.finalize()),
+            size_bytes,
+        };
+        let cache = profile.state_dir.join(format!("bamboo-{}", asset.sha256));
+        fs::create_dir(&cache).unwrap();
+        let path = cache.join(format!("bamboo{}", std::env::consts::EXE_SUFFIX));
+        fs::copy(binary, &path).unwrap();
+        (version, asset, path)
+    }
+
+    async fn native_bodhi_restart(mode: RestartMode, replacement: Option<&std::path::Path>) {
         let _ = env_logger::builder().is_test(true).try_init();
         let binary = PathBuf::from(std::env::var_os("BODHI_PLANNED_UPDATE_BAMBOO").unwrap());
         assert!(planned_update::executable_supports(&binary).await.unwrap());
         let scratch = tempfile::tempdir().unwrap();
         let profile = Profile::open(scratch.path()).unwrap();
         let manager = Manager::new(profile.clone()).unwrap();
-        let version = std::process::Command::new(&binary)
-            .arg("--version")
-            .output()
-            .unwrap();
-        assert!(version.status.success());
-        let version = std::str::from_utf8(&version.stdout)
-            .unwrap()
-            .trim()
-            .strip_prefix("bamboo ")
-            .unwrap();
-        let mut digest = Sha256::new();
-        let size_bytes = io::copy(&mut fs::File::open(&binary).unwrap(), &mut digest).unwrap();
-        let executable = Asset {
-            sha256: format!("{:x}", digest.finalize()),
-            size_bytes,
-        };
-        let cache = profile
-            .state_dir
-            .join(format!("bamboo-{}", executable.sha256));
-        fs::create_dir(&cache).unwrap();
-        fs::copy(
-            &binary,
-            cache.join(format!("bamboo{}", std::env::consts::EXE_SUFFIX)),
-        )
-        .unwrap();
+        let (version, executable, path) = stage_native_binary(&profile, &binary);
 
         let mut original = crate::component_channel::tests::initial_combination().await;
         let channel = crate::component_channel::tests::fixture_channel().await;
@@ -345,12 +356,27 @@ mod tests {
         let catalog_version = if version == "0.0.0" {
             original.bamboo.version.clone()
         } else {
-            version.into()
+            version.clone()
         };
         stage_pair(&profile, &mut original, &catalog_version, &executable);
-        stage_pair(&profile, &mut target, &catalog_version, &executable);
-        target.bamboo = original.bamboo.clone();
-        assert_ne!(target.lotus.manifest_sha256, original.lotus.manifest_sha256);
+        let (target_version, target_path) = if let Some(replacement) = replacement {
+            let (next, next_asset, next_path) = stage_native_binary(&profile, replacement);
+            assert!(
+                semver::Version::parse(&next).unwrap() > semver::Version::parse(&version).unwrap()
+            );
+            stage_pair(&profile, &mut target, &next, &next_asset);
+            target.lotus = original.lotus.clone();
+            assert_eq!(
+                target.update_kind(&original),
+                Some(crate::component_channel::UpdateKind::Bamboo)
+            );
+            (next, next_path)
+        } else {
+            stage_pair(&profile, &mut target, &catalog_version, &executable);
+            target.bamboo = original.bamboo.clone();
+            assert_ne!(target.lotus.manifest_sha256, original.lotus.manifest_sha256);
+            (version.clone(), path)
+        };
         fs::write(profile.data.join("config.json"), b"{}").unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -425,50 +451,60 @@ mod tests {
 
         manager.prepare_update(&original, &target).await.unwrap();
         journal::save_downloaded(&profile, &target).unwrap();
-        let plan = manager
-            .plan_restart(
-                &old.0,
-                &SelectedUpdate {
-                    current_sequence: original.sequence,
-                    current: original.identity(),
-                    candidate: target.clone(),
-                },
-                mode,
-            )
-            .await
-            .unwrap();
+        let update = std::sync::Arc::new(SelectedUpdate {
+            current_sequence: original.sequence,
+            current: original.identity(),
+            candidate: target.clone(),
+        });
+        let plan = manager.plan_restart(&old.0, &update, mode).await.unwrap();
         let persisted = PlannedRestart::read(&profile).unwrap().unwrap();
         assert_eq!(persisted.request, plan.request);
-        assert_eq!(
-            serde_json::to_value(persisted.mode.prepare_action()).unwrap(),
-            serde_json::to_value(mode.prepare_action()).unwrap()
-        );
+        assert_eq!(persisted.mode, mode);
         assert_eq!(manager.choose().await.unwrap(), original);
         assert!(profile.writer().is_err());
-        manager
-            .prepare_planned_restart(&old.0, port, persisted)
-            .await
-            .unwrap();
-        assert!(PlannedRestart::read(&profile)
-            .unwrap()
-            .unwrap()
-            .authorized(&profile)
-            .unwrap());
+
+        let new_host = replacement.is_none().then(Host::default);
+        let new_manager = replacement
+            .is_none()
+            .then(|| Manager::new(profile.clone()).unwrap());
+        let (running_manager, running_host, handoff) =
+            if let (Some(restarted), Some(next)) = (&new_manager, &new_host) {
+                manager
+                    .prepare_planned_restart(&old.0, port, persisted)
+                    .await
+                    .unwrap();
+                let handoff = restarted.arm_authorized_restart().unwrap().unwrap();
+                (restarted, next, handoff)
+            } else {
+                use super::super::kernel_switch::{KernelStop, KernelSwitch};
+                let prepared = manager.reopen_prepared(&target).await.unwrap();
+                let pending = KernelSwitch::new(update.clone(), KernelStop::Checkpoint(mode));
+                let handoff = manager
+                    .stop_owned_for_switch(
+                        &old.0,
+                        port,
+                        &pending,
+                        &prepared,
+                        &Journal::read(&profile).unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                (&manager, &old, handoff)
+            };
+        assert!(handoff.authorized(&profile).unwrap());
+        assert_eq!(handoff.request, plan.request);
         assert!(!owner.is_ready());
         assert!(profile.writer().is_ok());
+        let foreign_listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        assert!(crate::sidecar::require_available_port(port).is_err());
+        drop(foreign_listener);
 
-        let restarted = Manager::new(profile.clone()).unwrap();
-        let handoff = restarted.arm_authorized_restart().unwrap().unwrap();
-        assert_eq!(handoff.request, plan.request);
-        restarted.begin(&target).unwrap();
-        let prepared = restarted.reopen_prepared(&target).await.unwrap();
-        assert_eq!(
-            prepared.kernel.executable,
-            cache.join(format!("bamboo{}", std::env::consts::EXE_SUFFIX))
-        );
-        let next = Host::default();
-        let successor = start(&next.0, &prepared);
-        assert_ne!(next.0.planned_update_owner().unwrap(), plan.owner);
+        running_manager.begin(&target).unwrap();
+        let prepared = running_manager.reopen_prepared(&target).await.unwrap();
+        assert_eq!(prepared.kernel.executable, target_path);
+        let successor = start(&running_host.0, &prepared);
+        assert_ne!(running_host.0.planned_update_owner().unwrap(), plan.owner);
         crate::sidecar::wait_for_health(
             port,
             30,
@@ -477,20 +513,21 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(profile.writer().is_err());
         assert_eq!(
             crate::sidecar::owned_version(port, &successor)
                 .await
                 .unwrap(),
-            version
+            target_version
         );
-        restarted.finish(&target, Ok(())).unwrap();
-        restarted
-            .resume_planned_restart(&next.0, &handoff)
+        running_manager.finish(&target, Ok(())).unwrap();
+        running_manager
+            .resume_planned_restart(&running_host.0, &handoff)
             .await
             .unwrap();
-        assert_eq!(restarted.choose().await.unwrap(), target);
+        assert_eq!(running_manager.choose().await.unwrap(), target);
         assert!(PlannedRestart::read(&profile).unwrap().is_none());
-        next.0.stop_for_update(TIMEOUT).await.unwrap();
+        running_host.0.stop_for_update(TIMEOUT).await.unwrap();
     }
 
     fn stage_pair(profile: &Profile, pair: &mut Combination, version: &str, executable: &Asset) {
@@ -553,6 +590,17 @@ impl Manager {
         mode: RestartMode,
     ) -> Result<PlannedRestart, String> {
         let target = self.reopen_downloaded_update(&update.candidate).await?;
+        self.plan_verified_restart(runtime, update, mode, &target)
+            .await
+    }
+
+    pub(super) async fn plan_verified_restart(
+        &self,
+        runtime: &SidecarState,
+        update: &SelectedUpdate,
+        mode: RestartMode,
+        target: &super::Prepared,
+    ) -> Result<PlannedRestart, String> {
         if !planned_update::executable_supports(&target.kernel.executable).await? {
             return Err("The downloaded Bamboo cannot restore a planned update. The current session remains available.".into());
         }

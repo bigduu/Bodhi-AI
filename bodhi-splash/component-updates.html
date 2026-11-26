@@ -32,6 +32,15 @@
     .component-controls select { min-width: 0; max-width: 100%; }
     .component-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .component-actions[hidden], #phase:empty, .component-phase:empty, #last-check:empty { display: none; }
+    #phase[data-switching] { display: flex; align-items: center; gap: 8px; min-height: 1.5em; }
+    #phase[data-switching]::before {
+      content: ""; flex: 0 0 auto; width: .8em; height: .8em; border: 2px solid #454c57;
+      border-top-color: #c2dcff; border-radius: 50%; animation: switch-spin .9s linear infinite;
+    }
+    @keyframes switch-spin { to { transform: rotate(1turn); } }
+    @media (prefers-reduced-motion: reduce) {
+      #phase[data-switching]::before { animation: none; }
+    }
     .force-warning { color: #f3cd92; }
     .component-import, .component-rollback { border-top: 1px solid #353a44; margin-top: 12px; padding-top: 12px; }
     #bamboo-import-hint, #rollback-lotus-hint { display: block; margin-top: 8px; }
@@ -62,7 +71,7 @@
     <p class="shell-version">Bodhi <span id="bodhi">—</span></p>
     <small id="last-check"></small>
   </div>
-  <p id="phase" role="status"></p>
+  <p id="phase" role="status" aria-atomic="true"></p>
   <p id="error" class="error" role="alert" hidden></p>
   <div id="download" hidden>
     <progress id="progress" aria-label="Download progress" data-i18n-label="progress.label"></progress>
@@ -99,6 +108,7 @@
     <div class="component-controls" data-part="controls"></div>
   </section>
   <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
+  <p id="bamboo-restart-hint" data-i18n="updates.confirmBambooBody" hidden></p>
   <button id="retry-restart" type="button" data-i18n="updates.retryRestart" aria-describedby="restart-hint" hidden>Retry restart</button>
   <section aria-labelledby="check-interval-title">
     <h2 id="check-interval-title" data-i18n="updates.autoCheckSettings">Automatic checks</h2>

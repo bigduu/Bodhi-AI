@@ -205,6 +205,28 @@ impl SidecarState {
             .ok_or("Bodhi does not own a Bamboo process.".into())
     }
 
+    pub(crate) fn owned_startup_status(&self) -> Result<StartupStatus, String> {
+        let child = self.owned_child()?;
+        if child
+            .process
+            .try_wait()
+            .map_err(|error| error.to_string())?
+            .is_some()
+            || !child.startup.is_ready()
+        {
+            return Err("The owned Bamboo process is not ready".into());
+        }
+        Ok(child.startup.clone())
+    }
+
+    pub(crate) fn owned_has_exited(&self) -> Result<bool, String> {
+        self.owned_child()?
+            .process
+            .try_wait()
+            .map(|exit| exit.is_some())
+            .map_err(|error| error.to_string())
+    }
+
     /// Stop this exact child through the server's normal cleanup path.
     pub(crate) async fn stop_for_update(&self, timeout: Duration) -> Result<(), String> {
         self.wait_for_update_exit(timeout, true).await
