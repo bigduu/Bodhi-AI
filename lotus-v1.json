@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "recommendedVersion": "2026.11.35",
+  "releases": [
+    {
+      "release": {
+        "version": "2026.11.35",
+        "sourceRevision": "135e1ccd2eece19dcb7cc4594be93eff17169449",
+        "manifestSha256": "76f64d64926dff8282072c8ddfb98225044eb207631b76c306d602b76f97e694",
+        "resourcesSha256": "f0e42fe172609b99d8517c77a83dce7caf56009382e5ecf2b3996502c2cb1fc7",
+        "tarball": {
+          "sha256": "9e12c97f2f4d2322949069ba84efe132a23e32a52f56c4f79cdbf2c8c71bb744",
+          "sizeBytes": 4150890
+        }
+      },
+      "changes": [
+        "feat: package Lotus Next Bootstrap requirements",
+        "fix: recover Mermaid module loading automatically",
+        "Merge pull request #726 from bigduu/lotus-next/fix/725-mermaid-module-recovery",
+        "Merge branch 'dev' into lotus-next/feat/718-bootstrap-compatibility",
+        "feat: animate newly generated session titles",
+        "test: measure title layout without transforms",
+        "Merge pull request #719 from bigduu/lotus-next/feat/718-bootstrap-compatibility",
+        "Merge commit 'aacb8f79f2a2efdd94f972d84053620c4f8bcb8b' into lotus-next/fix/session-title-motion",
+        "Merge pull request #727 from bigduu/lotus-next/fix/session-title-motion",
+        "fix: keep hidden Solid selects out of WebKit listbox rendering",
+        "test: detach chat scroll before asserting Side Chat quote layout",
+        "Merge pull request #732 from bigduu/lotus-next/fix/731-side-chat-quote-scroll",
+        "Merge remote-tracking branch 'origin/dev' into lotus-next/fix/729-webkit-hidden-select",
+        "Merge pull request #730 from bigduu/lotus-next/fix/729-webkit-hidden-select",
+        "feat: expose the Project Work board in the sidebar",
+        "Merge pull request #735 from bigduu/lotus-next/feat/734-visible-project-work-board",
+        "fix: recover unsent Bodhi composer drafts on reload",
+        "fix: discard stale composer drafts when storage fails",
+        "fix: restrict draft reload recovery to ordinary Root composers",
+        "Merge pull request #738 from bigduu/lotus-next/fix/737-retain-unsubmitted-draft"
+      ]
+    }
+  ]
+}
