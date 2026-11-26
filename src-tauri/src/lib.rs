@@ -657,6 +657,9 @@ pub fn run() {
             component_startup::updates::open_component_updates,
             component_startup::updates::set_component_download_settings,
             component_startup::updates::set_component_check_interval,
+            component_startup::updates::save_github_update_token,
+            component_startup::updates::test_github_update_token,
+            component_startup::updates::remove_github_update_token,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -97,6 +97,20 @@ update. Unix kernels without the managed shutdown channel use Bamboo's SIGTERM
 shutdown. Automatic restart on Windows requires a kernel that supports the
 managed shutdown channel.
 
+## GitHub credentials for Bamboo update checks
+
+In **Versions and Updates**, optionally save a personal GitHub token for the
+Bamboo release check. A fine-grained token with public repository read access
+is sufficient. Use **Test token** to check it through the current proxy route.
+Bodhi sends it only to the official GitHub REST endpoint for Bamboo release
+and tag metadata. The official downloads and configured mirrors use separate
+requests. A GitHub rate-limit response gives a retry time. Changing or removing
+the token clears that cooldown.
+
+Bodhi shows whether the token is stored in macOS Keychain or Windows Credential
+Manager, or held only for the current session. Linux uses session storage in
+the running Bodhi process. Use **Remove token** to return to anonymous checks.
+
 ## Importing a Bamboo update from local files
 
 If the GitHub Release API is unavailable, download three files from the same [official Bamboo release](https://github.com/bigduu/Bamboo-agent/releases) into one folder:
