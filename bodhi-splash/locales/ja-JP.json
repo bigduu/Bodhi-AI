@@ -60,7 +60,7 @@
   "githubToken.hint": "公開リポジトリの読み取り権限だけを持つ細かい権限設定のトークンを使用してください。Bodhi は api.github.com で Bamboo の更新を確認するときに使用します。",
   "githubToken.none": "トークンは未設定です。",
   "githubToken.session": "トークンは今回の Bodhi セッションでのみ有効です。",
-  "githubToken.unavailable": "システムの資格情報ストアを読み込めませんでした。保存済みのトークンを削除するか、新しいトークンを入力できます。",
+  "githubToken.storeUnreadable": "システムの資格情報ストアを読み込めませんでした。保存済みのトークンを削除するか、新しいトークンを入力できます。",
   "githubToken.stored": "トークンはシステムの資格情報ストアに保存されています。",
   "githubToken.save": "トークンを保存",
   "githubToken.test": "接続をテスト",

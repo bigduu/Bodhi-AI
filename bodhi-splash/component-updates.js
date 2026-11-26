@@ -85,7 +85,8 @@ function renderGithubToken() {
   get("save-github-token").disabled = disabled || !input.value.trim();
   get("test-github-token").disabled = disabled || !configured;
   get("remove-github-token").disabled = disabled || !(configured || unavailable);
-  setText(get("github-token-state"), knownState ? i18n.text(`githubToken.${state}`) : "");
+  const stateKey = unavailable ? "githubToken.storeUnreadable" : `githubToken.${state}`;
+  setText(get("github-token-state"), knownState ? i18n.text(stateKey) : "");
   const status = get("github-token-status");
   const statusKey = githubTokenPending ? "githubToken.pending" : githubTokenFeedback?.key;
   status.hidden = !statusKey;
