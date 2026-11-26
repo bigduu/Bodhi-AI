@@ -1,6 +1,8 @@
+use super::github_api::{GitHubApi, GitHubEndpoint};
+use super::github_token::GitHubUpdateCredentials;
 use super::{
-    asset, bamboo_version, hex, native_asset_name, producer_client, read_limited, Asset,
-    BambooRelease, BrowserRuntimeArtifact, NativeArtifact, ReleaseCheckError, NATIVE_TARGETS,
+    asset, bamboo_version, hex, native_asset_name, read_limited, Asset, BambooRelease,
+    BrowserRuntimeArtifact, NativeArtifact, ReleaseCheckError, NATIVE_TARGETS,
 };
 use crate::{bamboo_update::RELEASES, component_download::DownloadSettings};
 use reqwest::{Client, Url};
@@ -11,7 +13,6 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
-const API: &str = "https://api.github.com/repos/bigduu/Bamboo-agent";
 const SIDECARS: &str = "bamboo-sidecars-v3.json";
 const BROWSER_RUNTIMES: &str = "bamboo-desktop-browser-runtimes-v1.json";
 const BROWSER_HOST: &str = "bamboo-browser-host-v1.tar.gz";
@@ -192,13 +193,31 @@ fn url(address: &str) -> Result<Url, String> {
 }
 
 async fn get_json<T: DeserializeOwned>(
-    client: &Client,
-    address: &str,
+    api: &GitHubApi<'_>,
+    endpoint: GitHubEndpoint<'_>,
     limit: usize,
     label: &str,
 ) -> Result<T, ReleaseCheckError> {
-    let bytes = read_limited(client, url(address)?, limit, label).await?;
+    let bytes = api.read(endpoint, limit, label).await?;
     Ok(parse(&bytes, label)?)
+}
+
+pub(crate) async fn test_github_update_token(
+    credentials: &GitHubUpdateCredentials,
+    settings: &DownloadSettings,
+) -> Result<(), &'static str> {
+    if credentials.authorization().is_none() {
+        return Err("token-missing");
+    }
+    let api = GitHubApi::new(credentials, settings).map_err(|error| error.test_code())?;
+    let label = "Bamboo release metadata";
+    let bytes = api
+        .read(GitHubEndpoint::Latest, MANIFEST_LIMIT as usize, label)
+        .await
+        .map_err(|error| error.test_code())?;
+    let release: GitHubRelease = parse(&bytes, label).map_err(|_| "github-api-unavailable")?;
+    release.version().map_err(|_| "github-api-unavailable")?;
+    Ok(())
 }
 
 fn verify_manifest_bytes(bytes: &[u8], identity: &Asset, name: &str) -> Result<(), String> {
@@ -450,19 +469,16 @@ pub(crate) fn read_local_bamboo_manifest(path: &Path) -> Result<(String, Asset),
 }
 
 async fn load(
+    credentials: &GitHubUpdateCredentials,
     settings: &DownloadSettings,
     selected: Option<&BambooRelease>,
 ) -> Result<(BambooRelease, Vec<String>), ReleaseCheckError> {
     let expected_version = selected.map(|release| release.version.as_str());
-    let suffix = match expected_version {
-        Some(version) if bamboo_version(version).is_some() => format!("tags/v{version}"),
-        Some(_) => return Err("Invalid Bamboo stable release version".into()),
-        None => "latest".into(),
-    };
-    let api = producer_client(settings, "Bamboo release metadata")?;
+    let endpoint = expected_version.map_or(GitHubEndpoint::Latest, GitHubEndpoint::ReleaseTag);
+    let api = GitHubApi::new(credentials, settings)?;
     let release: GitHubRelease = get_json(
         &api,
-        &format!("{API}/releases/{suffix}"),
+        endpoint,
         MANIFEST_LIMIT as usize,
         "Bamboo release metadata",
     )
@@ -476,11 +492,15 @@ async fn load(
     }
     let download_origin = url(RELEASES)?;
     let client = settings.artifact_client(&download_origin, &download_origin)?;
-    let commit_url = format!("{API}/commits/{}", release.tag_name);
     // An available rejection must reach the caller even if a sibling stalls.
     let (revision, sidecars, browser_runtime) = tokio::try_join!(
         prioritize_rejection(tag_revision(
-            get_json(&api, &commit_url, 8 * 1024 * 1024, "Bamboo tag commit"),
+            get_json(
+                &api,
+                GitHubEndpoint::CommitTag(version),
+                8 * 1024 * 1024,
+                "Bamboo tag commit"
+            ),
             selected,
         )),
         prioritize_rejection(download_manifest::<SidecarManifest>(
@@ -520,16 +540,18 @@ async fn load(
 }
 
 pub(super) async fn load_latest(
+    credentials: &GitHubUpdateCredentials,
     settings: &DownloadSettings,
 ) -> Result<(BambooRelease, Vec<String>), String> {
-    Ok(load(settings, None).await?)
+    Ok(load(credentials, settings, None).await?)
 }
 
 pub(super) async fn load_version(
+    credentials: &GitHubUpdateCredentials,
     settings: &DownloadSettings,
     selected: &BambooRelease,
 ) -> Result<(BambooRelease, Vec<String>), ReleaseCheckError> {
-    load(settings, Some(selected)).await
+    load(credentials, settings, Some(selected)).await
 }
 
 #[cfg(test)]
