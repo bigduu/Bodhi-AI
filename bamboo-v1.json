@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 1,
-  "recommendedVersion": "2026.11.46",
+  "revision": 2,
+  "recommendedVersion": "2026.11.49",
   "releases": [
     {
       "release": {
@@ -99,6 +99,168 @@
         ]
       },
       "changes": []
+    },
+    {
+      "release": {
+        "version": "2026.11.49",
+        "sourceRevision": "fc0d7b4c4259366cda331f04bd4c1a73bdc4361c",
+        "manifest": {
+          "sha256": "0ee7c852f5e82e435045235782d6f0d8ed417f7e9cc6aaa1a89fb9a235328838",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "e60c5f8086071b836815fb00f42a8598be2390cbfd283e7b58a0f40ed62370b1",
+              "sizeBytes": 273790272
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "7e279837f1f766e2793e437cfc782a6da3dabf8fba4a30d4bcf99b8a689857ab",
+                "sizeBytes": 135224453
+              },
+              "receiptSha256": "ad3d9289b8aeb7b93c52e6531541bd84bc524344a90fbc7a7766d2f72db950ed"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "c6c9c654a471d772c2f998611cf69c0ae9ecf2581531b11276bbb884f3cffee5",
+              "sizeBytes": 221789184
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "2ca5c9e19ed20406340b1cad3d41a56480e976388b0d687ee221f39f5c904ea6",
+                "sizeBytes": 154106856
+              },
+              "receiptSha256": "b42414781606c26dd05121bfd6a873f56d02ea09af6be188c446c84e0fb9a5d0"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "7ccc560b2d20dda28e14fc8e3bfc4af6a05b54e6ea3455b9b4c1bd0c97d0d48e",
+              "sizeBytes": 299802520
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "b2ddd07ca992af12af8c66b356cec2b5cf31864917d354f2239751e85faad2ae",
+                "sizeBytes": 163847185
+              },
+              "receiptSha256": "c39a50c04c874a2cb5c8acb60f1c5c7d490bb11abbf3e347690e3a7d06d3808b"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "5a85d9c05b6d4fbbc0208ce97c72d22e3cbf250f76cd2d0aa0b1d3f6218cc31e",
+              "sizeBytes": 268412416
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "72c7e74ba708ca65f96d09a2760a60fd78b0db2f9d1cc3f8a37f2a837526204e",
+                "sizeBytes": 158153321
+              },
+              "receiptSha256": "25d7b6b99578943043c02907d7868a29eb6c0c94d2a8fff561ccb1ef0218244d"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "b90a4a29cb09c67507e7573fd6a4fe9586c7353bd14833befe3bdadc8435bc4b",
+              "sizeBytes": 313751000
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "1b12a3e387931a647f3a16a69c90c2ee513e4db924c57b84393e1f95929bd0b8",
+                "sizeBytes": 156683445
+              },
+              "receiptSha256": "37c70337a7d6a8295c7d1f2eb01aa236564d872c924e095cd8f59dcb70cb3910"
+            }
+          }
+        ]
+      },
+      "changes": [
+        "Merge pull request #3095 from bigduu/bamboo/fix/3093-replay-sealed-child-siblings",
+        "chore: align Session coordination with accepted Child replay changes",
+        "chore: refresh native Root fixture against latest dev",
+        "Merge pull request #3096 from bigduu/bamboo/test/2601-native-root-timeout-evidence",
+        "Merge remote-tracking branch 'origin/dev' into bamboo/feat/running-session-coordination",
+        "fix(server): verify running peer directory candidates individually",
+        "fix: derive run observation target from its Session reference",
+        "Merge pull request #3094 from bigduu/bamboo/feat/running-session-coordination",
+        "chore: refresh run observation fix against current dev",
+        "Merge pull request #3097 from bigduu/bamboo/fix/2647-observe-run-target-reference",
+        "fix: preflight named profiles before native Work admission",
+        "Merge pull request #3098 from bigduu/bamboo/fix/2628-preflight-named-work-profile",
+        "docs: define noninterrupting resident continuation v1",
+        "docs: fence pending continuation receipts to their Run",
+        "Merge pull request #3099 from bigduu/bamboo/docs/2498-noninterrupting-resident-continuation",
+        "feat: read current Project proof on Windows",
+        "Merge pull request #3102 from bigduu/bamboo/feat/3100-windows-project-reader",
+        "test: wait for publication before subscribing to live events",
+        "Merge pull request #3103 from bigduu/bamboo/fix/2292-dev-late-subscriber",
+        "test: read complete Nova fixture request headers",
+        "Merge pull request #3105 from bigduu/bamboo/test/3104-nova-request-headers",
+        "test: retain initial Root execute failure evidence",
+        "Merge pull request #3106 from bigduu/bamboo/test/3084-initial-execute-evidence",
+        "test: retain queued ingress tail rejection evidence",
+        "Merge pull request #3108 from bigduu/bamboo/test/3107-queued-ingress-retry-evidence",
+        "docs: define Windows Ticket ledger durability",
+        "Merge pull request #3110 from bigduu/bamboo/docs/3109-windows-ticket-durability",
+        "chore(deps): embed published Lotus Next 2026.11.33",
+        "test: probe Windows Ticket directory flush",
+        "test: query Windows token elevation at its fixed size",
+        "Merge pull request #3113 from bigduu/bamboo/chore/3112-embed-lotus-2026-11-33",
+        "Merge remote-tracking branch 'origin/dev' into bamboo/test/3111-windows-ticket-directory-flush",
+        "Merge pull request #3114 from bigduu/bamboo/test/3111-windows-ticket-directory-flush",
+        "test: probe Windows Ticket writer lock authority",
+        "fix(release): recover frozen Bamboo v2026.11.48 crates",
+        "Merge pull request #3117 from bigduu/bamboo/fix/3115-recover-bamboo-v2026-11-48",
+        "Merge remote-tracking branch 'origin/dev' into bamboo/test/3116-windows-ticket-writer-lock-proof",
+        "Merge pull request #3118 from bigduu/bamboo/test/3116-windows-ticket-writer-lock-proof",
+        "test: probe Windows Ticket handle-relative publication",
+        "test: correct Windows publication conflict fixture",
+        "Merge pull request #3120 from bigduu/bamboo/test/3119-windows-ticket-native-publication",
+        "test: verify Windows Ticket warm reopen after writer exit",
+        "Merge pull request #3123 from bigduu/bamboo/test/3122-windows-ticket-publication-process-exit",
+        "test: reject NTFS aliases before Ticket writer admission",
+        "test: attest the scope fixture before creating links",
+        "Merge pull request #3125 from bigduu/bamboo/test/3124-windows-ticket-scope-identity",
+        "test: qualify native Rust Windows Ticket writer ownership",
+        "test: prove Rust writer sharing and attest fixed token size",
+        "test: keep the Rust Windows writer probe lint clean",
+        "Merge pull request #3127 from bigduu/bamboo/test/3126-windows-ticket-rust-writer",
+        "test: qualify native Rust Windows immutable Ticket publication",
+        "Merge pull request #3130 from bigduu/bamboo/test/3128-windows-ticket-rust-immutable",
+        "test: qualify native Rust Windows Ticket HEAD replacement",
+        "Merge pull request #3132 from bigduu/bamboo/test/3131-windows-ticket-rust-head",
+        "test: qualify canonical Rust Windows Ticket graph publication",
+        "fix: make Ledger agenda available on demand",
+        "chore: refresh Ledger feature test source fingerprint",
+        "Merge pull request #3136 from bigduu/bamboo/test/3133-windows-ticket-rust-graph",
+        "fix: make session control tool schemas provider compatible",
+        "Merge branch 'dev' into bamboo/fix/3134-ledger-agenda-on-demand",
+        "Merge pull request #3135 from bigduu/bamboo/fix/3134-ledger-agenda-on-demand",
+        "Merge remote-tracking branch 'origin/dev' into bamboo/fix/3138-session-control-provider-schema",
+        "Merge pull request #3139 from bigduu/bamboo/fix/3138-session-control-provider-schema",
+        "另有 63 条提交，完整记录 https://github.com/bigduu/Bamboo-agent/compare/e0321cbf33b6791c054b39ec839b4fd87f94f303...fc0d7b4c4259366cda331f04bd4c1a73bdc4361c"
+      ]
     }
   ]
 }
