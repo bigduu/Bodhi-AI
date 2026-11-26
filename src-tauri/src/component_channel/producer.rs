@@ -1,3 +1,4 @@
+use super::github_token::GitHubUpdateCredentials;
 use super::{
     bamboo_release, lotus_release, BambooRelease, Combination, LotusRelease, ReleaseCheckError,
     UpdateKind,
@@ -13,6 +14,7 @@ pub(crate) struct Discovery {
 }
 
 pub(crate) async fn discover(
+    credentials: &GitHubUpdateCredentials,
     settings: &DownloadSettings,
     current: &Combination,
     downloaded: Option<&Combination>,
@@ -21,7 +23,7 @@ pub(crate) async fn discover(
     legacy_lotus: impl FnOnce(&LotusRelease) -> bool,
 ) -> Discovery {
     let (bamboo, lotus) = tokio::join!(
-        bamboo_release::load_latest(settings),
+        bamboo_release::load_latest(credentials, settings),
         lotus_release::discover_lotus(settings, None),
     );
     let bamboo = bamboo.and_then(|(release, changes)| bamboo_offer(current, release, changes));
@@ -192,6 +194,7 @@ fn next_pair(current: &Combination, offset: u64) -> Result<Combination, String> 
 }
 
 pub(crate) async fn reconfirm(
+    credentials: &GitHubUpdateCredentials,
     settings: &DownloadSettings,
     current: &Combination,
     selected: &Combination,
@@ -204,7 +207,7 @@ pub(crate) async fn reconfirm(
     }
     let matches = match selected.update_kind(current) {
         Some(UpdateKind::Bamboo) => {
-            bamboo_release::load_version(settings, &selected.bamboo)
+            bamboo_release::load_version(credentials, settings, &selected.bamboo)
                 .await?
                 .0
                 == selected.bamboo

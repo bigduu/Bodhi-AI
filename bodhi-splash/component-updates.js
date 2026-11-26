@@ -2,6 +2,15 @@ const get = (id) => document.getElementById(id);
 const invoke = (command, args) => window.__TAURI_INTERNALS__.invoke(command, args);
 const i18n = window.bodhiI18n;
 const importBambooCommand = "import_local_bamboo_update";
+const githubTokenErrors = {
+  "invalid-token": "githubToken.invalid",
+  "token-missing": "githubToken.missing",
+  "token-rejected": "githubToken.rejected",
+  "token-rate-limited": "githubToken.rateLimited",
+  "github-api-refused": "githubToken.refused",
+  "github-api-unavailable": "githubToken.unavailable",
+  "credential-store-unavailable": "githubToken.storeUnavailable",
+};
 const componentNames = { bamboo: "Bamboo", lotus: "Lotus Next" };
 const switchPhases = ["shuttingDown", "starting", "reconnecting", "restoringSessions"];
 const busyPhases = ["checking", "preparing", "downloading", "saving", "restarting", ...switchPhases];
@@ -32,6 +41,9 @@ let settingsMessage = "";
 let settingsError = "";
 let checkIntervalDirty = false;
 let checkIntervalSaving = false;
+let githubTokenPending = false;
+let githubTokenFeedback = null;
+
 
 function showCheckIntervalState() {
   get("check-interval-fields").disabled = checkIntervalSaving;
@@ -66,6 +78,26 @@ function renderSettings(settings) {
     get("proxy-url").value = settings.proxyUrl || "";
   }
   showSettingsState();
+}
+
+function renderGithubToken() {
+  const state = currentSnapshot?.githubUpdateTokenState;
+  const configured = state === "stored" || state === "session";
+  const unavailable = state === "unavailable";
+  const knownState = configured || unavailable || state === "none";
+  const disabled = !currentSnapshot?.running || !knownState || githubTokenPending;
+  const input = get("github-token");
+  get("github-token-fields").disabled = disabled;
+  get("save-github-token").disabled = disabled || !input.value.trim();
+  get("test-github-token").disabled = disabled || !configured;
+  get("remove-github-token").disabled = disabled || !(configured || unavailable);
+  const stateKey = unavailable ? "githubToken.storeUnreadable" : `githubToken.${state}`;
+  setText(get("github-token-state"), knownState ? i18n.text(stateKey) : "");
+  const status = get("github-token-status");
+  const statusKey = githubTokenPending ? "githubToken.pending" : githubTokenFeedback?.key;
+  status.hidden = !statusKey;
+  status.classList.toggle("error", !!githubTokenFeedback?.error);
+  setText(status, statusKey ? i18n.text(statusKey) : "");
 }
 
 function append(list, value) {
@@ -277,6 +309,7 @@ function render(snapshot) {
   get("lotus").textContent = active?.lotus || "—";
   renderCheckInterval(snapshot.autoCheckHours);
   renderSettings(snapshot.settings);
+  renderGithubToken();
   renderUpdates(snapshot);
   get("last-check").textContent = snapshot.lastCheck
     ? i18n.text("updates.lastCheck", { date: i18n.date(snapshot.lastCheck) })
@@ -465,6 +498,48 @@ get("check-interval-settings").addEventListener("submit", async (event) => {
     checkIntervalSaving = false;
     showCheckIntervalState();
   }
+});
+
+async function runGithubTokenAction(command, successKey, args) {
+  githubTokenPending = true;
+  githubTokenFeedback = null;
+  renderGithubToken();
+  try {
+    await invoke(command, args);
+    githubTokenFeedback = { key: successKey };
+  } catch (error) {
+    const key = typeof error === "string" && Object.hasOwn(githubTokenErrors, error)
+      ? githubTokenErrors[error] : "githubToken.operationFailed";
+    githubTokenFeedback = { key, error: true };
+  } finally {
+    githubTokenPending = false;
+    renderGithubToken();
+  }
+}
+
+const githubTokenInput = get("github-token");
+githubTokenInput.addEventListener("input", () => {
+  githubTokenFeedback = null;
+  renderGithubToken();
+});
+
+get("github-token-settings").addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (get("save-github-token").disabled) return;
+  const token = githubTokenInput.value.trim();
+  githubTokenInput.value = "";
+  void runGithubTokenAction("save_github_update_token", "githubToken.saved", { token });
+});
+
+get("test-github-token").addEventListener("click", () => {
+  if (get("test-github-token").disabled) return;
+  void runGithubTokenAction("test_github_update_token", "githubToken.tested");
+});
+
+get("remove-github-token").addEventListener("click", () => {
+  if (get("remove-github-token").disabled) return;
+  githubTokenInput.value = "";
+  void runGithubTokenAction("remove_github_update_token", "githubToken.removed");
 });
 
 void i18n.sync().then(refresh);

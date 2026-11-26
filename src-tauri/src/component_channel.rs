@@ -1,12 +1,16 @@
 //! Immutable component identities and the legacy bootstrap catalog.
 mod bamboo_release;
-pub(crate) use bamboo_release::{load_manual_bamboo_release, read_local_bamboo_manifest};
+pub(crate) use bamboo_release::{
+    load_manual_bamboo_release, read_local_bamboo_manifest, test_github_update_token,
+};
+mod github_api;
+pub(crate) mod github_token;
 pub(crate) mod lotus_release;
 pub(crate) mod producer;
 
 use crate::bamboo_update::version as bamboo_version;
 use crate::component_download::DownloadSettings;
-use reqwest::{redirect::Policy, Client, StatusCode, Url};
+use reqwest::{redirect::Policy, Client, Response, StatusCode, Url};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -302,21 +306,38 @@ async fn read_limited(
     limit: usize,
     label: &str,
 ) -> Result<Vec<u8>, ReleaseCheckError> {
-    let transport_error = |error: reqwest::Error| {
-        let unavailable = error.is_request() || error.is_timeout() || error.is_body();
-        let message = format!("{label}: {}", error.without_url());
-        if unavailable {
-            ReleaseCheckError::Unavailable(message)
-        } else {
-            ReleaseCheckError::Rejected(message)
-        }
-    };
-    let mut response = client.get(url).send().await.map_err(transport_error)?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| read_error(error, label))?;
     if response.status() != StatusCode::OK {
         return Err(format!("{label} returned HTTP {}", response.status()).into());
     }
+    read_bounded_body(response, limit, label).await
+}
+
+fn read_error(error: reqwest::Error, label: &str) -> ReleaseCheckError {
+    let unavailable = error.is_request() || error.is_timeout() || error.is_body();
+    let message = format!("{label}: {}", error.without_url());
+    if unavailable {
+        ReleaseCheckError::Unavailable(message)
+    } else {
+        ReleaseCheckError::Rejected(message)
+    }
+}
+
+async fn read_bounded_body(
+    mut response: Response,
+    limit: usize,
+    label: &str,
+) -> Result<Vec<u8>, ReleaseCheckError> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(transport_error)? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| read_error(error, label))?
+    {
         if chunk.len() > limit - bytes.len() {
             return Err(format!("{label} exceeds its size limit").into());
         }

@@ -4,6 +4,7 @@ use super::{
     planned_restart::RestartMode,
     Manager, SelectedUpdate,
 };
+use crate::component_channel::github_token::{GitHubUpdateCredentials, GitHubUpdateTokenState};
 use crate::component_channel::producer::{self, Discovery};
 use crate::component_channel::{
     load_manual_bamboo_release, read_local_bamboo_manifest, Changes, Combination, PairIdentity,
@@ -33,6 +34,7 @@ const IMMEDIATE_RELEASE_CHECK: Duration = Duration::from_secs(3);
 pub(super) struct Updates {
     display: Mutex<Display>,
     action: tokio::sync::Mutex<()>,
+    github_credentials: GitHubUpdateCredentials,
     restart_requested: AtomicBool,
     force_shutdown_started: AtomicBool,
     lotus_rollback_started: AtomicBool,
@@ -165,6 +167,7 @@ pub(crate) struct Snapshot {
     bamboo_restart_pending: bool,
     bamboo_recovery_pending: bool,
     settings: DownloadSettings,
+    github_update_token_state: GitHubUpdateTokenState,
     auto_check_hours: u16,
     last_check: Option<String>,
     display: Display,
@@ -358,6 +361,7 @@ impl Manager {
             bamboo_restart_pending: kernel_switch.is_some(),
             bamboo_recovery_pending: unconfirmed,
             settings: self.settings.borrow().clone(),
+            github_update_token_state: self.updates.github_credentials.status(),
             auto_check_hours: *self.auto_check_hours.borrow(),
             last_check: journal.last_check,
             display,
@@ -400,6 +404,7 @@ impl Manager {
     }
 
     pub(crate) async fn poll<R: Runtime>(&self, app: &AppHandle<R>) {
+        self.updates.github_credentials.initialize().await;
         let mut schedule = self.auto_check_hours.subscribe();
         loop {
             let delay = {
@@ -485,12 +490,14 @@ impl Manager {
     }
 
     async fn check(&self) -> bool {
+        self.updates.github_credentials.initialize().await;
         let detected = self
             .detect_updates(async |current, journal, downloaded| {
                 let mut settings = self.settings.subscribe();
                 loop {
                     let selected = settings.borrow_and_update().clone();
                     let work = producer::discover(
+                        &self.updates.github_credentials,
                         &selected,
                         current,
                         downloaded,
@@ -1227,10 +1234,16 @@ impl Manager {
                 .reconfirm(active, update, locale, self.load_catalog())
                 .await;
         }
+        self.updates.github_credentials.initialize().await;
         let mut settings = self.settings.subscribe();
         loop {
             let selected = settings.borrow_and_update().clone();
-            let work = producer::reconfirm(&selected, active, &update.candidate);
+            let work = producer::reconfirm(
+                &self.updates.github_credentials,
+                &selected,
+                active,
+                &update.candidate,
+            );
             if let Some(result) = while_selected(&mut settings, &selected, work).await {
                 return result;
             }
@@ -1558,6 +1571,51 @@ pub(crate) fn set_component_check_interval<R: Runtime>(
     app.try_state::<Manager>()
         .ok_or_else(|| "The component updater is unavailable".to_string())?
         .remember_check_hours(hours)
+}
+
+#[tauri::command]
+pub(crate) async fn save_github_update_token<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+    token: String,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    let manager = running_manager(&app)?;
+    let _action = manager.updates.action.lock().await;
+    manager.updates.github_credentials.save(token).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) async fn test_github_update_token<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    let manager = running_manager(&app)?;
+    let _action = manager.updates.action.lock().await;
+    let credentials = &manager.updates.github_credentials;
+    credentials.initialize().await;
+    let mut settings = manager.settings.subscribe();
+    loop {
+        let selected = settings.borrow_and_update().clone();
+        let work = crate::component_channel::test_github_update_token(credentials, &selected);
+        if let Some(result) = while_selected(&mut settings, &selected, work).await {
+            return result.map_err(str::to_owned);
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn remove_github_update_token<R: Runtime>(
+    app: AppHandle<R>,
+    window: WebviewWindow<R>,
+) -> Result<(), String> {
+    authorize(&window, false)?;
+    let manager = running_manager(&app)?;
+    let _action = manager.updates.action.lock().await;
+    manager.updates.github_credentials.remove().await?;
+    Ok(())
 }
 
 #[cfg(test)]

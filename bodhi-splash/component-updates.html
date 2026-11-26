@@ -129,6 +129,26 @@
       </fieldset>
     </form>
   </section>
+  <section aria-labelledby="github-token-title">
+    <h2 id="github-token-title" data-i18n="githubToken.title">Bamboo update authentication</h2>
+    <form id="github-token-settings" autocomplete="off">
+      <fieldset id="github-token-fields" disabled>
+        <div class="setting">
+          <label for="github-token" data-i18n="githubToken.label">GitHub token (optional)</label>
+          <input type="password" id="github-token" autocomplete="off" maxlength="512"
+            aria-describedby="github-token-hint github-token-state" spellcheck="false" autocapitalize="none">
+          <small id="github-token-hint" data-i18n="githubToken.hint">Use a fine-grained token with read-only access to public repositories. Bodhi uses it to check Bamboo releases on api.github.com.</small>
+          <small id="github-token-state"></small>
+        </div>
+        <div class="settings-footer">
+          <button id="save-github-token" type="submit" data-i18n="githubToken.save" disabled>Save token</button>
+          <button id="test-github-token" class="secondary" type="button" data-i18n="githubToken.test" disabled>Test connection</button>
+          <button id="remove-github-token" class="secondary" type="button" data-i18n="githubToken.remove" disabled>Remove token</button>
+        </div>
+        <small id="github-token-status" role="status" aria-atomic="true" hidden></small>
+      </fieldset>
+    </form>
+  </section>
   <section aria-labelledby="download-settings-title">
     <h2 id="download-settings-title" data-i18n="updates.downloadSettings">Download settings</h2>
     <form id="download-settings">
