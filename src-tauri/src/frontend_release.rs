@@ -4,7 +4,9 @@ use super::{
     VerifiedFrontend,
 };
 use crate::bamboo_profile::{is_link, publish_directory, Profile};
-use crate::component_channel::{Asset, LotusRelease};
+#[cfg(test)]
+use crate::component_channel::Asset;
+use crate::component_channel::LotusRelease;
 use crate::component_download::{acquire_asset, DownloadSettings, DownloadSource};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -94,7 +96,8 @@ fn verify_release(root: &Path, release: &LotusRelease) -> Result<VerifiedFronten
     verify_inventory(dist, manifest, release)
 }
 
-/// Inspect an npm-integrity-verified archive in the caller's private scratch directory.
+/// Inspect a fixture or a published archive in the caller's private scratch directory.
+#[cfg(test)]
 pub(crate) fn inspect_release_archive(
     version: &str,
     archive: &[u8],

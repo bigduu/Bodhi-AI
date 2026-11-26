@@ -1,4 +1,4 @@
-use super::github_api::{GitHubApi, GitHubEndpoint};
+use super::github_api::GitHubApi;
 use super::github_token::GitHubUpdateCredentials;
 use super::{
     asset, bamboo_version, hex, native_asset_name, read_limited, Asset, BambooRelease,
@@ -8,7 +8,6 @@ use crate::{bamboo_update::RELEASES, component_download::DownloadSettings};
 use reqwest::{Client, Url};
 use serde::{de::DeserializeOwned, Deserialize};
 use sha2::{Digest, Sha256};
-use std::future::Future;
 use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
@@ -26,25 +25,12 @@ const EXECUTABLE_LIMIT: u64 = 1024 * 1024 * 1024;
 const BROWSER_HOST_LIMIT: u64 = 8 * 1024 * 1024;
 const RUNTIME_LIMIT: u64 = 768 * 1024 * 1024;
 const ARTIFACT_COUNT: usize = NATIVE_TARGETS.len();
-const IDENTITY_CHANGED: &str = "The official Bamboo release identity changed after discovery";
-
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
     draft: bool,
     prerelease: bool,
     published_at: Option<chrono::DateTime<chrono::Utc>>,
-    body: Option<String>,
-    assets: Vec<GitHubAsset>,
-}
-
-#[derive(Deserialize)]
-struct GitHubAsset {
-    name: String,
-    state: String,
-    digest: Option<String>,
-    size: u64,
-    browser_download_url: String,
 }
 
 impl GitHubRelease {
@@ -57,41 +43,6 @@ impl GitHubRelease {
             .filter(|version| bamboo_version(version).is_some())
             .ok_or_else(|| "Invalid Bamboo stable release tag".into())
     }
-
-    fn asset_url(&self, name: &str) -> String {
-        format!("{RELEASES}/{}/{name}", self.tag_name)
-    }
-
-    fn asset(&self, name: &str, min: u64, max: u64) -> Result<Asset, String> {
-        let mut matching = self.assets.iter().filter(|item| item.name == name);
-        let item = matching
-            .next()
-            .ok_or_else(|| format!("Bamboo release is missing {name}"))?;
-        if matching.next().is_some()
-            || item.state != "uploaded"
-            || item.browser_download_url != self.asset_url(name)
-        {
-            return Err(format!("Invalid official Bamboo asset {name}"));
-        }
-        let identity = Asset {
-            sha256: item
-                .digest
-                .as_deref()
-                .and_then(|digest| digest.strip_prefix("sha256:"))
-                .unwrap_or_default()
-                .to_owned(),
-            size_bytes: item.size,
-        };
-        if !asset(&identity, min, max) {
-            return Err(format!("Invalid digest or size for Bamboo asset {name}"));
-        }
-        Ok(identity)
-    }
-}
-
-#[derive(Deserialize)]
-struct GitHubCommit {
-    sha: String,
 }
 
 #[derive(Deserialize)]
@@ -162,26 +113,6 @@ impl BrowserRuntimeManifest {
             && self.source_revision == revision
             && self.bamboo_manifest_sha256 == manifest.sha256
     }
-
-    fn matches_selected(&self, selected: &BambooRelease) -> bool {
-        self.matches_release(
-            &selected.version,
-            &selected.source_revision,
-            &selected.manifest,
-        ) && self.artifacts.len() == selected.artifacts.len()
-            && self
-                .artifacts
-                .iter()
-                .zip(&selected.artifacts)
-                .all(|(runtime, artifact)| {
-                    runtime.target == artifact.target
-                        && artifact.browser_runtime.as_ref().is_some_and(|asset| {
-                            runtime.asset_name == asset.asset_name
-                                && runtime.archive == asset.archive
-                                && runtime.receipt_sha256 == asset.receipt_sha256
-                        })
-                })
-    }
 }
 
 fn parse<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T, String> {
@@ -190,16 +121,6 @@ fn parse<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T, String> {
 
 fn url(address: &str) -> Result<Url, String> {
     Url::parse(address).map_err(|_| "Invalid official Bamboo release URL".into())
-}
-
-async fn get_json<T: DeserializeOwned>(
-    api: &GitHubApi<'_>,
-    endpoint: GitHubEndpoint<'_>,
-    limit: usize,
-    label: &str,
-) -> Result<T, ReleaseCheckError> {
-    let bytes = api.read(endpoint, limit, label).await?;
-    Ok(parse(&bytes, label)?)
 }
 
 pub(crate) async fn test_github_update_token(
@@ -212,20 +133,11 @@ pub(crate) async fn test_github_update_token(
     let api = GitHubApi::new(credentials, settings).map_err(|error| error.test_code())?;
     let label = "Bamboo release metadata";
     let bytes = api
-        .read(GitHubEndpoint::Latest, MANIFEST_LIMIT as usize, label)
+        .read(MANIFEST_LIMIT as usize, label)
         .await
         .map_err(|error| error.test_code())?;
     let release: GitHubRelease = parse(&bytes, label).map_err(|_| "github-api-unavailable")?;
     release.version().map_err(|_| "github-api-unavailable")?;
-    Ok(())
-}
-
-fn verify_manifest_bytes(bytes: &[u8], identity: &Asset, name: &str) -> Result<(), String> {
-    if &manifest_identity(bytes) != identity {
-        return Err(format!(
-            "Bamboo {name} bytes differ from the published identity"
-        ));
-    }
     Ok(())
 }
 
@@ -248,55 +160,6 @@ async fn download_manifest_bytes(
     )
     .await
     .map_err(|_| ReleaseCheckError::Unavailable(format!("Timed out reading Bamboo {name}")))?
-}
-
-async fn download_manifest<T: DeserializeOwned>(
-    client: &Client,
-    release: &GitHubRelease,
-    name: &str,
-) -> Result<(Asset, T), ReleaseCheckError> {
-    let identity = release.asset(name, 1, MANIFEST_LIMIT)?;
-    let address = url(&release.asset_url(name))?;
-    let bytes = download_manifest_bytes(client, address, identity.size_bytes, name).await?;
-    verify_manifest_bytes(&bytes, &identity, name)?;
-    Ok((identity, parse(&bytes, name)?))
-}
-
-async fn prioritize_rejection<T>(
-    check: impl Future<Output = Result<T, ReleaseCheckError>>,
-) -> Result<Result<T, ReleaseCheckError>, ReleaseCheckError> {
-    match check.await {
-        Err(error @ ReleaseCheckError::Rejected(_)) => Err(error),
-        result => Ok(result),
-    }
-}
-
-fn verify_selected_assets(release: &GitHubRelease, selected: &BambooRelease) -> Result<(), String> {
-    if release.asset(SIDECARS, 1, MANIFEST_LIMIT)? != selected.manifest
-        || release.asset(BROWSER_HOST, 1, BROWSER_HOST_LIMIT)? != selected.browser_host
-    {
-        return Err(IDENTITY_CHANGED.into());
-    }
-    for artifact in &selected.artifacts {
-        let browser = artifact.browser_runtime.as_ref().ok_or(IDENTITY_CHANGED)?;
-        if release.asset(&artifact.asset_name, 65_536, EXECUTABLE_LIMIT)? != artifact.executable
-            || release.asset(&browser.asset_name, 1, RUNTIME_LIMIT)? != browser.archive
-        {
-            return Err(IDENTITY_CHANGED.into());
-        }
-    }
-    Ok(())
-}
-
-async fn tag_revision(
-    read: impl Future<Output = Result<GitHubCommit, ReleaseCheckError>>,
-    selected: Option<&BambooRelease>,
-) -> Result<String, ReleaseCheckError> {
-    let GitHubCommit { sha } = read.await?;
-    if !hex(&sha, 40) || selected.is_some_and(|release| release.source_revision != sha) {
-        return Err(IDENTITY_CHANGED.into());
-    }
-    Ok(sha)
 }
 
 fn browser_host(host: BrowserHost) -> Result<Asset, String> {
@@ -366,19 +229,6 @@ fn native_artifact(
             receipt_sha256: runtime.receipt_sha256,
         }),
     })
-}
-
-fn verified_release(
-    release: &GitHubRelease,
-    version: &str,
-    source_revision: String,
-    manifest: Asset,
-    sidecars: SidecarManifest,
-    runtime: BrowserRuntimeManifest,
-) -> Result<BambooRelease, String> {
-    let verified = verify_manifests(version, source_revision, manifest, sidecars, runtime)?;
-    verify_selected_assets(release, &verified)?;
-    Ok(verified)
 }
 
 fn verify_manifests(
@@ -468,92 +318,6 @@ pub(crate) fn read_local_bamboo_manifest(path: &Path) -> Result<(String, Asset),
     Ok((manifest.version, manifest_identity(&bytes)))
 }
 
-async fn load(
-    credentials: &GitHubUpdateCredentials,
-    settings: &DownloadSettings,
-    selected: Option<&BambooRelease>,
-) -> Result<(BambooRelease, Vec<String>), ReleaseCheckError> {
-    let expected_version = selected.map(|release| release.version.as_str());
-    let endpoint = expected_version.map_or(GitHubEndpoint::Latest, GitHubEndpoint::ReleaseTag);
-    let api = GitHubApi::new(credentials, settings)?;
-    let release: GitHubRelease = get_json(
-        &api,
-        endpoint,
-        MANIFEST_LIMIT as usize,
-        "Bamboo release metadata",
-    )
-    .await?;
-    let version = release.version()?;
-    if expected_version.is_some_and(|expected| version != expected) {
-        return Err("Bamboo release version differs from the requested version".into());
-    }
-    if let Some(selected) = selected {
-        verify_selected_assets(&release, selected)?;
-    }
-    let download_origin = url(RELEASES)?;
-    let client = settings.artifact_client(&download_origin, &download_origin)?;
-    // An available rejection must reach the caller even if a sibling stalls.
-    let (revision, sidecars, browser_runtime) = tokio::try_join!(
-        prioritize_rejection(tag_revision(
-            get_json(
-                &api,
-                GitHubEndpoint::CommitTag(version),
-                8 * 1024 * 1024,
-                "Bamboo tag commit"
-            ),
-            selected,
-        )),
-        prioritize_rejection(download_manifest::<SidecarManifest>(
-            &client, &release, SIDECARS
-        )),
-        prioritize_rejection(async {
-            let (_, runtime) =
-                download_manifest::<BrowserRuntimeManifest>(&client, &release, BROWSER_RUNTIMES)
-                    .await?;
-            if selected.is_some_and(|release| !runtime.matches_selected(release)) {
-                return Err(IDENTITY_CHANGED.into());
-            }
-            Ok(runtime)
-        }),
-    )?;
-    let (manifest, sidecars) = sidecars?;
-    let verified = verified_release(
-        &release,
-        version,
-        revision?,
-        manifest,
-        sidecars,
-        browser_runtime?,
-    )?;
-    let changes = release
-        .body
-        .as_deref()
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("- "))
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && line.len() <= 2048)
-        .take(64)
-        .map(str::to_owned)
-        .collect();
-    Ok((verified, changes))
-}
-
-pub(super) async fn load_latest(
-    credentials: &GitHubUpdateCredentials,
-    settings: &DownloadSettings,
-) -> Result<(BambooRelease, Vec<String>), String> {
-    Ok(load(credentials, settings, None).await?)
-}
-
-pub(super) async fn load_version(
-    credentials: &GitHubUpdateCredentials,
-    settings: &DownloadSettings,
-    selected: &BambooRelease,
-) -> Result<(BambooRelease, Vec<String>), ReleaseCheckError> {
-    load(credentials, settings, Some(selected)).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,42 +327,12 @@ mod tests {
     const SOURCE: &str = "f8f9b0bc98025ae3acd0c771dc98b96e33c1bfba";
     const SHA: &str = "0e9e01b2d19cae262b4171d24bc9a24f297351e9a37c98c27817ac5f1a6de462";
 
-    #[tokio::test(start_paused = true)]
-    async fn release_rejection_is_returned_even_when_another_request_stalls() {
-        let result = tokio::time::timeout(Duration::from_secs(3), async {
-            tokio::try_join!(
-                prioritize_rejection(async {
-                    Err::<(), _>(ReleaseCheckError::Unavailable("offline".into()))
-                }),
-                prioritize_rejection(std::future::pending::<Result<(), ReleaseCheckError>>()),
-                prioritize_rejection(async { Err::<(), _>("Bamboo manifest changed".into()) }),
-            )
-        })
-        .await
-        .expect("the authoritative rejection must arrive before the offline deadline");
-        assert!(
-            matches!(result, Err(ReleaseCheckError::Rejected(message)) if message == "Bamboo manifest changed")
-        );
-    }
-
-    fn entry(name: &str, size: u64) -> Value {
-        json!({
-            "name": name,
-            "state": "uploaded",
-            "digest": format!("sha256:{SHA}"),
-            "size": size,
-            "browser_download_url": format!("{RELEASES}/v{VERSION}/{name}"),
-        })
-    }
-
-    fn fixture() -> (GitHubRelease, Asset, Value, Value) {
-        let mut assets = vec![entry(BROWSER_HOST, 100), entry(SIDECARS, 1_000)];
+    fn fixture() -> (Value, Value) {
         let mut sidecars = Vec::new();
         let mut browsers = Vec::new();
         for target in NATIVE_TARGETS {
             let name = native_asset_name(target);
             let browser_name = format!("bamboo-browser-runtime-v1-{target}.tar.gz");
-            assets.extend([entry(&name, 100_000), entry(&browser_name, 100)]);
             sidecars.push(json!({
                 "target": target,
                 "assetName": name,
@@ -615,14 +349,6 @@ mod tests {
                 "receiptSha256": SHA,
             }));
         }
-        let release: GitHubRelease = serde_json::from_value(json!({
-            "tag_name": format!("v{VERSION}"),
-            "draft": false,
-            "prerelease": false,
-            "published_at": "2026-11-25T13:28:51Z",
-            "assets": assets,
-        }))
-        .unwrap();
         let sidecar_manifest = json!({
             "schemaVersion": 3,
             "version": VERSION,
@@ -640,29 +366,12 @@ mod tests {
             "bambooManifestSha256": SHA,
             "artifacts": browsers,
         });
-        let manifest = release.asset(SIDECARS, 1, MANIFEST_LIMIT).unwrap();
-        (release, manifest, sidecar_manifest, browser_manifest)
-    }
-
-    fn verify(
-        release: &GitHubRelease,
-        manifest: Asset,
-        sidecars: Value,
-        browsers: Value,
-    ) -> Result<BambooRelease, String> {
-        verified_release(
-            release,
-            release.version()?,
-            SOURCE.into(),
-            manifest,
-            parse(&serde_json::to_vec(&sidecars).unwrap(), SIDECARS)?,
-            parse(&serde_json::to_vec(&browsers).unwrap(), BROWSER_RUNTIMES)?,
-        )
+        (sidecar_manifest, browser_manifest)
     }
 
     #[test]
     fn manual_release_uses_the_exact_tagged_manifests_for_every_target() {
-        let (_, _, sidecars, mut browsers) = fixture();
+        let (sidecars, mut browsers) = fixture();
         let sidecars = serde_json::to_vec(&sidecars).unwrap();
         let identity = manifest_identity(&sidecars);
         browsers["bambooManifestSha256"] = json!(identity.sha256);
@@ -685,7 +394,7 @@ mod tests {
 
     #[test]
     fn manual_release_rejects_mismatched_tags_revisions_targets_and_digests() {
-        let (_, _, sidecars, mut browsers) = fixture();
+        let (sidecars, mut browsers) = fixture();
         let sidecar_bytes = serde_json::to_vec(&sidecars).unwrap();
         assert!(verify_manual_manifests(
             VERSION,
@@ -720,7 +429,7 @@ mod tests {
 
     #[test]
     fn local_manifest_supplies_a_bounded_version_hint_and_exact_file_identity() {
-        let (_, _, mut sidecars, _) = fixture();
+        let (mut sidecars, _) = fixture();
         let directory = tempfile::tempdir().unwrap();
         let manifest = directory.path().join(SIDECARS);
         let bytes = serde_json::to_vec(&sidecars).unwrap();
@@ -744,109 +453,19 @@ mod tests {
         assert!(read_local_bamboo_manifest(&manifest).is_err());
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn changed_tag_revision_rejects_the_staged_release_before_a_manifest_finishes() {
-        let (release, manifest, sidecars, browsers) = fixture();
-        let selected = verify(&release, manifest, sidecars, browsers).unwrap();
-        let changed_tag = tag_revision(
-            async {
-                Ok(GitHubCommit {
-                    sha: "1".repeat(40),
-                })
-            },
-            Some(&selected),
-        );
-        let outcome = tokio::time::timeout(Duration::from_secs(3), async {
-            tokio::try_join!(
-                prioritize_rejection(changed_tag),
-                prioritize_rejection(std::future::pending::<Result<(), ReleaseCheckError>>()),
-            )
-        })
-        .await
-        .expect("the tag identity check must finish before the offline deadline");
-        assert!(
-            matches!(outcome, Err(ReleaseCheckError::Rejected(message)) if message == IDENTITY_CHANGED)
-        );
-    }
-
     #[test]
-    fn returned_release_assets_and_runtime_bindings_must_match_the_staged_release() {
-        let (mut release, manifest, sidecars, browsers) = fixture();
-        let selected = verify(&release, manifest, sidecars, browsers.clone()).unwrap();
-        let mut runtime: BrowserRuntimeManifest = serde_json::from_value(browsers).unwrap();
-        assert!(verify_selected_assets(&release, &selected).is_ok());
-        assert!(runtime.matches_selected(&selected));
-
-        release.assets[0].digest = Some(format!("sha256:{}", "1".repeat(64)));
-        assert_eq!(
-            verify_selected_assets(&release, &selected).unwrap_err(),
-            IDENTITY_CHANGED
-        );
-        runtime.artifacts[0].receipt_sha256 = "1".repeat(64);
-        assert!(!runtime.matches_selected(&selected));
-    }
-
-    #[test]
-    fn official_manifests_match_every_target_and_cross_bind_their_digests() {
-        let (release, manifest, sidecars, mut browsers) = fixture();
-        let verified = verify(
-            &release,
-            manifest.clone(),
-            sidecars.clone(),
-            browsers.clone(),
-        )
-        .unwrap();
-        assert_eq!(verified.source_revision, SOURCE);
-        assert_eq!(verified.artifacts.len(), ARTIFACT_COUNT);
-        assert!(verified
-            .artifacts
-            .iter()
-            .all(|artifact| artifact.browser_runtime.is_some()));
-        browsers["bambooManifestSha256"] = json!("1".repeat(64));
-        assert!(verify(&release, manifest, sidecars, browsers).is_err());
-    }
-
-    #[test]
-    fn rejects_wrong_targets_missing_runtime_and_changed_release_asset() {
-        let (mut release, manifest, mut sidecars, mut browsers) = fixture();
-        sidecars["artifacts"][1]["target"] = sidecars["artifacts"][0]["target"].clone();
-        assert!(verify(&release, manifest.clone(), sidecars, browsers.clone()).is_err());
-        let (_, _, sidecars, _) = fixture();
-        browsers["artifacts"].as_array_mut().unwrap().pop();
-        assert!(verify(&release, manifest.clone(), sidecars.clone(), browsers).is_err());
-        let (_, _, _, browsers) = fixture();
-        let native = native_asset_name(NATIVE_TARGETS[0]);
-        release
-            .assets
-            .iter_mut()
-            .find(|asset| asset.name == native)
-            .unwrap()
-            .digest = Some(format!("sha256:{}", "1".repeat(64)));
-        assert!(verify(&release, manifest, sidecars, browsers).is_err());
-    }
-
-    #[test]
-    fn rejects_unpublished_releases_and_nonofficial_asset_urls() {
-        let (mut release, _, _, _) = fixture();
+    fn github_connectivity_check_requires_a_published_stable_tag() {
+        let mut release = GitHubRelease {
+            tag_name: format!("v{VERSION}"),
+            draft: false,
+            prerelease: false,
+            published_at: chrono::DateTime::from_timestamp(1_800_000_000, 0),
+        };
+        assert_eq!(release.version().unwrap(), VERSION);
         release.prerelease = true;
         assert!(release.version().is_err());
         release.prerelease = false;
         release.tag_name = format!("v{VERSION}-rc.1");
         assert!(release.version().is_err());
-        release.tag_name = format!("v{VERSION}");
-        release.assets[0].browser_download_url = "https://mirror.example.test/asset".into();
-        assert!(release.asset(BROWSER_HOST, 1, BROWSER_HOST_LIMIT).is_err());
-    }
-
-    #[test]
-    fn both_manifest_downloads_require_the_exact_published_bytes() {
-        let bytes = br#"{"x":1}"#;
-        let digest = Asset {
-            sha256: format!("{:x}", Sha256::digest(bytes)),
-            size_bytes: bytes.len() as u64,
-        };
-        assert!(verify_manifest_bytes(bytes, &digest, SIDECARS).is_ok());
-        assert!(verify_manifest_bytes(br#"{"x":2}"#, &digest, SIDECARS).is_err());
-        assert!(verify_manifest_bytes(br#"{}"#, &digest, BROWSER_RUNTIMES).is_err());
     }
 }

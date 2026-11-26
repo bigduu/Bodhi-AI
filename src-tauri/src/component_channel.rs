@@ -1,4 +1,4 @@
-//! Immutable component identities and the legacy bootstrap catalog.
+//! Immutable component identities and the component catalogs.
 mod bamboo_release;
 pub(crate) use bamboo_release::{
     load_manual_bamboo_release, read_local_bamboo_manifest, test_github_update_token,
@@ -7,6 +7,7 @@ mod github_api;
 pub(crate) mod github_token;
 pub(crate) mod lotus_release;
 pub(crate) mod producer;
+pub(crate) mod stable;
 
 use crate::bamboo_update::version as bamboo_version;
 use crate::component_download::DownloadSettings;
@@ -361,41 +362,11 @@ fn parse(bytes: &[u8]) -> Result<VerifiedChannel, String> {
     }
     let mut sequence = 0;
     for combination in &channel.combinations {
-        let bamboo = &combination.bamboo;
-        let lotus = &combination.lotus;
-        if combination.producer_release
-            || combination.sequence <= sequence
-            || !stable_version(&bamboo.version)
-            || !stable_version(&lotus.version)
-            || !hex(&bamboo.source_revision, 40)
-            || !hex(&lotus.source_revision, 40)
-            || !hex(&lotus.manifest_sha256, 64)
-            || !hex(&lotus.resources_sha256, 64)
-            || !asset(&bamboo.manifest, 1, 1024 * 1024)
-            || !asset(&bamboo.browser_host, 1, 8 * 1024 * 1024)
-            || !asset(&lotus.tarball, 1, 32 * 1024 * 1024)
-        {
+        if combination.producer_release || combination.sequence <= sequence {
             return Err("Invalid component release identity".into());
         }
-        if bamboo.artifacts.len() != NATIVE_TARGETS.len()
-            || !bamboo
-                .artifacts
-                .iter()
-                .zip(NATIVE_TARGETS)
-                .all(|(artifact, target)| {
-                    artifact.target == target
-                        && artifact.asset_name == native_asset_name(target)
-                        && asset(&artifact.executable, 65_536, 1024 * 1024 * 1024)
-                        && artifact.browser_runtime.as_ref().is_none_or(|runtime| {
-                            runtime.asset_name
-                                == format!("bamboo-browser-runtime-v1-{target}.tar.gz")
-                                && asset(&runtime.archive, 1, 768 * 1024 * 1024)
-                                && hex(&runtime.receipt_sha256, 64)
-                        })
-                })
-        {
-            return Err("Invalid Bamboo native artifact inventory".into());
-        }
+        validate_lotus_release(&combination.lotus)?;
+        validate_bamboo_release(&combination.bamboo)?;
         if combination.accepts.len() > 64
             || !combination.accepts.iter().all(|identity| {
                 hex(&identity.bamboo_manifest_sha256, 64)
@@ -409,6 +380,47 @@ fn parse(bytes: &[u8]) -> Result<VerifiedChannel, String> {
         sequence = combination.sequence;
     }
     Ok(VerifiedChannel(channel))
+}
+
+fn validate_bamboo_release(bamboo: &BambooRelease) -> Result<&str, String> {
+    if !stable_version(&bamboo.version)
+        || !hex(&bamboo.source_revision, 40)
+        || !asset(&bamboo.manifest, 1, 1024 * 1024)
+        || !asset(&bamboo.browser_host, 1, 8 * 1024 * 1024)
+    {
+        return Err("Invalid component release identity".into());
+    }
+    if bamboo.artifacts.len() != NATIVE_TARGETS.len()
+        || !bamboo
+            .artifacts
+            .iter()
+            .zip(NATIVE_TARGETS)
+            .all(|(artifact, target)| {
+                artifact.target == target
+                    && artifact.asset_name == native_asset_name(target)
+                    && asset(&artifact.executable, 65_536, 1024 * 1024 * 1024)
+                    && artifact.browser_runtime.as_ref().is_none_or(|runtime| {
+                        runtime.asset_name == format!("bamboo-browser-runtime-v1-{target}.tar.gz")
+                            && asset(&runtime.archive, 1, 768 * 1024 * 1024)
+                            && hex(&runtime.receipt_sha256, 64)
+                    })
+            })
+    {
+        return Err("Invalid Bamboo native artifact inventory".into());
+    }
+    Ok(&bamboo.version)
+}
+
+fn validate_lotus_release(lotus: &LotusRelease) -> Result<&str, String> {
+    if !stable_version(&lotus.version)
+        || !hex(&lotus.source_revision, 40)
+        || !hex(&lotus.manifest_sha256, 64)
+        || !hex(&lotus.resources_sha256, 64)
+        || !asset(&lotus.tarball, 1, 32 * 1024 * 1024)
+    {
+        return Err("Invalid component release identity".into());
+    }
+    Ok(&lotus.version)
 }
 
 fn native_asset_name(target: &str) -> String {

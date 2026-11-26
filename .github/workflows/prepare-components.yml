@@ -1,11 +1,14 @@
 name: Prepare published components
 run-name: >-
-  ${{ inputs.component == 'discover' && 'Discover published Bodhi component updates'
+  ${{ (github.event_name == 'schedule' || inputs.component == 'discover') && 'Discover published Bodhi component updates'
+  || inputs.component == 'catalog' && format('Stable catalog candidate for {0}', inputs.bamboo != '' && format('Bamboo {0}', inputs.bamboo) || format('Lotus {0}', inputs.lotus))
   || format('Component inputs for {0}', inputs.component == 'bamboo' && format('Bamboo {0}', inputs.bamboo || 'latest')
   || inputs.component == 'lotus' && format('Lotus {0}', inputs.lotus || 'latest')
   || format('Bamboo {0} and Lotus {1}', inputs.bamboo, inputs.lotus)) }}
 
 on:
+  schedule:
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       component:
@@ -17,6 +20,7 @@ on:
           - bamboo
           - lotus
           - discover
+          - catalog
       bamboo:
         description: Exact published Bamboo version (required for pair, defaults to latest for bamboo)
         type: string
@@ -36,9 +40,9 @@ permissions:
 jobs:
   candidate:
     name: Verify original component identities
-    if: inputs.component != 'discover'
+    if: github.event_name == 'workflow_dispatch' && inputs.component != 'discover'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Require the trusted repository entrypoint
         run: test "$GITHUB_REPOSITORY" = bigduu/Bodhi-AI && test "$GITHUB_REF" = refs/heads/main
@@ -53,6 +57,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Read and verify upstream outputs without building the shell
+        id: candidate
         env:
           GH_TOKEN: ${{ github.token }}
           COMPONENT_SELECTION: ${{ inputs.component || 'pair' }}
@@ -97,28 +102,62 @@ jobs:
                 args+=(--from "$COMPONENT_PRIOR_LOTUS")
               fi
               ;;
+            catalog)
+              if [[ -n "$COMPONENT_PRIOR_BAMBOO" || -n "$COMPONENT_PRIOR_LOTUS" ]]; then
+                echo '::error::Catalog mode uses the online recommendation as its baseline.'
+                exit 1
+              fi
+              if [[ -n "$COMPONENT_BAMBOO" && -z "$COMPONENT_LOTUS" ]]; then
+                args=(--since-catalog bamboo "$COMPONENT_BAMBOO")
+              elif [[ -z "$COMPONENT_BAMBOO" && -n "$COMPONENT_LOTUS" ]]; then
+                args=(--since-catalog lotus "$COMPONENT_LOTUS")
+              else
+                echo '::error::Catalog mode requires exactly one explicit component version.'
+                exit 1
+              fi
+              ;;
             *)
-              echo '::error::Select pair, bamboo or lotus.'
+              echo '::error::Select pair, bamboo, lotus or catalog.'
               exit 1
               ;;
           esac
-          node scripts/prepare-component-candidate.cjs "${args[@]}" > "$RUNNER_TEMP/component-candidate.json"
+          candidate="$RUNNER_TEMP/component-candidate.json"
+          node scripts/prepare-component-candidate.cjs "${args[@]}" > "$candidate"
+          if [[ -s "$candidate" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The verified version is already recommended." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Prove the exact published pair on the native host
+        id: compatibility
+        if: inputs.component == 'catalog' && steps.candidate.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          compatibility="$RUNNER_TEMP/component-compatibility.json"
+          node scripts/verify-component-compatibility.cjs "$RUNNER_TEMP/component-candidate.json" > "$compatibility"
+          test -s "$compatibility"
+          echo "path=$compatibility" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
+        if: steps.candidate.outputs.available == 'true'
         with:
           name: component-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/component-candidate.json
+          path: |
+            ${{ runner.temp }}/component-candidate.json
+            ${{ steps.compatibility.outputs.path }}
           if-no-files-found: error
           retention-days: 30
 
   discover:
     name: Discover published ${{ matrix.component }} updates
-    if: inputs.component == 'discover'
+    if: github.event_name == 'schedule' || inputs.component == 'discover'
     strategy:
       fail-fast: false
       matrix:
         component: [bamboo, lotus]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Require the trusted repository entrypoint
         run: test "$GITHUB_REPOSITORY" = bigduu/Bodhi-AI && test "$GITHUB_REF" = refs/heads/main
@@ -143,14 +182,25 @@ jobs:
           node scripts/prepare-component-candidate.cjs --since-catalog "$COMPONENT" > "$candidate"
           if [[ -s "$candidate" ]]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
-            jq -r '"\(.component) \(.release.version) verified for compatibility review (catalog \(.catalog.version))."' "$candidate" >> "$GITHUB_STEP_SUMMARY"
+            jq -r '"\(.component) \(.release.version) found (stable recommendation \(.catalog.version // "none"), revision \(.catalog.revision))."' "$candidate" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "$COMPONENT is current in the stable catalog." >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Prove the exact published pair on the native host
+        if: steps.check.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          compatibility="$RUNNER_TEMP/component-compatibility.json"
+          node scripts/verify-component-compatibility.cjs "$RUNNER_TEMP/component-candidate.json" > "$compatibility"
+          test -s "$compatibility"
       - uses: actions/upload-artifact@v7
         if: steps.check.outputs.available == 'true'
         with:
           name: component-candidate-${{ matrix.component }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/component-candidate.json
+          path: |
+            ${{ runner.temp }}/component-candidate.json
+            ${{ runner.temp }}/component-compatibility.json
           if-no-files-found: error
           retention-days: 30
