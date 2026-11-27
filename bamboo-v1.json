@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 2,
-  "recommendedVersion": "2026.11.49",
+  "revision": 3,
+  "recommendedVersion": "2026.11.50",
   "releases": [
     {
       "release": {
@@ -260,6 +260,165 @@
         "Merge remote-tracking branch 'origin/dev' into bamboo/fix/3138-session-control-provider-schema",
         "Merge pull request #3139 from bigduu/bamboo/fix/3138-session-control-provider-schema",
         "另有 63 条提交，完整记录 https://github.com/bigduu/Bamboo-agent/compare/e0321cbf33b6791c054b39ec839b4fd87f94f303...fc0d7b4c4259366cda331f04bd4c1a73bdc4361c"
+      ]
+    },
+    {
+      "release": {
+        "version": "2026.11.50",
+        "sourceRevision": "08349582e073daba1a5e3674464a885b75427c79",
+        "manifest": {
+          "sha256": "d7d352b7b736d91a6738571788427a517271717a5613618df481b9b86f0d99c9",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "a629cde2ebb9fffe8444dc44cd06a53955f16fc83c58691bd5683429b6f86a30",
+              "sizeBytes": 274197216
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "1db7f1a8394a90aa7507548e9203c20f602ac2768c5726822ebbe915770eb34c",
+                "sizeBytes": 135224502
+              },
+              "receiptSha256": "eae84890dbe302e8ac6cde000d57d9ba0a85e0fd7bb7e04ea8ebc7e09cfe33a7"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "8110f3efc59eb72a24265f18bdbf207c03537759f7227b09e7aaec98fce9e8b3",
+              "sizeBytes": 222359552
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "edb3d89b8ab182ce3b990371d3980a424ea693d7e4672a181df6f74df20747ed",
+                "sizeBytes": 154106798
+              },
+              "receiptSha256": "ba005f5e02dea8cfde127cefcf7cb1a092822d2891ffc950fbf0f2e63b5376cb"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "02b86cdabddab1a36e2c98490bdfe67ede3719364c236d38e3741068f83e73c8",
+              "sizeBytes": 300449056
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "64d90657c44248faa6d08afe17edb1ef3215cdade2186095984a184c16c465dc",
+                "sizeBytes": 163847368
+              },
+              "receiptSha256": "2843c6364d2a6e119d328f0fb61f0259ab414c8df7de3dd43798ab4c4addff42"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "46579b33c01d0b77b8da25076bf70d00e42e49eabc6af1a07ac80b68ed0c36cc",
+              "sizeBytes": 269241856
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "ebba44e8818a55cae9ceb1498c9d7b62baecc8e68191819ef5443df8c6d9a105",
+                "sizeBytes": 158153158
+              },
+              "receiptSha256": "f7d54b352b76a03d193d10bfd3530f8e1188b778afe3714476e5a6ab9d6ae5d3"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "bb69dd52c5c82337dccbfed17d6da218836a23567c580df367d05571588ab374",
+              "sizeBytes": 314850128
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "2b79177d49ee0bd0339aef7d5160f90db9f5e8c718f3c0e2fbbf848878183331",
+                "sizeBytes": 156683299
+              },
+              "receiptSha256": "ab8fe6274744fd8f7ff04ab4af6ca2b2c8c9facf85802195952e0166a2361465"
+            }
+          }
+        ]
+      },
+      "changes": [
+        "test: qualify Rust Windows Ticket reopening after writer exit",
+        "Merge commit '77ee790abe2500cff0360e6a2f50e153fe0d7aee' into bamboo/test/3137-windows-ticket-rust-process-exit",
+        "Merge commit 'fc0d7b4c4259366cda331f04bd4c1a73bdc4361c' into bamboo/test/3137-windows-ticket-rust-process-exit",
+        "Merge pull request #3140 from bigduu/bamboo/test/3137-windows-ticket-rust-process-exit",
+        "fix: anchor legacy Session Inbox ACK to the locked directory",
+        "Merge pull request #3142 from bigduu/bamboo/fix/2423-anchor-legacy-ack",
+        "feat: summarize indexed sessions in the Project list",
+        "Merge pull request #3143 from bigduu/bamboo/feat/727-project-session-summary",
+        "feat(tui): create schedules with every supported trigger",
+        "Merge pull request #3145 from bigduu/bamboo/feat/3144-tui-schedule-triggers",
+        "feat(tui): show recent runs for the selected schedule",
+        "Merge pull request #3147 from bigduu/bamboo/feat/3146-tui-schedule-run-history",
+        "feat(tui): show bounded source previews for Markdown fences",
+        "Merge pull request #3149 from bigduu/bamboo/feat/3148-tui-fenced-code-previews",
+        "feat(tui): copy exact source from a selected code fence",
+        "Merge pull request #3151 from bigduu/bamboo/feat/3150-copy-code-fence",
+        "feat(tui): render assistant Markdown checklist status",
+        "Merge pull request #3153 from bigduu/bamboo/feat/3152-tui-markdown-checklists",
+        "feat(tui): browse the source of a selected code fence",
+        "Merge pull request #3155 from bigduu/bamboo/feat/3154-tui-fence-source-view",
+        "feat(tui): render assistant Markdown thematic breaks",
+        "Merge pull request #3157 from bigduu/bamboo/feat/3156-tui-markdown-thematic-breaks",
+        "feat(tui): render inline Markdown image descriptions",
+        "fix(tui): prefer complete image descriptions containing links",
+        "Merge pull request #3159 from bigduu/bamboo/feat/3158-tui-markdown-image-alt",
+        "feat(tui): open the session linked to a schedule run",
+        "Merge pull request #3161 from bigduu/bamboo/feat/3160-tui-open-scheduled-run-session",
+        "feat(tui): show the selected schedule cadence",
+        "perf: measure Grep worker CPU time and read buffer capacity",
+        "Merge pull request #3164 from bigduu/bamboo/feat/3162-tui-selected-schedule-cadence",
+        "Merge remote-tracking branch 'origin/dev' into bamboo/perf/3163-grep-resource-traces",
+        "feat(schedule): cancel an active scheduled session by run id",
+        "Merge pull request #3165 from bigduu/bamboo/perf/3163-grep-resource-traces",
+        "Merge commit 'b0d30fe6a9b7af0e5592c5f07c36dac84f5200b4' into HEAD",
+        "Merge pull request #3167 from bigduu/bamboo/feat/3166-cancel-ordinary-scheduled-run",
+        "feat(tui): cancel an active schedule run from Recent runs",
+        "feat(session): fork history through a selected message (#3169)",
+        "Merge pull request #3170 from bigduu/bamboo/feat/3168-tui-cancel-scheduled-run",
+        "Merge commit 'd41623342013e738956d9b0531e881f6d2f75fa4' into bamboo/feat/3169-message-fork",
+        "fix(ci): register session fork under existing test owners (#3169)",
+        "feat(tui): render single-line Setext headings in assistant replies",
+        "fix(session): retain tool results across system messages in forks (#3169)",
+        "Merge pull request #3173 from bigduu/bamboo/feat/3172-tui-setext-headings",
+        "Merge branch 'dev' into bamboo/feat/3169-message-fork",
+        "feat(tui): preserve ATX heading styles around inline formatting",
+        "Merge pull request #3171 from bigduu/bamboo/feat/3169-message-fork",
+        "Merge remote-tracking branch 'origin/dev' into bamboo/feat/3174-tui-atx-inline-heading-style",
+        "Merge pull request #3175 from bigduu/bamboo/feat/3174-tui-atx-inline-heading-style",
+        "feat: make saved schedule toggles preserve cadence state",
+        "fix: keep schedule toggle retries durable after a write failure",
+        "Merge pull request #3177 from bigduu/bamboo/feat/3176-toggle-saved-schedules",
+        "feat: toggle the selected saved schedule from the TUI",
+        "Merge pull request #3179 from bigduu/bamboo/feat/3178-tui-toggle-saved-schedules",
+        "feat: render optional ATX closing heading markers",
+        "Merge pull request #3181 from bigduu/bamboo/feat/3180-tui-atx-closing-markers",
+        "feat: browse sessions created by a saved schedule in the TUI",
+        "Merge pull request #3183 from bigduu/bamboo/feat/3182-tui-schedule-sessions",
+        "feat: render tab-separated and empty ATX headings",
+        "Merge pull request #3185 from bigduu/bamboo/feat/3184-tui-atx-openers",
+        "feat: bound Markdown table previews in assistant replies",
+        "Merge pull request #3187 from bigduu/bamboo/feat/3186-bounded-table-previews"
       ]
     }
   ]
