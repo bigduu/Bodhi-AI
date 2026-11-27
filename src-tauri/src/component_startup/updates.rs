@@ -1,7 +1,6 @@
 use super::{
     journal::{self, History, Journal, Versions},
     kernel_switch::KernelStop,
-    planned_restart::RestartMode,
     Manager, SelectedUpdate,
 };
 use crate::component_channel::github_token::{GitHubUpdateCredentials, GitHubUpdateTokenState};
@@ -149,7 +148,6 @@ struct ForceOffer {
     sequence: u64,
     identity: String,
     shutdown_started: bool,
-    checkpointed: bool,
 }
 
 #[derive(Serialize)]
@@ -333,7 +331,6 @@ impl Manager {
                     force_update = Some(ForceOffer {
                         sequence: update.candidate.sequence,
                         identity: identity.clone(),
-                        checkpointed: false,
                         shutdown_started: self
                             .updates
                             .force_shutdown_started
@@ -993,7 +990,7 @@ impl Manager {
             self.continue_kernel_switch(app, pending, None).await;
             return Ok(());
         }
-        if self.local_shutdown_started() {
+        if self.updates.lotus_rollback_started.load(Ordering::Acquire) {
             return Err(locale.text("updates.restartPending").into());
         }
         let journal = Journal::read(&self.profile)?;
@@ -1024,57 +1021,47 @@ impl Manager {
             let identity = identity
                 .as_ref()
                 .ok_or_else(|| locale.text("updates.catalogChanged").to_string())?;
-            let update = self.updates.selected(sequence, identity, locale)?;
-            let active = update.validate_transition(&journal)?;
-            self.require_unskipped(&update, locale)?;
-            if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
-                return Err(locale.text("updates.downloadRequired").into());
-            }
+            let (update, active) = self.downloaded_update(sequence, identity, &journal, locale)?;
             self.updates.status(Phase::Saving, None);
-            let bamboo_only = update.candidate.update_kind(active) == Some(UpdateKind::Bamboo);
-            let check = self.reconfirm_selected(active, &update, locale);
-            let confirmed = if bamboo_only {
-                allow_cached_immediate_update(check).await
-            } else {
-                check.await.map_err(String::from)
-            };
-            if let Err(error) = confirmed {
-                self.updates.status(Phase::SaveFailed, Some(error));
-                return Ok(());
+            if !self.updates.force_shutdown_started.load(Ordering::Acquire) {
+                let check = self.reconfirm_selected(active, &update, locale);
+                if let Err(error) = allow_cached_immediate_update(check).await {
+                    self.updates.status(Phase::SaveFailed, Some(error));
+                    return Ok(());
+                }
             }
-            let planned = self.use_planned_restart(&runtime, active).await;
-            if bamboo_only {
-                let stop = match planned {
-                    Ok(true) => KernelStop::Checkpoint(RestartMode::Planned),
-                    Ok(false) => KernelStop::Graceful,
-                    Err(error) => {
-                        self.updates.status(Phase::RestartFailed, Some(error));
-                        return Ok(());
-                    }
-                };
+            let mode = match self.checkpoint_mode(&runtime, active).await {
+                Ok(mode) => mode,
+                Err(error) => {
+                    self.updates.status(Phase::RestartFailed, Some(error));
+                    return Ok(());
+                }
+            };
+            if update.candidate.update_kind(active) == Some(UpdateKind::Bamboo) {
+                let stop = mode.map_or(KernelStop::Force, KernelStop::Checkpoint);
                 self.begin_kernel_switch(app, update, stop).await;
                 return Ok(());
             }
-            match planned {
-                Ok(true) => match self
-                    .plan_restart(&runtime, &update, RestartMode::Planned)
-                    .await
-                {
+            if let Some(mode) = mode {
+                match self.plan_restart(&runtime, &update, mode).await {
                     Ok(plan) => {
                         self.updates.status(Phase::ShuttingDown, None);
                         self.prepare_planned_restart(&runtime, port, plan).await
                     }
                     Err(error) => Err(error),
-                },
-                Ok(false) => match self
-                    .reopen_downloaded_update(&update.candidate)
-                    .await
-                    .and_then(|_| self.queue(&update))
-                {
-                    Ok(()) => self.prepare_restart(&runtime, port).await,
+                }
+            } else {
+                match self.reopen_downloaded_update(&update.candidate).await {
+                    Ok(_) => {
+                        self.queue_after_force_shutdown(
+                            &update,
+                            runtime.force_stop_for_update(Duration::from_secs(10)),
+                            port,
+                        )
+                        .await
+                    }
                     Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
+                }
             }
         };
         if let Err(error) = restart {
@@ -1185,88 +1172,20 @@ impl Manager {
         Ok(())
     }
 
-    fn force_target(
+    fn downloaded_update<'a>(
         &self,
         sequence: u64,
         identity: &str,
+        journal: &'a Journal,
         locale: Locale,
-    ) -> Result<(Arc<SelectedUpdate>, Journal), String> {
-        if self.updates.restoring.load(Ordering::Acquire)
-            || self.updates.restart_requested.load(Ordering::Acquire)
-            || self.updates.lotus_rollback_started.load(Ordering::Acquire)
-            || self.pending_kernel_switch()?.is_some()
-            || super::PlannedRestart::read(&self.profile)?.is_some()
-        {
-            return Err(locale.text("updates.restartPending").into());
-        }
+    ) -> Result<(Arc<SelectedUpdate>, &'a Combination), String> {
         let update = self.updates.selected(sequence, identity, locale)?;
-        let journal = Journal::read(&self.profile)?;
-        update.validate_transition(&journal)?;
+        let active = update.validate_transition(journal)?;
         self.require_unskipped(&update, locale)?;
         if journal::read_downloaded(&self.profile)?.as_ref() != Some(&update.candidate) {
             return Err(locale.text("updates.downloadRequired").into());
         }
-        Ok((update, journal))
-    }
-
-    async fn force_apply<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        sequence: u64,
-        identity: &str,
-        checkpointed: bool,
-    ) -> Result<(), String> {
-        let _action = self.updates.action.lock().await;
-        let locale = i18n::active(app);
-        let (update, journal) = self.force_target(sequence, identity, locale)?;
-        let active = update.validate_transition(&journal)?;
-        self.updates.status(Phase::Saving, None);
-        if let Err(error) =
-            allow_cached_immediate_update(self.reconfirm_selected(active, &update, locale)).await
-        {
-            self.updates.status(Phase::SaveFailed, Some(error));
-            return Ok(());
-        }
-        let runtime = app.state::<crate::sidecar::SidecarState>();
-        if update.candidate.update_kind(active) == Some(UpdateKind::Bamboo) {
-            if runtime.immediate_update_available()? != checkpointed {
-                return Err(locale.text("updates.catalogChanged").into());
-            }
-            let stop = if checkpointed {
-                KernelStop::Checkpoint(RestartMode::Immediate)
-            } else {
-                KernelStop::Force
-            };
-            self.begin_kernel_switch(app, update, stop).await;
-            return Ok(());
-        }
-        let result = async {
-            let port = crate::web_service_port();
-            if runtime.immediate_update_available()? != checkpointed {
-                return Err(locale.text("updates.catalogChanged").into());
-            }
-            if checkpointed {
-                let plan = self
-                    .plan_restart(&runtime, &update, RestartMode::Immediate)
-                    .await?;
-                self.updates.status(Phase::ShuttingDown, None);
-                return self.prepare_planned_restart(&runtime, port, plan).await;
-            }
-            self.reopen_downloaded_update(&update.candidate).await?;
-            self.queue_after_force_shutdown(
-                &update,
-                runtime.force_stop_for_update(Duration::from_secs(10)),
-                port,
-            )
-            .await
-        }
-        .await;
-        if let Err(error) = result {
-            self.updates.status(Phase::RestartFailed, Some(error));
-            return Ok(());
-        }
-        self.request_restart(app);
-        Ok(())
+        Ok((update, active))
     }
 
     pub(super) async fn queue_after_force_shutdown(
@@ -1528,20 +1447,9 @@ pub(crate) fn component_snapshot<R: Runtime>(
     window: WebviewWindow<R>,
 ) -> Result<Snapshot, String> {
     authorize(&window, true)?;
-    let mut snapshot = app
-        .try_state::<Manager>()
+    app.try_state::<Manager>()
         .ok_or("The component updater is unavailable")?
-        .snapshot(app.package_info().version.to_string(), i18n::active(&app))?;
-    if let Some(offer) = &mut snapshot.force_update {
-        offer.checkpointed =
-            app.try_state::<crate::sidecar::SidecarState>()
-                .is_some_and(|runtime| {
-                    runtime
-                        .immediate_update_available()
-                        .is_ok_and(|value| value)
-                });
-    }
-    Ok(snapshot)
+        .snapshot(app.package_info().version.to_string(), i18n::active(&app))
 }
 
 #[tauri::command]
@@ -1618,20 +1526,6 @@ pub(crate) async fn apply_component_update<R: Runtime>(
 ) -> Result<(), String> {
     authorize(&window, false)?;
     running_manager(&app)?.apply(&app, sequence, identity).await
-}
-
-#[tauri::command]
-pub(crate) async fn force_component_update<R: Runtime>(
-    app: AppHandle<R>,
-    window: WebviewWindow<R>,
-    sequence: u64,
-    identity: String,
-    checkpointed: bool,
-) -> Result<(), String> {
-    authorize(&window, false)?;
-    running_manager(&app)?
-        .force_apply(&app, sequence, &identity, checkpointed)
-        .await
 }
 
 #[tauri::command]
@@ -2383,6 +2277,7 @@ mod tests {
             .await
             .unwrap();
         let offers = manager.snapshot("0.0.0".into(), locale).unwrap().offers;
+        let journal = Journal::read(&profile).unwrap();
         let chosen = &offers[0];
         let other = &offers[1];
         let update = manager
@@ -2390,7 +2285,7 @@ mod tests {
             .selected(chosen.sequence, &chosen.identity, locale)
             .unwrap();
         assert!(manager
-            .force_target(chosen.sequence, &chosen.identity, locale)
+            .downloaded_update(chosen.sequence, &chosen.identity, &journal, locale,)
             .is_err());
         manager.record_download(&update, Ok(())).unwrap();
         let granted = manager
@@ -2401,10 +2296,10 @@ mod tests {
         assert_eq!(granted.identity, chosen.identity);
         assert!(!granted.shutdown_started);
         assert!(manager
-            .force_target(chosen.sequence, &chosen.identity, locale)
+            .downloaded_update(chosen.sequence, &chosen.identity, &journal, locale,)
             .is_ok());
         assert!(manager
-            .force_target(other.sequence, &other.identity, locale)
+            .downloaded_update(other.sequence, &other.identity, &journal, locale,)
             .is_err());
         let rejected = || async {
             Err(UpdateShutdownError::RequestRejected(
@@ -2460,7 +2355,7 @@ mod tests {
             .await
             .is_err());
         assert!(manager
-            .force_target(chosen.sequence, &chosen.identity, locale)
+            .downloaded_update(chosen.sequence, &chosen.identity, &journal, locale,)
             .is_ok());
         assert!(Journal::read(&profile).unwrap().queued.is_none());
     }
