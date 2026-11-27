@@ -654,7 +654,6 @@ pub fn run() {
             component_startup::updates::import_local_bamboo_update,
             component_startup::updates::set_component_version_skipped,
             component_startup::updates::apply_component_update,
-            component_startup::updates::force_component_update,
             component_startup::updates::rollback_lotus_component,
             component_startup::updates::resume_lotus_updates,
             component_startup::updates::retry_component_startup,

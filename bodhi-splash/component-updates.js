@@ -20,11 +20,8 @@ const componentViews = [...document.querySelectorAll("[data-update-kind]")].map(
   panel.querySelector("[data-part=controls]").append(get("component-controls").content.cloneNode(true));
   const kind = panel.dataset.updateKind;
   const part = (name) => panel.querySelector(`[data-part=${name}]`);
-  const warning = part("force-warning");
-  warning.id = `force-warning-${kind}`;
   const help = kind === "bamboo" ? "bamboo-restart-hint" : "restart-hint";
   part("apply").setAttribute("aria-describedby", help);
-  part("force").setAttribute("aria-describedby", `${warning.id} ${help}`);
   return { panel, kind, part };
 });
 let currentSnapshot = null;
@@ -140,11 +137,14 @@ function renderOfferSelection(view, offers, busy) {
   return offer;
 }
 
-function canForceUpdate(snapshot, offer) {
-  return snapshot.running && snapshot.queued == null && !snapshot.lotusRollback?.shutdownStarted
-    && offer?.downloaded && !offer.skipped
-    && snapshot.forceUpdate?.sequence === offer.sequence
-    && snapshot.forceUpdate?.identity === offer.identity;
+function canApplyUpdate(snapshot, offer) {
+  if (!snapshot.running || snapshot.queued != null || snapshot.bambooRecoveryPending
+    || snapshot.lotusRollback?.shutdownStarted || !offer?.downloaded || offer.skipped) {
+    return false;
+  }
+  const attempt = snapshot.forceUpdate;
+  return !attempt?.shutdownStarted
+    || (attempt.sequence === offer.sequence && attempt.identity === offer.identity);
 }
 
 function updateShutdownStarted(snapshot) {
@@ -155,14 +155,12 @@ function renderPanelActions(view, offer, snapshot, phase, busy) {
   const canSkip = snapshot.running && snapshot.queued == null
     && !snapshot.bambooRecoveryPending && !updateShutdownStarted(snapshot) && !!offer;
   const canDownload = canSkip && !offer.skipped && !offer.downloaded;
-  const canApply = canSkip && !offer.skipped && offer.downloaded;
-  const canForce = canForceUpdate(snapshot, offer);
+  const canApply = canApplyUpdate(snapshot, offer);
   const isBamboo = view.kind === "bamboo";
   const download = view.part("download");
   const apply = view.part("apply");
-  const force = view.part("force");
   const skip = view.part("skip");
-  view.part("actions").hidden = !(canSkip || canForce);
+  view.part("actions").hidden = !(canSkip || canApply);
   download.hidden = !canDownload;
   download.disabled = busy;
   setText(download, i18n.text(
@@ -170,25 +168,14 @@ function renderPanelActions(view, offer, snapshot, phase, busy) {
   ));
   apply.hidden = !canApply;
   apply.disabled = busy;
-  setText(apply, i18n.text(isBamboo ? "updates.confirmBamboo" : "updates.confirmApply"));
-  force.hidden = !canForce;
-  force.disabled = busy;
-  if (canForce) {
-    const checkpointed = snapshot.forceUpdate.checkpointed;
-    const label = isBamboo
-      ? (checkpointed ? "updates.forceBamboo" : "updates.legacyForceBamboo")
-      : (checkpointed ? "updates.forceUpdate" : "updates.legacyForceUpdate");
-    setText(force, i18n.text(label));
-    const checkpointWarning = isBamboo ? "updates.bambooCheckpointWarning" : "updates.checkpointWarning";
-    setText(view.part("force-warning"), i18n.text(
-      checkpointed ? checkpointWarning : "updates.forceWarning",
-    ));
-  }
-  view.part("force-warning").hidden = !canForce;
+  const applyLabel = snapshot.forceUpdate?.shutdownStarted
+    ? (isBamboo ? "updates.retryBamboo" : "updates.retryRestart")
+    : (isBamboo ? "updates.confirmBamboo" : "updates.confirmApply");
+  setText(apply, i18n.text(applyLabel));
   skip.hidden = !canSkip;
   skip.disabled = busy;
   setText(skip, i18n.text(offer?.skipped ? "updates.undoSkip" : "updates.skipVersion"));
-  return canApply || canForce;
+  return canApply;
 }
 
 function renderNotes(view, offer, active) {
@@ -276,10 +263,9 @@ function renderUpdates(snapshot) {
   const retry = get("retry-restart");
   retry.hidden = !pendingRestart;
   retry.disabled = busy;
-  retry.setAttribute("aria-describedby", bambooPending ? "bamboo-restart-hint" : "restart-hint");
   setText(retry, i18n.text(bambooPending ? "updates.retryBamboo" : "updates.retryRestart"));
-  get("restart-hint").hidden = !(applicable.some((kind) => kind && kind !== "bamboo") || (pendingRestart && !bambooPending));
-  get("bamboo-restart-hint").hidden = !(applicable.includes("bamboo") || (pendingRestart && bambooPending));
+  get("restart-hint").hidden = !applicable.some((kind) => kind && kind !== "bamboo");
+  get("bamboo-restart-hint").hidden = !applicable.includes("bamboo");
 
   const check = get("check");
   setText(check, i18n.text(running ? "updates.check" : "updates.retry"));
@@ -419,16 +405,14 @@ for (const view of componentViews) {
   for (const [part, command] of [
     ["download", "download_component_update"],
     ["apply", "apply_component_update"],
-    ["force", "force_component_update"],
     ["skip", "set_component_version_skipped"],
   ]) {
     const button = view.part(part);
     button.addEventListener("click", () => {
       const offer = selectedOffer(view);
       if (button.hidden || button.disabled || !offer || currentSnapshot.queued != null) return;
-      if (part === "force" && !canForceUpdate(currentSnapshot, offer)) return;
+      if (part === "apply" && !canApplyUpdate(currentSnapshot, offer)) return;
       const args = { sequence: offer.sequence, identity: offer.identity };
-      if (part === "force") args.checkpointed = !!currentSnapshot.forceUpdate.checkpointed;
       if (part === "skip") args.skipped = !offer.skipped;
       void runAction(command, args);
     });

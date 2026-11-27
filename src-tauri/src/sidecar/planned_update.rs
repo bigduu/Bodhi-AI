@@ -95,10 +95,16 @@ pub(crate) async fn executable_supports(path: &Path) -> Result<bool, String> {
         .await
         .map_err(|_| "The Bamboo update protocol probe timed out")?
         .map_err(|error| error.to_string())?;
-    match (output.status.success(), output.stdout.as_slice()) {
-        (true, b"1\n" | b"1\r\n") => Ok(true),
-        (false, _) => Ok(false),
-        _ => Err("Unsupported Bamboo update protocol response".into()),
+    // A probe crash does not establish that the running executable is legacy.
+    match (output.status.code(), output.stdout.as_slice()) {
+        (Some(0), b"1\n" | b"1\r\n") => Ok(true),
+        (Some(2), b"")
+            if String::from_utf8_lossy(&output.stderr)
+                .contains("unexpected argument '--managed-update-protocol'") =>
+        {
+            Ok(false)
+        }
+        _ => Err("Cannot determine whether Bamboo supports managed updates".into()),
     }
 }
 

@@ -13,7 +13,6 @@ use tauri::{AppHandle, Manager as _, Runtime};
 #[derive(Clone, Copy)]
 pub(super) enum KernelStop {
     Checkpoint(RestartMode),
-    Graceful,
     Force,
 }
 
@@ -250,18 +249,6 @@ impl Manager {
                     .ok_or("The previous Bamboo did not confirm the planned shutdown")?;
                 Ok(Some(handoff))
             }
-            KernelStop::Graceful => {
-                if journal.queued.is_none() {
-                    runtime
-                        .stop_for_rollback(Duration::from_secs(90))
-                        .await
-                        .map_err(shutdown_message)?;
-                    let _writer = self.profile.writer()?;
-                    require_available_port(port)?;
-                    self.queue(update)?;
-                }
-                Ok(None)
-            }
             KernelStop::Force => {
                 if journal.queued.is_none() {
                     self.queue_after_force_shutdown(
@@ -389,13 +376,6 @@ impl Manager {
                 .await?;
         }
         self.save_kernel_switch(None)
-    }
-}
-
-fn shutdown_message(error: crate::sidecar::UpdateShutdownError) -> String {
-    match error {
-        crate::sidecar::UpdateShutdownError::RequestRejected(message)
-        | crate::sidecar::UpdateShutdownError::Unconfirmed(message) => message,
     }
 }
 
