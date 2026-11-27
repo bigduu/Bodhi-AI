@@ -1,6 +1,5 @@
 use super::{
     journal::{self, History, Journal, Versions},
-    kernel_switch::KernelStop,
     Manager, SelectedUpdate,
 };
 use crate::component_channel::github_token::{GitHubUpdateCredentials, GitHubUpdateTokenState};
@@ -1030,38 +1029,20 @@ impl Manager {
                     return Ok(());
                 }
             }
-            let mode = match self.checkpoint_mode(&runtime, active).await {
-                Ok(mode) => mode,
-                Err(error) => {
-                    self.updates.status(Phase::RestartFailed, Some(error));
-                    return Ok(());
-                }
-            };
             if update.candidate.update_kind(active) == Some(UpdateKind::Bamboo) {
-                let stop = mode.map_or(KernelStop::Force, KernelStop::Checkpoint);
-                self.begin_kernel_switch(app, update, stop).await;
+                self.begin_kernel_switch(app, update).await;
                 return Ok(());
             }
-            if let Some(mode) = mode {
-                match self.plan_restart(&runtime, &update, mode).await {
-                    Ok(plan) => {
-                        self.updates.status(Phase::ShuttingDown, None);
-                        self.prepare_planned_restart(&runtime, port, plan).await
-                    }
-                    Err(error) => Err(error),
+            match self.reopen_downloaded_update(&update.candidate).await {
+                Ok(_) => {
+                    self.queue_after_force_shutdown(
+                        &update,
+                        runtime.force_stop_for_update(Duration::from_secs(10)),
+                        port,
+                    )
+                    .await
                 }
-            } else {
-                match self.reopen_downloaded_update(&update.candidate).await {
-                    Ok(_) => {
-                        self.queue_after_force_shutdown(
-                            &update,
-                            runtime.force_stop_for_update(Duration::from_secs(10)),
-                            port,
-                        )
-                        .await
-                    }
-                    Err(error) => Err(error),
-                }
+                Err(error) => Err(error),
             }
         };
         if let Err(error) = restart {
