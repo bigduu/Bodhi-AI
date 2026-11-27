@@ -431,8 +431,9 @@ async fn apply_reconfirmation_invalidates_a_withdrawn_download_before_an_offline
         .selected(offer.sequence, &offer.identity, Locale::English)
         .unwrap();
     journal::save_downloaded(&profile, &update.candidate).unwrap();
+    let journal = Journal::read(&profile).unwrap();
     assert!(manager
-        .force_target(offer.sequence, &offer.identity, Locale::English)
+        .downloaded_update(offer.sequence, &offer.identity, &journal, Locale::English)
         .is_ok());
 
     let withdrawn = document::<BambooRelease>(2, None, &[]);
@@ -451,7 +452,7 @@ async fn apply_reconfirmation_invalidates_a_withdrawn_download_before_an_offline
     assert!(journal::read_downloaded(&profile).unwrap().is_none());
     assert_eq!(
         manager
-            .force_target(offer.sequence, &offer.identity, Locale::English)
+            .downloaded_update(offer.sequence, &offer.identity, &journal, Locale::English)
             .err()
             .as_deref(),
         Some(Locale::English.text("updates.downloadRequired")),

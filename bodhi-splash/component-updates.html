@@ -41,7 +41,7 @@
     @media (prefers-reduced-motion: reduce) {
       #phase[data-switching]::before { animation: none; }
     }
-    .force-warning { color: #f3cd92; }
+    .update-warning { color: #f3cd92; }
     .component-import, .component-rollback { border-top: 1px solid #353a44; margin-top: 12px; padding-top: 12px; }
     #bamboo-import-hint, #rollback-lotus-hint { display: block; margin-top: 8px; }
     details { margin-top: 12px; }
@@ -107,9 +107,9 @@
     <h2 id="pair-title" data-i18n="updates.combined">Combined Bamboo and Lotus Next update</h2>
     <div class="component-controls" data-part="controls"></div>
   </section>
-  <p id="restart-hint" data-i18n="updates.confirmBody" hidden></p>
-  <p id="bamboo-restart-hint" data-i18n="updates.confirmBambooBody" hidden></p>
-  <button id="retry-restart" type="button" data-i18n="updates.retryRestart" aria-describedby="restart-hint" hidden>Retry restart</button>
+  <p id="restart-hint" class="update-warning" data-i18n="updates.confirmBody" hidden></p>
+  <p id="bamboo-restart-hint" class="update-warning" data-i18n="updates.confirmBambooBody" hidden></p>
+  <button id="retry-restart" type="button" data-i18n="updates.retryRestart" hidden>Retry restart</button>
   <section aria-labelledby="check-interval-title">
     <h2 id="check-interval-title" data-i18n="updates.autoCheckSettings">Automatic checks</h2>
     <form id="check-interval-settings">
@@ -197,9 +197,7 @@
       <button data-part="download" type="button" data-i18n="updates.download" hidden>Download update</button>
       <button data-part="apply" type="button" data-i18n="updates.confirmApply" aria-describedby="restart-hint" hidden>Restart and update</button>
       <button data-part="skip" class="secondary" type="button" data-i18n="updates.skipVersion" hidden>Skip this version</button>
-      <button data-part="force" class="secondary" type="button" data-i18n="updates.forceUpdate" hidden>Update and restart now</button>
     </div>
-    <p data-part="force-warning" class="force-warning" data-i18n="updates.forceWarning" hidden>Running tasks will be interrupted.</p>
     <details data-part="notes" hidden>
       <summary data-i18n="updates.changes">Release notes</summary>
       <ul data-part="changes"></ul>

@@ -2,7 +2,6 @@
 
 use super::{journal, Combination, Journal, Manager, PairIdentity, SelectedUpdate};
 use crate::bamboo_profile::{is_link, sync_directory, Profile};
-use crate::component_kernel;
 use crate::sidecar::{
     planned_update::{self, Action, Status},
     SidecarState, UpdateShutdownError,
@@ -440,10 +439,7 @@ mod tests {
             crate::sidecar::owned_version(port, &owner).await.unwrap(),
             version
         );
-        assert!(manager
-            .use_planned_restart(&old.0, &original)
-            .await
-            .unwrap());
+        assert!(old.0.planned_update_available().unwrap());
         if matches!(mode, RestartMode::Immediate) {
             assert!(old.0.immediate_update_available().unwrap());
         }
@@ -566,23 +562,6 @@ mod tests {
 }
 
 impl Manager {
-    pub(super) async fn use_planned_restart(
-        &self,
-        runtime: &SidecarState,
-        active: &Combination,
-    ) -> Result<bool, String> {
-        if runtime.planned_update_available()? {
-            return Ok(true);
-        }
-        let current = component_kernel::reopen_kernel(&self.profile, &active.candidate()?).await?;
-        if planned_update::executable_supports(&current.executable).await? {
-            return Err(
-                "The running Bamboo has not opened its planned-update control channel".into(),
-            );
-        }
-        Ok(false)
-    }
-
     pub(super) async fn plan_restart(
         &self,
         runtime: &SidecarState,
