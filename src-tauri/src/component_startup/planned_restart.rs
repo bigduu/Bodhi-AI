@@ -1,7 +1,10 @@
 //! Durable desktop intent and verification of the old Bamboo process's receipt.
 
-use super::{journal, Combination, Journal, Manager, PairIdentity, SelectedUpdate};
+#[cfg(test)]
+use super::SelectedUpdate;
+use super::{journal, Combination, Journal, Manager, PairIdentity};
 use crate::bamboo_profile::{is_link, sync_directory, Profile};
+#[cfg(test)]
 use crate::component_kernel;
 use crate::sidecar::{
     planned_update::{self, Action, Status},
@@ -289,20 +292,27 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires BODHI_PLANNED_UPDATE_BAMBOO set to an independently built native Bamboo"]
     async fn native_bodhi_control_replaces_two_owned_bamboo_processes() {
-        native_bodhi_restart(RestartMode::Planned, None).await;
+        native_bodhi_restart(Some(RestartMode::Planned), None).await;
     }
 
     #[tokio::test]
     #[ignore = "requires BODHI_PLANNED_UPDATE_BAMBOO with immediate-update-v1 support"]
     async fn native_bodhi_control_applies_an_immediate_checkpointed_update() {
-        native_bodhi_restart(RestartMode::Immediate, None).await;
+        native_bodhi_restart(Some(RestartMode::Immediate), None).await;
     }
 
     #[tokio::test]
     #[ignore = "requires two official native Bamboo executables via BODHI_PLANNED_UPDATE_BAMBOO and BODHI_NEXT_UPDATE_BAMBOO"]
     async fn native_owned_bamboo_switch_reuses_the_host_and_profile() {
         let replacement = PathBuf::from(std::env::var_os("BODHI_NEXT_UPDATE_BAMBOO").unwrap());
-        native_bodhi_restart(RestartMode::Planned, Some(&replacement)).await;
+        native_bodhi_restart(Some(RestartMode::Planned), Some(&replacement)).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires official Bamboo 2026.11.50 and 2026.11.51 via the native fixture environment"]
+    async fn native_force_switch_replaces_bamboo_with_hooks_enabled_and_keeps_history() {
+        let replacement = PathBuf::from(std::env::var_os("BODHI_NEXT_UPDATE_BAMBOO").unwrap());
+        native_bodhi_restart(None, Some(&replacement)).await;
     }
 
     fn stage_native_binary(
@@ -333,7 +343,10 @@ mod tests {
         (version, asset, path)
     }
 
-    async fn native_bodhi_restart(mode: RestartMode, replacement: Option<&std::path::Path>) {
+    async fn native_bodhi_restart(
+        mode: Option<RestartMode>,
+        replacement: Option<&std::path::Path>,
+    ) {
         let _ = env_logger::builder().is_test(true).try_init();
         let binary = PathBuf::from(std::env::var_os("BODHI_PLANNED_UPDATE_BAMBOO").unwrap());
         assert!(planned_update::executable_supports(&binary).await.unwrap());
@@ -377,7 +390,31 @@ mod tests {
             assert_ne!(target.lotus.manifest_sha256, original.lotus.manifest_sha256);
             (version.clone(), path)
         };
-        fs::write(profile.data.join("config.json"), b"{}").unwrap();
+        let config = if mode.is_some() {
+            json!({})
+        } else {
+            assert_eq!((&*version, &*target_version), ("2026.11.50", "2026.11.51"));
+            json!({
+                "setup": {
+                    "completed": true, "completed_at": "1970-01-01T00:00:00Z", "version": 1
+                },
+                "features": {"provider_model_ref": true},
+                "provider_instances": {"update-fixture": {
+                    "provider_type": "openai", "label": "Isolated update",
+                    "api_key": "synthetic-loopback", "base_url": "http://127.0.0.1:1/v1",
+                    "model": "gpt-4o-mini", "enabled": true
+                }},
+                "default_provider_instance": "update-fixture",
+                "defaults": {"chat": {"provider": "update-fixture", "model": "gpt-4o-mini"}},
+                "lifecycle_hooks": {"enabled": true},
+                "memory": {"auto_dream_enabled": false}
+            })
+        };
+        fs::write(
+            profile.data.join("config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -449,7 +486,7 @@ mod tests {
                 RestartMode::Planned
             })
         );
-        if matches!(mode, RestartMode::Immediate) {
+        if matches!(mode, Some(RestartMode::Immediate)) {
             assert_eq!(selected_mode, Some(RestartMode::Immediate));
         }
         manager.finish(&original, Ok(())).unwrap();
@@ -461,44 +498,118 @@ mod tests {
             current: original.identity(),
             candidate: target.clone(),
         });
-        let plan = manager.plan_restart(&old.0, &update, mode).await.unwrap();
-        let persisted = PlannedRestart::read(&profile).unwrap().unwrap();
-        assert_eq!(persisted.request, plan.request);
-        assert_eq!(persisted.mode, mode);
         assert_eq!(manager.choose().await.unwrap(), original);
         assert!(profile.writer().is_err());
+
+        let original_owner = old.0.planned_update_owner().unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let base = format!("http://127.0.0.1:{port}/api/v1");
+        let saved = if mode.is_none() {
+            let refused = old
+                .0
+                .planned_update(Uuid::new_v4(), Action::PrepareImmediate, RESPONSE)
+                .await
+                .unwrap();
+            assert_eq!(refused.status, Status::Error);
+            assert_eq!(
+                refused.message.as_deref(),
+                Some("Configured lifecycle hooks prevent a planned update")
+            );
+            assert!(!profile.data.join("managed-update").exists());
+            let model = json!({"provider": "update-fixture", "model": "gpt-4o-mini"});
+            let created = client
+                .post(format!("{base}/sessions"))
+                .json(&json!({
+                    "provider": model["provider"], "model": model["model"], "model_ref": model,
+                    "title": "Existing session before direct update", "title_generated": true,
+                    "workspace_path": profile.data
+                }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap();
+            let id = created["session"]["id"].as_str().unwrap().to_owned();
+            let accepted = client
+                .post(format!("{base}/chat"))
+                .json(&json!({
+                    "provider": model["provider"], "model": model["model"], "model_ref": model,
+                    "session_id": id, "message": "Preserve this committed user message."
+                }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap();
+            assert_eq!(accepted["session_id"], id);
+            client
+                .post(format!("{base}/execute/{id}"))
+                .json(&json!({
+                    "provider": model["provider"], "model": model["model"], "model_ref": model
+                }))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+            let history = tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    let history = native_history(&client, &base, &id).await;
+                    if history.as_array().unwrap().iter().any(|message| {
+                        message["role"] == "user"
+                            && message["content"] == "Preserve this committed user message."
+                    }) {
+                        break history;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("the old Bamboo committed the submitted user message");
+            Some((id, history))
+        } else {
+            None
+        };
 
         let new_host = replacement.is_none().then(Host::default);
         let new_manager = replacement
             .is_none()
             .then(|| Manager::new(profile.clone()).unwrap());
-        let (running_manager, running_host, handoff) =
-            if let (Some(restarted), Some(next)) = (&new_manager, &new_host) {
-                manager
-                    .prepare_planned_restart(&old.0, port, persisted)
-                    .await
-                    .unwrap();
-                let handoff = restarted.arm_authorized_restart().unwrap().unwrap();
-                (restarted, next, handoff)
-            } else {
-                use super::super::kernel_switch::{KernelStop, KernelSwitch};
-                let prepared = manager.reopen_prepared(&target).await.unwrap();
-                let pending = KernelSwitch::new(update.clone(), KernelStop::Checkpoint(mode));
-                let handoff = manager
-                    .stop_owned_for_switch(
-                        &old.0,
-                        port,
-                        &pending,
-                        &prepared,
-                        &Journal::read(&profile).unwrap(),
-                    )
-                    .await
-                    .unwrap()
-                    .unwrap();
-                (&manager, &old, handoff)
-            };
-        assert!(handoff.authorized(&profile).unwrap());
-        assert_eq!(handoff.request, plan.request);
+        let running_manager = new_manager.as_ref().unwrap_or(&manager);
+        let running_host = new_host.as_ref().unwrap_or(&old);
+        let handoff = if let Some(mode) = mode {
+            let plan = manager.plan_restart(&old.0, &update, mode).await.unwrap();
+            let persisted = PlannedRestart::read(&profile).unwrap().unwrap();
+            assert_eq!(persisted.request, plan.request);
+            assert_eq!(persisted.mode, mode);
+            manager
+                .prepare_planned_restart(&old.0, port, persisted)
+                .await
+                .unwrap();
+            let handoff = running_manager.arm_authorized_restart().unwrap().unwrap();
+            assert!(handoff.authorized(&profile).unwrap());
+            assert_eq!(handoff.request, plan.request);
+            Some(handoff)
+        } else {
+            manager.reopen_downloaded_update(&target).await.unwrap();
+            manager
+                .stop_owned_for_switch(&old.0, port, &update, &Journal::read(&profile).unwrap())
+                .await
+                .unwrap();
+            assert!(old.0.owned_has_exited().unwrap());
+            assert!(!profile.data.join("managed-update").exists());
+            None
+        };
         assert!(!owner.is_ready());
         assert!(profile.writer().is_ok());
         let foreign_listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
@@ -509,7 +620,10 @@ mod tests {
         let prepared = running_manager.reopen_prepared(&target).await.unwrap();
         assert_eq!(prepared.kernel.executable, target_path);
         let successor = start(&running_host.0, &prepared);
-        assert_ne!(running_host.0.planned_update_owner().unwrap(), plan.owner);
+        assert_ne!(
+            running_host.0.planned_update_owner().unwrap(),
+            original_owner
+        );
         crate::sidecar::wait_for_health(
             port,
             30,
@@ -526,13 +640,51 @@ mod tests {
             target_version
         );
         running_manager.finish(&target, Ok(())).unwrap();
-        running_manager
-            .resume_planned_restart(&running_host.0, &handoff)
-            .await
-            .unwrap();
+        if let Some(handoff) = handoff {
+            running_manager
+                .resume_planned_restart(&running_host.0, &handoff)
+                .await
+                .unwrap();
+        }
+        if let Some((id, history)) = saved {
+            let detail = client
+                .get(format!("{base}/sessions/{id}"))
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap();
+            assert_eq!(detail["session"]["id"], id);
+            assert_eq!(native_history(&client, &base, &id).await, history);
+            let config: serde_json::Value =
+                serde_json::from_slice(&fs::read(profile.data.join("hooks.json")).unwrap())
+                    .unwrap();
+            assert_eq!(config["data"]["lifecycle_hooks"]["enabled"], true);
+        }
         assert_eq!(running_manager.choose().await.unwrap(), target);
         assert!(PlannedRestart::read(&profile).unwrap().is_none());
         running_host.0.stop_for_update(TIMEOUT).await.unwrap();
+    }
+
+    async fn native_history(client: &reqwest::Client, base: &str, id: &str) -> serde_json::Value {
+        let history = client
+            .get(format!("{base}/sessions/{id}/history"))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        if history.is_array() {
+            history
+        } else {
+            history["messages"].clone()
+        }
     }
 
     fn stage_pair(profile: &Profile, pair: &mut Combination, version: &str, executable: &Asset) {
@@ -571,6 +723,7 @@ mod tests {
 }
 
 impl Manager {
+    #[cfg(test)]
     pub(super) async fn checkpoint_mode(
         &self,
         runtime: &SidecarState,
@@ -589,6 +742,7 @@ impl Manager {
         Ok(None)
     }
 
+    #[cfg(test)]
     pub(super) async fn plan_restart(
         &self,
         runtime: &SidecarState,
@@ -600,6 +754,7 @@ impl Manager {
             .await
     }
 
+    #[cfg(test)]
     pub(super) async fn plan_verified_restart(
         &self,
         runtime: &SidecarState,

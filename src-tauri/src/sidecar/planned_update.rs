@@ -83,6 +83,7 @@ pub(crate) fn read_control(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, S
 }
 
 /// Consult the verified executable before choosing the compatibility path.
+#[cfg(test)]
 pub(crate) async fn executable_supports(path: &Path) -> Result<bool, String> {
     let mut command = tokio::process::Command::new(path);
     command
@@ -125,14 +126,17 @@ impl SidecarState {
             .ok_or("Missing identity of the owned Bamboo process".into())
     }
 
+    #[cfg(test)]
     pub(crate) fn planned_update_available(&self) -> Result<bool, String> {
         self.has_update_capability("planned-update-v1")
     }
 
+    #[cfg(test)]
     pub(crate) fn immediate_update_available(&self) -> Result<bool, String> {
         self.has_update_capability("immediate-update-v1")
     }
 
+    #[cfg(test)]
     fn has_update_capability(&self, marker: &str) -> Result<bool, String> {
         let child = self.owned_child()?;
         let directory = child

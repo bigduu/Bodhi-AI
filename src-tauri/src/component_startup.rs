@@ -414,7 +414,13 @@ impl Manager {
         }
 
         self.updates.status(updates::Phase::ShuttingDown, None);
-        runtime.stop_for_update(Duration::from_secs(90)).await?;
+        runtime
+            .force_stop_for_update(Duration::from_secs(10))
+            .await
+            .map_err(|error| match error {
+                crate::sidecar::UpdateShutdownError::RequestRejected(message)
+                | crate::sidecar::UpdateShutdownError::Unconfirmed(message) => message,
+            })?;
         // Take the writer lease again to prove the old runtime and anything
         // inheriting its handle have released the profile.
         let _writer = self.profile.writer()?;
