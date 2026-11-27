@@ -1,7 +1,6 @@
 use super::{
     journal::{self, History, Journal, Versions},
     kernel_switch::KernelStop,
-    planned_restart::RestartMode,
     Manager, SelectedUpdate,
 };
 use crate::component_channel::github_token::{GitHubUpdateCredentials, GitHubUpdateTokenState};
@@ -1031,27 +1030,20 @@ impl Manager {
                     return Ok(());
                 }
             }
-            let checkpointed = match runtime.immediate_update_available() {
-                Ok(available) => available,
+            let mode = match self.checkpoint_mode(&runtime, active).await {
+                Ok(mode) => mode,
                 Err(error) => {
                     self.updates.status(Phase::RestartFailed, Some(error));
                     return Ok(());
                 }
             };
             if update.candidate.update_kind(active) == Some(UpdateKind::Bamboo) {
-                let stop = if checkpointed {
-                    KernelStop::Checkpoint(RestartMode::Immediate)
-                } else {
-                    KernelStop::Force
-                };
+                let stop = mode.map_or(KernelStop::Force, KernelStop::Checkpoint);
                 self.begin_kernel_switch(app, update, stop).await;
                 return Ok(());
             }
-            if checkpointed {
-                match self
-                    .plan_restart(&runtime, &update, RestartMode::Immediate)
-                    .await
-                {
+            if let Some(mode) = mode {
+                match self.plan_restart(&runtime, &update, mode).await {
                     Ok(plan) => {
                         self.updates.status(Phase::ShuttingDown, None);
                         self.prepare_planned_restart(&runtime, port, plan).await

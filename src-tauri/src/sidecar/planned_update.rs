@@ -119,7 +119,6 @@ impl SidecarState {
             .ok_or("Missing identity of the owned Bamboo process".into())
     }
 
-    #[cfg(test)]
     pub(crate) fn planned_update_available(&self) -> Result<bool, String> {
         self.has_update_capability("planned-update-v1")
     }

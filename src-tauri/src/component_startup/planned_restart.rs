@@ -2,6 +2,7 @@
 
 use super::{journal, Combination, Journal, Manager, PairIdentity, SelectedUpdate};
 use crate::bamboo_profile::{is_link, sync_directory, Profile};
+use crate::component_kernel;
 use crate::sidecar::{
     planned_update::{self, Action, Status},
     SidecarState, UpdateShutdownError,
@@ -439,9 +440,17 @@ mod tests {
             crate::sidecar::owned_version(port, &owner).await.unwrap(),
             version
         );
-        assert!(old.0.planned_update_available().unwrap());
+        let selected_mode = manager.checkpoint_mode(&old.0, &original).await.unwrap();
+        assert_eq!(
+            selected_mode,
+            Some(if old.0.immediate_update_available().unwrap() {
+                RestartMode::Immediate
+            } else {
+                RestartMode::Planned
+            })
+        );
         if matches!(mode, RestartMode::Immediate) {
-            assert!(old.0.immediate_update_available().unwrap());
+            assert_eq!(selected_mode, Some(RestartMode::Immediate));
         }
         manager.finish(&original, Ok(())).unwrap();
 
@@ -562,6 +571,24 @@ mod tests {
 }
 
 impl Manager {
+    pub(super) async fn checkpoint_mode(
+        &self,
+        runtime: &SidecarState,
+        active: &Combination,
+    ) -> Result<Option<RestartMode>, String> {
+        if runtime.immediate_update_available()? {
+            return Ok(Some(RestartMode::Immediate));
+        }
+        if runtime.planned_update_available()? {
+            return Ok(Some(RestartMode::Planned));
+        }
+        let current = component_kernel::reopen_kernel(&self.profile, &active.candidate()?).await?;
+        if planned_update::executable_supports(&current.executable).await? {
+            return Err("The running Bamboo has not opened its update control channel".into());
+        }
+        Ok(None)
+    }
+
     pub(super) async fn plan_restart(
         &self,
         runtime: &SidecarState,
