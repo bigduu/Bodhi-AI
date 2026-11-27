@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 3,
-  "recommendedVersion": "2026.11.50",
+  "revision": 4,
+  "recommendedVersion": "2026.11.51",
   "releases": [
     {
       "release": {
@@ -419,6 +419,115 @@
         "Merge pull request #3185 from bigduu/bamboo/feat/3184-tui-atx-openers",
         "feat: bound Markdown table previews in assistant replies",
         "Merge pull request #3187 from bigduu/bamboo/feat/3186-bounded-table-previews"
+      ]
+    },
+    {
+      "release": {
+        "version": "2026.11.51",
+        "sourceRevision": "49bb04994b8cbb610a4ffa07e83acba9572c032c",
+        "manifest": {
+          "sha256": "0a16e966cfec4d45052cad4fc7779fbd3915404090e27ac35aa4265d7d496d68",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "504012f0cf2f75a4c62063bb7b6711f25e12d23bdcecebd208b4624f1e9eb8d9",
+          "sizeBytes": 47295
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "2dfa0c2bbd02d462060db6efb5b9f1f20a3901ef575dbf40326ba2570521163b",
+              "sizeBytes": 275294128
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "14a6bc62098a43eca3153af98306886dd320502112603b8d7c74c8d23bff7707",
+                "sizeBytes": 135224454
+              },
+              "receiptSha256": "eba3b8b411e9d3fdc3ebea53c48dd1dd4fbe0fa7cd41c2f01588ea2c566af9a8"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "16c1a4a5698aeb29c992434812533af363076731fe1d9d124f25713ea8eb38a5",
+              "sizeBytes": 223023616
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "a2c8655d006b6df17cb75387ce9edfff8e8b8189fb73f41395be69356395b4c8",
+                "sizeBytes": 154106844
+              },
+              "receiptSha256": "c5bc6467b82b618897c3970d8808c380b76f74508345cf0aaf196e2ea2780ed1"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "5b727ca64ca5c161350414a3f0577a65dfa3669f4938d850bf4fee0f5aa061d2",
+              "sizeBytes": 301402824
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "0c215f164bd6ffdf9917355559b54fb0dd3aa819ce2fd18f315e1030915ba8bf",
+                "sizeBytes": 163847648
+              },
+              "receiptSha256": "0d2b7f3c0520eeb69517c258d6ded379c806627b4f625f4ba6deee3badad288a"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "0014732d98af9249eafe8fdd20e2495f3d2695ad287a0340fd7c6c305cedfafc",
+              "sizeBytes": 270024192
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "1159efb1da1731e20b4395d59cfe36b9ef65036e5fcdcde91ccdf13c1f8ba5b0",
+                "sizeBytes": 158153167
+              },
+              "receiptSha256": "82a6decc6933a1de4302232a9188f205277cac90e7807b06b3167b9ae8762730"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "9485e062a1dc1f702c84ff5b54a458fbb594a8461ec38d3d20308c184d36eca7",
+              "sizeBytes": 315807976
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "e2d3be4d0fa116ac8a747329a86f9e808cbaa70a2d9508bf4a54cc371d68d3b6",
+                "sizeBytes": 156683628
+              },
+              "receiptSha256": "59200b5fd9dcc4c2b37b161d29431f3b993bb70bd67bb77fca9ce41ebc7c03aa"
+            }
+          }
+        ]
+      },
+      "changes": [
+        "feat: resume interrupted chat from saved context",
+        "refactor: box execute resync handoff",
+        "fix: keep headless execute on ordinary admission",
+        "fix: isolate interrupted execute futures from ordinary admission",
+        "fix: keep managed Work on its own recovery path",
+        "fix: preserve counted loop recovery ownership",
+        "Merge pull request #3190 from bigduu/bamboo/feat/3189-resume-interrupted-chat",
+        "feat: keep schedule cadence when renaming a saved schedule",
+        "Merge pull request #3191 from bigduu/bamboo/feat/3188-rename-saved-schedules",
+        "fix(update): allow immediate restart with configured Connect and MCP",
+        "Merge pull request #3195 from bigduu/bamboo/fix/3194-immediate-update-connect-mcp"
       ]
     }
   ]
