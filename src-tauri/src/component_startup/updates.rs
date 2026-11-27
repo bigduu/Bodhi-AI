@@ -2581,7 +2581,7 @@ mod tests {
         let selected = DownloadSettings {
             source: DownloadSource::Custom,
             mirror_url: Some("https://mirror.example.com/bodhi".into()),
-            proxy_url: Some("http://localhost:8888".into()),
+            proxy_url: Some("http://tester:test%40password@localhost:8888".into()),
         };
         manager.remember_settings(selected.clone()).unwrap();
         assert_eq!(journal::read_settings(&profile).unwrap(), selected);
