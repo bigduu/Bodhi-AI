@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 1,
-  "recommendedVersion": "2026.11.35",
+  "revision": 2,
+  "recommendedVersion": "2026.11.36",
   "releases": [
     {
       "release": {
@@ -35,6 +35,33 @@
         "fix: discard stale composer drafts when storage fails",
         "fix: restrict draft reload recovery to ordinary Root composers",
         "Merge pull request #738 from bigduu/lotus-next/fix/737-retain-unsubmitted-draft"
+      ]
+    },
+    {
+      "release": {
+        "version": "2026.11.36",
+        "sourceRevision": "b5c5e9f0112346524328656d7afb34babb543cca",
+        "manifestSha256": "824c79d0b16bbd0797ef50fd96c09feec3df20717c5349de658601d7a1383b93",
+        "resourcesSha256": "86c1146312d3201392cc8d31ad004a9dc0bafc5cd8dd46f29be99362d4ed6575",
+        "tarball": {
+          "sha256": "5c50f1329ceac43fb484884cd8ff938e2ada9adf902ac2683ba9957d8ac172d8",
+          "sizeBytes": 4154616
+        }
+      },
+      "changes": [
+        "fix: show Loop in the chat command menu",
+        "test: capture the Loop slash menu in browser evidence",
+        "fix: keep chat steady during subagent status refresh (#743)",
+        "Merge pull request #741 from bigduu/lotus-next/fix/740-loop-slash-menu",
+        "Merge remote-tracking branch 'origin/dev' into lotus-next/fix/743-subagent-refresh-stability",
+        "Merge pull request #744 from bigduu/lotus-next/fix/743-subagent-refresh-stability",
+        "fix(chat): reconcile queued and streamed transcript messages",
+        "fix(chat): preserve message fork results and errors (#747)",
+        "Merge pull request #746 from bigduu/lotus-next/fix/745-stream-transcript-handoff",
+        "Merge remote-tracking branch 'origin/dev' into lotus-next/feat/747-message-fork",
+        "Merge pull request #750 from bigduu/lotus-next/feat/747-message-fork",
+        "feat(chat): resume interrupted conversations from the composer",
+        "Merge pull request #752 from bigduu/lotus-next/feat/751-resume-interrupted-chat"
       ]
     }
   ]
