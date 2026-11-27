@@ -1,4 +1,4 @@
-use super::{planned_restart::RestartMode, updates::Phase};
+use super::updates::Phase;
 use super::{
     verify_owned_component, workspace_url, Journal, Manager, PlannedRestart, Prepared,
     SelectedUpdate,
@@ -10,23 +10,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager as _, Runtime};
 
-#[derive(Clone, Copy)]
-pub(super) enum KernelStop {
-    Checkpoint(RestartMode),
-    Force,
-}
-
 pub(super) struct KernelSwitch {
     pub(super) update: Arc<SelectedUpdate>,
-    stop: KernelStop,
     restored_original_process: AtomicBool,
 }
 
 impl KernelSwitch {
-    pub(super) fn new(update: Arc<SelectedUpdate>, stop: KernelStop) -> Self {
+    pub(super) fn new(update: Arc<SelectedUpdate>) -> Self {
         Self {
             update,
-            stop,
             restored_original_process: AtomicBool::new(false),
         }
     }
@@ -69,12 +61,11 @@ impl Manager {
         &self,
         app: &AppHandle<R>,
         update: Arc<SelectedUpdate>,
-        stop: KernelStop,
     ) {
         let result = self.reopen_downloaded_update(&update.candidate).await;
         match result {
             Ok(prepared) => {
-                let pending = Arc::new(KernelSwitch::new(update, stop));
+                let pending = Arc::new(KernelSwitch::new(update));
                 if let Err(error) = self.save_kernel_switch(Some(pending.clone())) {
                     self.updates.status(Phase::RestartFailed, Some(error));
                     return;
@@ -155,7 +146,7 @@ impl Manager {
             .as_ref()
             .ok_or("No active Bamboo components")?;
         let activated = active == pair && journal.trial.is_none();
-        let handoff = if activated {
+        if activated {
             // The replacement was verified but its workspace navigation failed.
             // Retry attaching to that exact process without rerunning shutdown.
             match runtime.owned_startup_status() {
@@ -168,8 +159,6 @@ impl Manager {
                 }
                 Err(error) => return Err(error),
             }
-            self.arm_authorized_restart()?
-                .filter(|plan| plan.exit_confirmed && plan.candidate == *pair)
         } else {
             if active.sequence != pending.update.current_sequence
                 || active.identity() != pending.update.current
@@ -185,8 +174,7 @@ impl Manager {
             page.park_for_restart(&window, &url).await?;
             log::info!("Bodhi workspace parked after {:?}", parking.elapsed());
             let draining = Instant::now();
-            let handoff = self
-                .stop_owned_for_switch(&runtime, port, pending, &prepared, &journal)
+            self.stop_owned_for_switch(&runtime, port, &pending.update, &journal)
                 .await?;
             let stopped = Instant::now();
             log::info!(
@@ -197,8 +185,7 @@ impl Manager {
             self.launch_prepared(app, port, pair, &prepared, false, None)
                 .await?;
             log::info!("Bamboo replacement ready after {:?}", stopped.elapsed());
-            handoff
-        };
+        }
 
         let reconnecting = Instant::now();
         self.updates.status(Phase::Reconnecting, None);
@@ -209,11 +196,7 @@ impl Manager {
         );
         self.save_kernel_switch(None)?;
         self.updates.reset_kernel_shutdown();
-        if let Some(handoff) = handoff {
-            self.restore_sessions(app, handoff, Phase::RestoringSessions, None);
-        } else {
-            self.updates.status(Phase::Ready, None);
-        }
+        self.updates.status(Phase::Ready, None);
         Ok(())
     }
 
@@ -221,46 +204,18 @@ impl Manager {
         &self,
         runtime: &SidecarState,
         port: u16,
-        pending: &KernelSwitch,
-        prepared: &Prepared,
+        update: &SelectedUpdate,
         journal: &Journal,
-    ) -> Result<Option<PlannedRestart>, String> {
-        let update = &pending.update;
-        match pending.stop {
-            KernelStop::Checkpoint(mode) => {
-                let plan = match PlannedRestart::read(&self.profile)? {
-                    Some(plan) if plan.candidate == update.candidate && plan.mode == mode => plan,
-                    Some(_) => return Err("The Bamboo handoff changed before the switch".into()),
-                    None => {
-                        self.plan_verified_restart(runtime, update, mode, prepared)
-                            .await?
-                    }
-                };
-                if !plan.exit_confirmed {
-                    self.prepare_planned_restart(runtime, port, plan).await?;
-                }
-                let _writer = self.profile.writer()?;
-                require_available_port(port)?;
-                let handoff = self
-                    .arm_authorized_restart()?
-                    .filter(|handoff| {
-                        handoff.exit_confirmed && handoff.candidate == update.candidate
-                    })
-                    .ok_or("The previous Bamboo did not confirm the planned shutdown")?;
-                Ok(Some(handoff))
-            }
-            KernelStop::Force => {
-                if journal.queued.is_none() {
-                    self.queue_after_force_shutdown(
-                        update,
-                        runtime.force_stop_for_update(Duration::from_secs(10)),
-                        port,
-                    )
-                    .await?;
-                }
-                Ok(None)
-            }
+    ) -> Result<(), String> {
+        if journal.queued.is_none() {
+            self.queue_after_force_shutdown(
+                update,
+                runtime.force_stop_for_update(Duration::from_secs(10)),
+                port,
+            )
+            .await?;
         }
+        Ok(())
     }
 
     async fn recover_original_after_exit<R: Runtime>(
@@ -390,14 +345,11 @@ mod tests {
         candidate.sequence += 1;
         candidate.bamboo.version = "2026.11.99".into();
         candidate.bamboo.manifest.sha256 = "1".repeat(64);
-        let pending = KernelSwitch::new(
-            Arc::new(SelectedUpdate {
-                current_sequence: original.sequence,
-                current: original.identity(),
-                candidate: candidate.clone(),
-            }),
-            KernelStop::Checkpoint(RestartMode::Planned),
-        );
+        let pending = KernelSwitch::new(Arc::new(SelectedUpdate {
+            current_sequence: original.sequence,
+            current: original.identity(),
+            candidate: candidate.clone(),
+        }));
         let mut journal = Journal {
             active: Some(original.clone()),
             ..Journal::default()
