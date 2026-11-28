@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 3,
-  "recommendedVersion": "2026.11.37",
+  "revision": 4,
+  "recommendedVersion": "2026.11.38",
   "releases": [
     {
       "release": {
@@ -92,6 +92,27 @@
         "test: model legacy scan endpoint in Sprint fixtures",
         "test: wait for workflow dialog keyboard focus before dismissal",
         "Merge pull request #762 from bigduu/lotus-next/feat/761-project-scan-settings"
+      ]
+    },
+    {
+      "release": {
+        "version": "2026.11.38",
+        "sourceRevision": "d93ec86b48afa7f946503714b089f5ed7081b671",
+        "manifestSha256": "14ec118fcc8d4ee0a0ba254d585d63f6ab82c8091aa3a0433ca2c86b71270c23",
+        "resourcesSha256": "c1a53585d47b00784dd82ae03c440635a76c1de0a6759853904201ba82e91fde",
+        "tarball": {
+          "sha256": "67da57c0f95c06e37e06fd0c544d59331cf203e7db16f1b00c6103a3b5148302",
+          "sizeBytes": 4163908
+        }
+      },
+      "changes": [
+        "fix: make large Mermaid diagrams readable",
+        "fix(settings): show effective model context windows",
+        "Merge pull request #765 from bigduu/lotus-next/fix/764-mermaid-diagram-viewer",
+        "fix(work): restore card focus after closing details",
+        "Merge pull request #771 from bigduu/lotus-next/fix/770-project-work-focus",
+        "Merge remote-tracking branch 'origin/dev' into lotus-next/fix/768-effective-model-context",
+        "Merge pull request #769 from bigduu/lotus-next/fix/768-effective-model-context"
       ]
     }
   ]
