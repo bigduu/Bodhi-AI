@@ -86,7 +86,7 @@ async fn serve(responses: &[&'static str]) -> (Url, JoinHandle<Vec<String>>) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
             stream.shutdown().await.unwrap();
-            requests.push(request.to_ascii_lowercase());
+            requests.push(request);
         }
         requests
     });
@@ -116,7 +116,7 @@ async fn interrupted_bytes_survive_reopening_and_resume_from_another_source() {
         assert!(matches!(failure, Err(TransferError::Interrupted(_))));
         assert_eq!(partial.file.metadata().unwrap().len(), 3);
     }
-    let initial = &first_requests.await.unwrap()[0];
+    let initial = first_requests.await.unwrap()[0].to_ascii_lowercase();
     assert!(!initial.contains("\r\nrange:"));
     assert!(initial.contains("\r\naccept-encoding: identity"));
 
@@ -135,7 +135,9 @@ async fn interrupted_bytes_survive_reopening_and_resume_from_another_source() {
     assert_eq!(offset, 3);
     assert_eq!(progress.first(), Some(&3));
     assert_eq!(progress.last(), Some(&10));
-    assert!(second_requests.await.unwrap()[0].contains("\r\nrange: bytes=3-"));
+    assert!(second_requests.await.unwrap()[0]
+        .to_ascii_lowercase()
+        .contains("\r\nrange: bytes=3-"));
     assert!(partial.matches(&expected).unwrap());
     let mut bytes = Vec::new();
     partial.file.read_to_end(&mut bytes).unwrap();
@@ -156,7 +158,9 @@ async fn automatic_retry_requests_only_the_missing_bytes() {
             .unwrap(),
         3
     );
-    assert!(requests.await.unwrap()[1].contains("\r\nrange: bytes=3-"));
+    assert!(requests.await.unwrap()[1]
+        .to_ascii_lowercase()
+        .contains("\r\nrange: bytes=3-"));
     file.rewind().unwrap();
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).unwrap();
@@ -176,7 +180,9 @@ async fn a_full_response_replaces_the_partial_instead_of_appending() {
     .unwrap();
     assert_eq!(offset, 0);
     assert_eq!(progress[..2], [3, 0]);
-    assert!(requests.await.unwrap()[0].contains("\r\nrange: bytes=3-"));
+    assert!(requests.await.unwrap()[0]
+        .to_ascii_lowercase()
+        .contains("\r\nrange: bytes=3-"));
     file.rewind().unwrap();
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).unwrap();
@@ -200,8 +206,8 @@ async fn an_invalid_content_range_or_416_gets_a_clean_retry() {
             .await
             .unwrap();
         let requests = requests.await.unwrap();
-        assert!(requests[0].contains("\r\nrange: bytes=3-"));
-        assert!(!requests[1].contains("\r\nrange:"));
+        assert!(requests[0].to_ascii_lowercase().contains("\r\nrange: bytes=3-"));
+        assert!(!requests[1].to_ascii_lowercase().contains("\r\nrange:"));
         assert_eq!(offset, 0);
         file.rewind().unwrap();
         let mut bytes = Vec::new();
@@ -222,7 +228,9 @@ async fn a_failed_full_fallback_preserves_the_partial() {
     let result = request(&local_client(), &url, &mut file, 10, &mut |_| {}).await;
     assert!(matches!(result, Err(TransferError::Invalid(_))));
     assert_eq!(file.metadata().unwrap().len(), 3);
-    assert!(!requests.await.unwrap()[1].contains("\r\nrange:"));
+    assert!(!requests.await.unwrap()[1]
+        .to_ascii_lowercase()
+        .contains("\r\nrange:"));
 }
 
 #[test]
@@ -296,12 +304,13 @@ fn settings_preserve_presets_and_map_both_artifact_types_to_the_custom_mirror() 
 }
 
 #[test]
-fn unsupported_or_credential_bearing_endpoints_are_rejected() {
+fn malformed_proxies_and_credential_bearing_mirrors_are_rejected() {
     for proxy in [
         "ftp://localhost:1234",
         "socks5://localhost",
-        "http://user:secret@localhost:1234",
         "https://localhost:1234/path",
+        "http://user:secret@localhost:1234/?query=1",
+        "http://user:secret@localhost:1234/#fragment",
     ] {
         let settings = DownloadSettings {
             proxy_url: Some(proxy.into()),
@@ -312,7 +321,8 @@ fn unsupported_or_credential_bearing_endpoints_are_rejected() {
     for url in [
         "http://example.test",
         "https://example.test/token?q=1",
-        "https://secret@example.test",
+        "https://user:secret@example.test",
+        "https://user@example.test",
     ] {
         let settings = DownloadSettings {
             source: DownloadSource::Custom,
@@ -323,21 +333,41 @@ fn unsupported_or_credential_bearing_endpoints_are_rejected() {
     }
 }
 
+#[test]
+fn proxy_settings_accept_authentication_for_supported_schemes() {
+    for scheme in ["http", "https", "socks5", "socks5h"] {
+        let proxy = format!("{scheme}://tester%40example.test:secret%21@localhost:1234");
+        let settings = DownloadSettings {
+            proxy_url: Some(proxy.clone()),
+            ..DownloadSettings::default()
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(settings.proxy_url.as_deref(), Some(proxy.as_str()));
+        assert!(settings.client().unwrap().build().is_ok());
+    }
+}
+
 #[tokio::test]
-async fn the_configured_forward_proxy_receives_catalog_and_mirror_requests() {
+async fn the_configured_forward_proxy_authenticates_catalog_and_mirror_requests() {
     let (endpoint, requests) = serve(&[
         "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n",
         "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n",
     ])
     .await;
+    let proxy = format!(
+        "http://tester%40example.test:secret%21@{}:{}",
+        endpoint.host_str().unwrap(),
+        endpoint.port().unwrap()
+    );
     let settings = DownloadSettings {
         source: DownloadSource::Custom,
-        proxy_url: Some(endpoint.origin().ascii_serialization()),
+        proxy_url: Some(proxy),
         mirror_url: Some("https://mirror.example.test/bodhi/".into()),
     }
     .validated()
     .unwrap();
-    assert!(crate::component_channel::load_stable(&settings)
+    assert!(crate::component_channel::stable::load_lotus(&settings)
         .await
         .is_err());
     let official =
@@ -346,6 +376,14 @@ async fn the_configured_forward_proxy_receives_catalog_and_mirror_requests() {
     let client = settings.artifact_client(&official, &selected).unwrap();
     assert!(client.get(selected).send().await.is_err());
     let requests = requests.await.unwrap();
-    assert!(requests[0].starts_with("connect raw.githubusercontent.com:443 "));
-    assert!(requests[1].starts_with("connect mirror.example.test:443 "));
+    assert!(requests[0].starts_with("CONNECT raw.githubusercontent.com:443 "));
+    assert!(requests[1].starts_with("CONNECT mirror.example.test:443 "));
+    for request in requests {
+        assert!(request.lines().any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("proxy-authorization")
+                    && value.trim() == "Basic dGVzdGVyQGV4YW1wbGUudGVzdDpzZWNyZXQh"
+            })
+        }));
+    }
 }

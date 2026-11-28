@@ -136,7 +136,6 @@ fn endpoint(url: &str) -> Result<Url, ()> {
     let parsed = Url::parse(url).map_err(|_| ())?;
     if url.len() > 2048
         || parsed.host_str().is_none()
-        || !has_no_credentials(&parsed)
         || parsed.query().is_some()
         || parsed.fragment().is_some()
     {
@@ -152,13 +151,12 @@ fn has_no_credentials(url: &Url) -> bool {
 fn mirror(url: &str) -> Result<Url, String> {
     endpoint(url)
         .ok()
-        .filter(|url| url.scheme() == "https")
+        .filter(|url| url.scheme() == "https" && has_no_credentials(url))
         .ok_or_else(|| {
             "Enter an HTTPS mirror base URL without credentials, a query or a fragment.".into()
         })
 }
 
 fn invalid_proxy() -> String {
-    "Enter an HTTP, HTTPS, SOCKS5 or SOCKS5H proxy URL with a host and port, without credentials."
-        .into()
+    "Enter an HTTP, HTTPS, SOCKS5 or SOCKS5H proxy URL with a host and port.".into()
 }

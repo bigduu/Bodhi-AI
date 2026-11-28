@@ -22,7 +22,7 @@ If a component download stalls, open **Download settings** from the startup scre
 
 For a custom mirror, use an HTTPS base such as `https://mirror.example.com/bodhi/`. Append the original asset hostname and path to that base. Bamboo release files go under `/bodhi/github.com/bigduu/Bamboo-agent/releases/download/`. Lotus Next packages go under `/bodhi/registry.npmjs.org/@bigduu/lotus-next/-/`.
 
-Proxy URLs support HTTP, HTTPS, SOCKS5, and SOCKS5H without credentials. Leave the field empty to use the environment proxy. Bodhi fetches the official component catalog through the configured proxy and verifies downloaded assets with SHA-256.
+Proxy URLs support HTTP, HTTPS, SOCKS5, and SOCKS5H. For a proxy that requires a username and password, enter a URL such as `http://user:password@proxy.example.com:8080`. Bodhi saves the complete URL as plaintext in its local download settings. Leave the field empty to use the environment proxy. Bodhi fetches the official component catalog through the configured proxy and verifies downloaded assets with SHA-256.
 
 ## 简体中文
 
@@ -46,4 +46,4 @@ brew install --cask bigduu/tap/bodhi
 
 自定义镜像使用 HTTPS 地址，例如 `https://mirror.example.com/bodhi/`。把原始下载地址的域名和路径接在镜像地址后面。Bamboo 发布文件放在 `/bodhi/github.com/bigduu/Bamboo-agent/releases/download/`，Lotus Next 安装包放在 `/bodhi/registry.npmjs.org/@bigduu/lotus-next/-/`。
 
-代理支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H。地址中请省略账号和密码，留空则使用环境变量里的代理。菩提通过配置的代理读取官方组件目录，并校验下载文件的 SHA-256。
+代理支持 HTTP、HTTPS、SOCKS5 和 SOCKS5H。代理需要用户名和密码时，可以填写 `http://user:password@proxy.example.com:8080` 这样的地址。菩提会把完整的 URL 明文保存在本地下载设置中。留空则使用环境变量里的代理。菩提通过配置的代理读取官方组件目录，并校验下载文件的 SHA-256。
