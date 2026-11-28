@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 2,
-  "recommendedVersion": "2026.11.36",
+  "revision": 3,
+  "recommendedVersion": "2026.11.37",
   "releases": [
     {
       "release": {
@@ -62,6 +62,36 @@
         "Merge pull request #750 from bigduu/lotus-next/feat/747-message-fork",
         "feat(chat): resume interrupted conversations from the composer",
         "Merge pull request #752 from bigduu/lotus-next/feat/751-resume-interrupted-chat"
+      ]
+    },
+    {
+      "release": {
+        "version": "2026.11.37",
+        "sourceRevision": "93356f9c104c35a01cc9cc4c312b8b62263e4b2b",
+        "manifestSha256": "1323445a1d5b47a017dcd2530c654bd9f87cdacea832eccf4b4361d3cd21fd23",
+        "resourcesSha256": "68da029a3cbe7f8b71de206be4f58d57702c3f7df58a5046bd2fc7c5edc43d31",
+        "tarball": {
+          "sha256": "f0c4155ea91db46cbeb1c6215ff679232066038b3985f1672a7acf8e25da55ec",
+          "sizeBytes": 4161055
+        }
+      },
+      "changes": [
+        "fix(chat): show pending interjections only in the transcript",
+        "test: stabilize mobile session selection in composer draft coverage",
+        "Merge pull request #756 from bigduu/lotus-next/test/742-composer-editor-sidebar",
+        "Merge branch 'dev' into lotus-next/fix/754-inline-interjection-queue",
+        "Merge pull request #755 from bigduu/lotus-next/fix/754-inline-interjection-queue",
+        "fix(chat): fold tool markup in assistant replies",
+        "fix(chat): respect parameter and blockquote boundaries",
+        "fix(chat): keep tool examples inside Markdown fences",
+        "Merge pull request #758 from bigduu/lotus-next/fix/757-inline-tool-markup",
+        "fix: keep Project Work cards visible and current",
+        "Merge pull request #760 from bigduu/lotus-next/fix/759-visible-live-work-board",
+        "feat: manage Project Work scans from System Settings",
+        "test: verify scan control focus with keyboard activation",
+        "test: model legacy scan endpoint in Sprint fixtures",
+        "test: wait for workflow dialog keyboard focus before dismissal",
+        "Merge pull request #762 from bigduu/lotus-next/feat/761-project-scan-settings"
       ]
     }
   ]
