@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "revision": 5,
-  "recommendedVersion": "2026.11.52",
+  "revision": 6,
+  "recommendedVersion": "2026.11.53",
   "releases": [
     {
       "release": {
@@ -690,6 +690,113 @@
         "Merge accepted Ticket Creator into Project scan",
         "Merge pull request #3275 from bigduu/bamboo/feat/3270-project-work-scan",
         "另有 38 条提交，完整记录 https://github.com/bigduu/Bamboo-agent/compare/49bb04994b8cbb610a4ffa07e83acba9572c032c...fb38cb80a2e8ea8bf925ef351341d683caa1d6fe"
+      ]
+    },
+    {
+      "release": {
+        "version": "2026.11.53",
+        "sourceRevision": "9b0ec64215ff7bbe463c522d82e92dee0c376956",
+        "manifest": {
+          "sha256": "4e58920e0f6665812fde066fbc0720079692c0a1da58ca470f4c782aebdd0c11",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "cd3764b9d893bcf5322105a198360bca16d38ea0bcb1dd274f53299795638f3b",
+          "sizeBytes": 47381
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "3d1826aa804b746cc4e90869316caa622ee123c169b97e638353a07cf7650f27",
+              "sizeBytes": 279879984
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "19e03d79fef623ebe4c692f462666f404135c60e9263d547c7ac0c940decc092",
+                "sizeBytes": 135224502
+              },
+              "receiptSha256": "5fbc4ecb63c8c6dd5b9a1e80525db3442b59e95ce1f6957456db293fa5235286"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "b682f71db1fd09175c316fbdce31d19aad6565a717e7c3fb25734494297db3ce",
+              "sizeBytes": 226744320
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "58d0f381808455ab8feb20b7654b75b46f76a8d028ee9c42b9a7a1bb04f0b4b9",
+                "sizeBytes": 154107014
+              },
+              "receiptSha256": "7a41c76dc24763d7a52e10c514adf39aba2549cab4cc8a015810858d7ac92b8a"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "d652e28f2d32c2d397d44ea5f85577a89d5f8a1229022bf3eaeb7ac2a18c4352",
+              "sizeBytes": 306651232
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "fdfc5de20dde919533985ce1e2056391d7244276b00a264564968ba93a8e5d09",
+                "sizeBytes": 163862387
+              },
+              "receiptSha256": "ee902e88c7a2af2f0a3509d43f166b05130363e7570e61de36417e99af537ec5"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "2536c55e422ab6def44d06e5e5c3082952bdaf4b35bd264e85a150e450d2d664",
+              "sizeBytes": 274648576
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "620437779edfc88a548e99022f39ea86ad988665f56cb86d2b150411833ae170",
+                "sizeBytes": 158153031
+              },
+              "receiptSha256": "e30edd316ea89dd002713f7026bd99e4d4941752272e0205834886f6655bb747"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "5d1a363c43e75bb0582f59fdcd1f6b3d2ca5fa243c23948a453c8594cfad880e",
+              "sizeBytes": 321374408
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "9c75efacb4257494c0f54b2adedc279391174ac4b4eda194249b5440553fc50d",
+                "sizeBytes": 156683414
+              },
+              "receiptSha256": "f6d6808b0487cc52eb4e7b57a59019ef28d8d6c74a2c7b1ae8a780bd9cd47082"
+            }
+          }
+        ]
+      },
+      "changes": [
+        "feat(sessions): persist initial Root categories during creation",
+        "Merge commit '00bbcb5abedc163cf3677097cdb65b4916a17d70' into bamboo/feat/1063-initial-session-category",
+        "Merge commit 'dd2062dcd9f09d5aeae8d04e217a0a4b35d032a8' into bamboo/feat/1063-initial-session-category",
+        "Merge commit 'fb38cb80a2e8ea8bf925ef351341d683caa1d6fe' into bamboo/feat/1063-initial-session-category",
+        "Merge pull request #3273 from bigduu/bamboo/feat/1063-initial-session-category",
+        "feat(projects): suggest session categories",
+        "Merge pull request #3277 from bigduu/bamboo/feat/1072-project-category-suggestion",
+        "fix: resolve effective model context windows with a 475K fallback",
+        "Merge pull request #3280 from bigduu/bamboo/fix/3279-effective-model-context"
       ]
     }
   ]
