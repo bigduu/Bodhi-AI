@@ -1617,6 +1617,206 @@
           "lotusManifestSha256": "824c79d0b16bbd0797ef50fd96c09feec3df20717c5349de658601d7a1383b93"
         }
       ]
+    },
+    {
+      "sequence": 12,
+      "bamboo": {
+        "version": "2026.11.52",
+        "sourceRevision": "fb38cb80a2e8ea8bf925ef351341d683caa1d6fe",
+        "manifest": {
+          "sha256": "2c0f21ccabb90051a760b7be14d93782e6dc66fd49c1baee6d7767a6f053182b",
+          "sizeBytes": 2415
+        },
+        "browserHost": {
+          "sha256": "cd3764b9d893bcf5322105a198360bca16d38ea0bcb1dd274f53299795638f3b",
+          "sizeBytes": 47381
+        },
+        "artifacts": [
+          {
+            "target": "aarch64-apple-darwin",
+            "assetName": "bamboo-aarch64-apple-darwin",
+            "executable": {
+              "sha256": "4bc6a8aad57a87bec5fb1e3b2ada21180026d61e401a4b43384809fa070c8547",
+              "sizeBytes": 279697312
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-apple-darwin.tar.gz",
+              "archive": {
+                "sha256": "675148a90d66e29f1ed193d42440c0570aa62e901ce9e8ed16224f99e42ed6bd",
+                "sizeBytes": 135224533
+              },
+              "receiptSha256": "fd2c673ff53e69dc51c042f21234343bc3f67e2833946f40e049c0adaa13d6c6"
+            }
+          },
+          {
+            "target": "aarch64-pc-windows-msvc",
+            "assetName": "bamboo-aarch64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "8cf3823c78bd2304701c45b590ee29a21bfebec925870668f78a30af65777080",
+              "sizeBytes": 226753536
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "b0f186d5763e916aaad360f09a852b8fb2e6ba36bf8a31f210a8822591b2fe28",
+                "sizeBytes": 154106852
+              },
+              "receiptSha256": "3897bfd37b70cbc15f26df75935abaffe1adab61f2d871e07146e077eb0b5760"
+            }
+          },
+          {
+            "target": "aarch64-unknown-linux-gnu",
+            "assetName": "bamboo-aarch64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "a45c2ebc98786018bca5d822390db4ddcc914ff2fb4c0b101668b6f5e697b233",
+              "sizeBytes": 306522408
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-aarch64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "30ecd086bdcf92034ccce67a0423fe63daf25b75bddcae3819f163b74ea720a4",
+                "sizeBytes": 163862195
+              },
+              "receiptSha256": "6e46773e49f899c69ffccb839e465e9883cd4a7b34db62994733d0ae95fb757f"
+            }
+          },
+          {
+            "target": "x86_64-pc-windows-msvc",
+            "assetName": "bamboo-x86_64-pc-windows-msvc.exe",
+            "executable": {
+              "sha256": "e203544d5ee07148e1b66ac22c88d8c362f3ccb4f70664cc3eb007632982b908",
+              "sizeBytes": 274690048
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-pc-windows-msvc.tar.gz",
+              "archive": {
+                "sha256": "54dc17423c7698ed11749c0217af17ea9502664bcc118be13aa8a1b053cd97e0",
+                "sizeBytes": 158153076
+              },
+              "receiptSha256": "d81e008afc8310c1d791fbea1aee52fc006bcd44672aef0a4f55df5b8e5cb067"
+            }
+          },
+          {
+            "target": "x86_64-unknown-linux-gnu",
+            "assetName": "bamboo-x86_64-unknown-linux-gnu",
+            "executable": {
+              "sha256": "27b366736f7d454a43f2f2c8740e58645f6554b5f839ea87b14110ae9585a4eb",
+              "sizeBytes": 321634456
+            },
+            "browserRuntime": {
+              "assetName": "bamboo-browser-runtime-v1-x86_64-unknown-linux-gnu.tar.gz",
+              "archive": {
+                "sha256": "3ec8101760bdef6e24a70f458a23b33529608ecd3dec3751ae35763299a4dfe9",
+                "sizeBytes": 156681937
+              },
+              "receiptSha256": "768161da7eebf0fec195e461656fe106d2776fe7d282035f4c9b4973fcaa7662"
+            }
+          }
+        ]
+      },
+      "lotus": {
+        "version": "2026.11.37",
+        "sourceRevision": "93356f9c104c35a01cc9cc4c312b8b62263e4b2b",
+        "manifestSha256": "1323445a1d5b47a017dcd2530c654bd9f87cdacea832eccf4b4361d3cd21fd23",
+        "resourcesSha256": "68da029a3cbe7f8b71de206be4f58d57702c3f7df58a5046bd2fc7c5edc43d31",
+        "tarball": {
+          "sha256": "f0c4155ea91db46cbeb1c6215ff679232066038b3985f1672a7acf8e25da55ec",
+          "sizeBytes": 4161055
+        }
+      },
+      "changes": {
+        "bamboo": [
+          "Merge pull request #3226 from bigduu/bamboo/feat/3224-schedule-daily-time",
+          "chore(tui): upgrade Native Shell to 0.7.2 (#3225)",
+          "Merge pull request #3227 from bigduu/bamboo/chore/3225-nsh-072",
+          "feat(tui): preview rounded Mermaid flowchart nodes",
+          "Merge pull request #3230 from bigduu/bamboo/feat/3228-mermaid-rounded-nodes",
+          "feat(tui): edit the saved Weekly schedule time",
+          "Merge pull request #3232 from bigduu/bamboo/feat/3231-schedule-weekly-time",
+          "feat(tui): preview Mermaid edge labels",
+          "Merge pull request #3234 from bigduu/bamboo/feat/3233-mermaid-edge-label",
+          "fix(engine): record the final tool result status",
+          "Merge pull request #3235 from bigduu/bamboo/fix/1802-final-tool-success",
+          "feat(schedules): edit the saved Monthly schedule time",
+          "Merge pull request #3237 from bigduu/bamboo/feat/3236-schedule-monthly-time",
+          "feat(tui): render same-line Mermaid paths",
+          "Merge pull request #3239 from bigduu/bamboo/feat/3238-mermaid-link-chaining",
+          "feat(schedules): move a pending Once Task",
+          "Merge pull request #3241 from bigduu/bamboo/feat/3240-schedule-once-time",
+          "feat(tui): render compact Markdown blockquotes",
+          "Merge pull request #3243 from bigduu/bamboo/feat/3242-compact-markdown-blockquotes",
+          "feat(tui): inspect selected session loop status",
+          "Merge pull request #3245 from bigduu/bamboo/feat/3244-selected-session-loop-status",
+          "feat(tui): edit saved cron schedule expressions",
+          "Merge pull request #3247 from bigduu/bamboo/feat/3246-edit-cron-expression",
+          "feat(tui): preview the UTC time of new Once schedules",
+          "Merge pull request #3249 from bigduu/bamboo/feat/3248-once-create-preview",
+          "feat(tui): explain schedule catalog and action failures",
+          "Merge pull request #3251 from bigduu/bamboo/feat/3250-schedule-action-errors",
+          "feat(tui): render two-level Markdown quote paragraphs",
+          "Merge pull request #3253 from bigduu/bamboo/feat/3252-nested-blockquotes",
+          "feat(tui): allow ASCII Mermaid diagram connectors",
+          "Merge pull request #3255 from bigduu/bamboo/feat/3254-mermaid-ascii",
+          "feat(tui): render Mermaid decision nodes",
+          "Merge pull request #3257 from bigduu/bamboo/feat/3256-mermaid-decision",
+          "feat(tui): show paced Loop cadence and iteration",
+          "Merge pull request #3259 from bigduu/bamboo/feat/3258-paced-loop-details",
+          "feat(skills): expose management availability",
+          "Merge pull request #3261 from bigduu/bamboo/feat/3260-skill-management",
+          "feat(tui): preserve parentheses in Markdown link destinations",
+          "Merge pull request #3263 from bigduu/bamboo/feat/3262-markdown-link-parentheses",
+          "feat: include configured Project and Section descriptions",
+          "Merge pull request #3265 from bigduu/bamboo/feat/3264-project-section-context",
+          "feat: dispatch existing Work through its Project Manager",
+          "feat(sessions): persist manual Root categories",
+          "fix: recover deleted Project Managers and page their Work",
+          "test: register Project Manager under the existing native Work owner",
+          "fix: let the Supervisor find Projects across pages",
+          "fix: preserve Project Work source pins during dispatch",
+          "Merge pull request #3269 from bigduu/bamboo/feat/1043-manual-session-categories",
+          "Merge dev into Project Manager Work",
+          "fix: keep each Project Manager in its Project",
+          "test: include guarded Project tools in the Ticket catalog fixture",
+          "Merge pull request #3267 from bigduu/bamboo/feat/3266-project-manager-work",
+          "feat: retain structured draft context on Project Work",
+          "Merge pull request #3272 from bigduu/bamboo/feat/3268-project-work-draft-context",
+          "feat: draft Project Work with the Ticket Creator role",
+          "fix: hold the source Session in scope while publishing drafted Work",
+          "fix: keep Ticket Creator drafts anchored to the current request",
+          "test: verify the Project Work guide in the legacy idle resume fixture",
+          "feat: scan and dispatch Project Work through durable program state",
+          "perf: verify scan handoff from compact Project Manager authority",
+          "Merge pull request #3274 from bigduu/bamboo/feat/3271-ticket-creator-role",
+          "Merge accepted Ticket Creator into Project scan",
+          "Merge pull request #3275 from bigduu/bamboo/feat/3270-project-work-scan",
+          "另有 38 条提交，完整记录 https://github.com/bigduu/Bamboo-agent/compare/49bb04994b8cbb610a4ffa07e83acba9572c032c...fb38cb80a2e8ea8bf925ef351341d683caa1d6fe"
+        ],
+        "lotus": [
+          "fix(chat): show pending interjections only in the transcript",
+          "test: stabilize mobile session selection in composer draft coverage",
+          "Merge pull request #756 from bigduu/lotus-next/test/742-composer-editor-sidebar",
+          "Merge branch 'dev' into lotus-next/fix/754-inline-interjection-queue",
+          "Merge pull request #755 from bigduu/lotus-next/fix/754-inline-interjection-queue",
+          "fix(chat): fold tool markup in assistant replies",
+          "fix(chat): respect parameter and blockquote boundaries",
+          "fix(chat): keep tool examples inside Markdown fences",
+          "Merge pull request #758 from bigduu/lotus-next/fix/757-inline-tool-markup",
+          "fix: keep Project Work cards visible and current",
+          "Merge pull request #760 from bigduu/lotus-next/fix/759-visible-live-work-board",
+          "feat: manage Project Work scans from System Settings",
+          "test: verify scan control focus with keyboard activation",
+          "test: model legacy scan endpoint in Sprint fixtures",
+          "test: wait for workflow dialog keyboard focus before dismissal",
+          "Merge pull request #762 from bigduu/lotus-next/feat/761-project-scan-settings"
+        ]
+      },
+      "bootstrap": true,
+      "accepts": [
+        {
+          "bambooManifestSha256": "0a16e966cfec4d45052cad4fc7779fbd3915404090e27ac35aa4265d7d496d68",
+          "lotusManifestSha256": "824c79d0b16bbd0797ef50fd96c09feec3df20717c5349de658601d7a1383b93"
+        }
+      ]
     }
   ]
 }
