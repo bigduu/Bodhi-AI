@@ -394,6 +394,7 @@ dependencies = [
  "log",
  "objc2-app-kit",
  "objc2-foundation",
+ "objc2-web-kit",
  "once_cell",
  "portable-pty",
  "regex",

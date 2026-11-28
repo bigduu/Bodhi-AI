@@ -8,6 +8,36 @@ pub(crate) const SCHEME: &str = "bodhi-update";
 const NAVIGATION_TIMEOUT: Duration = Duration::from_secs(10);
 const RESUME_ATTEMPT: &str = "bodhi-restart";
 
+pub(crate) fn webview_url<R: Runtime>(window: &WebviewWindow<R>) -> Option<Url> {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_web_kit::WKWebView;
+
+        // Wry 0.54 unwraps WKWebView.URL, which can be nil after a content process exits.
+        let (send, receive) = std::sync::mpsc::channel();
+        window
+            .with_webview(move |webview| {
+                // Tauri lends the live WKWebView to this callback on AppKit's main thread.
+                let url = unsafe {
+                    webview
+                        .inner()
+                        .cast::<WKWebView>()
+                        .as_ref()
+                        .and_then(|view| view.URL())
+                }
+                .and_then(|url| url.absoluteString())
+                .and_then(|url| Url::parse(&url.to_string()).ok());
+                let _ = send.send(url);
+            })
+            .ok()?;
+        receive.recv().ok().flatten()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.url().ok()
+    }
+}
+
 #[derive(Clone, Copy)]
 enum PageKind {
     LegacyUpdate,
@@ -183,11 +213,13 @@ impl UpdatePage {
         frontend: &Url,
         kind: PageKind,
     ) -> Result<(), String> {
-        let resume = window
-            .url()
-            .ok()
-            .filter(|url| safe_route(url, frontend))
-            .unwrap_or_else(|| frontend.clone());
+        let resume = match webview_url(window) {
+            Some(url) if safe_route(&url, frontend) => url,
+            _ => {
+                log::info!("Using the verified frontend as the workspace resume target");
+                frontend.clone()
+            }
+        };
         let (url, committed) = self.begin(resume, kind)?;
         self.navigate_local(window, &url, committed).await?;
         log::info!("Bodhi update page committed before Bamboo handoff");
@@ -203,9 +235,7 @@ impl UpdatePage {
         window
             .navigate(url.clone())
             .map_err(|error| error.to_string())?;
-        if !navigation_committed(committed).await
-            || !window.url().is_ok_and(|current| current == *url)
-        {
+        if !navigation_committed(committed).await || webview_url(window).as_ref() != Some(url) {
             return Err(i18n::active(window.app_handle())
                 .text("kernel.transitionFailed")
                 .into());
@@ -280,7 +310,7 @@ impl UpdatePage {
             .map_err(|error| error.to_string())?;
         // A same-origin app may replace its current route after commit.
         if !navigation_committed(committed).await
-            || !window.url().is_ok_and(|current| safe_route(&current, &url))
+            || !webview_url(window).is_some_and(|current| safe_route(&current, &url))
         {
             return Err(i18n::active(window.app_handle())
                 .text("kernel.restartRetryFromUpdates")
