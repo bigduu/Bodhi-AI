@@ -1373,7 +1373,8 @@ pub(crate) fn authorize<R: Runtime>(
     window: &WebviewWindow<R>,
     allow_splash: bool,
 ) -> Result<(), String> {
-    let url = window.url().map_err(|error| error.to_string())?;
+    let url = crate::bamboo_update_page::webview_url(window)
+        .ok_or("Cannot read the component updater WebView URL")?;
     let dev = if tauri::is_dev() {
         window.config().build.dev_url.as_ref()
     } else {
